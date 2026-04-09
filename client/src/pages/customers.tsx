@@ -10,6 +10,38 @@ import {
 } from 'recharts';
 import { CHART_COLORS, DONUT_PALETTE, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart-theme';
 
+interface CustomerRow {
+  loyalty_points: number | null;
+  tier_name: string | null;
+  subscribed: boolean | string | null;
+  created_at: string | null;
+}
+
+// Fetch all rows in pages
+async function fetchAllCustomers(): Promise<CustomerRow[]> {
+  const all: CustomerRow[] = [];
+  const pageSize = 1000;
+  let from = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const { data, error } = await supabase
+      .from('marsello_customers')
+      .select('loyalty_points, tier_name, subscribed, created_at')
+      .range(from, from + pageSize - 1);
+
+    if (error || !data || data.length === 0) {
+      hasMore = false;
+    } else {
+      all.push(...(data as CustomerRow[]));
+      from += pageSize;
+      if (data.length < pageSize) hasMore = false;
+    }
+  }
+
+  return all;
+}
+
 export default function CustomersPage() {
   const [loading, setLoading] = useState(true);
   const [totalMembers, setTotalMembers] = useState(0);
@@ -24,66 +56,67 @@ export default function CustomersPage() {
     setLoading(true);
 
     async function fetchData() {
-      // Fetch all customers
-      const { data: customers, count } = await supabase
-        .from('marsello_customers')
-        .select('loyalty_points, tier_name, subscribed, created_at', { count: 'exact' });
+      try {
+        const customers = await fetchAllCustomers();
 
-      if (cancelled || !customers) return;
+        if (cancelled) return;
 
-      setTotalMembers(count || customers.length);
+        setTotalMembers(customers.length);
 
-      // Subscribed vs unsubscribed
-      const subscribed = customers.filter((c: any) => c.subscribed === true || c.subscribed === 'true').length;
-      const unsubscribed = customers.length - subscribed;
-      setSubscribedData([
-        { name: '已訂閱 Subscribed', value: subscribed },
-        { name: '未訂閱 Unsubscribed', value: unsubscribed },
-      ]);
+        // Subscribed vs unsubscribed
+        const subscribed = customers.filter((c) => c.subscribed === true || c.subscribed === 'true').length;
+        const unsubscribed = customers.length - subscribed;
+        setSubscribedData([
+          { name: '已訂閱 Subscribed', value: subscribed },
+          { name: '未訂閱 Unsubscribed', value: unsubscribed },
+        ]);
 
-      // Points > 0 vs 0
-      const withPoints = customers.filter((c: any) => (Number(c.loyalty_points) || 0) > 0).length;
-      setPointsData([
-        { name: '有積分 With Points', value: withPoints },
-        { name: '無積分 No Points', value: customers.length - withPoints },
-      ]);
+        // Points > 0 vs 0
+        const withPoints = customers.filter((c) => (Number(c.loyalty_points) || 0) > 0).length;
+        setPointsData([
+          { name: '有積分 With Points', value: withPoints },
+          { name: '無積分 No Points', value: customers.length - withPoints },
+        ]);
 
-      // Tier distribution
-      const tierMap: Record<string, number> = {};
-      customers.forEach((c: any) => {
-        const tier = c.tier_name || 'No Tier';
-        tierMap[tier] = (tierMap[tier] || 0) + 1;
-      });
-      setTierData(
-        Object.entries(tierMap)
-          .map(([name, count]) => ({ name, count }))
-          .sort((a, b) => b.count - a.count)
-      );
+        // Tier distribution
+        const tierMap: Record<string, number> = {};
+        customers.forEach((c) => {
+          const tier = c.tier_name || 'No Tier';
+          tierMap[tier] = (tierMap[tier] || 0) + 1;
+        });
+        setTierData(
+          Object.entries(tierMap)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count)
+        );
 
-      // New members last 30 days
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const newCount = customers.filter(
-        (c: any) => c.created_at && new Date(c.created_at) >= thirtyDaysAgo
-      ).length;
-      setNewMembers30d(newCount);
+        // New members last 30 days
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const newCount = customers.filter(
+          (c) => c.created_at && new Date(c.created_at) >= thirtyDaysAgo
+        ).length;
+        setNewMembers30d(newCount);
 
-      // Members by join month
-      const monthMap: Record<string, number> = {};
-      customers.forEach((c: any) => {
-        if (c.created_at) {
-          const month = c.created_at.substring(0, 7);
-          monthMap[month] = (monthMap[month] || 0) + 1;
-        }
-      });
-      setMembersByMonth(
-        Object.entries(monthMap)
-          .sort(([a], [b]) => a.localeCompare(b))
-          .slice(-12)
-          .map(([month, count]) => ({ month: month.substring(2), count }))
-      );
+        // Members by join month
+        const monthMap: Record<string, number> = {};
+        customers.forEach((c) => {
+          if (c.created_at) {
+            const month = c.created_at.substring(0, 7);
+            monthMap[month] = (monthMap[month] || 0) + 1;
+          }
+        });
+        setMembersByMonth(
+          Object.entries(monthMap)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .slice(-12)
+            .map(([month, count]) => ({ month: month.substring(2), count }))
+        );
+      } catch (err) {
+        console.error('Customer fetch error:', err);
+      }
 
-      setLoading(false);
+      if (!cancelled) setLoading(false);
     }
 
     fetchData();

@@ -6,7 +6,7 @@ import { formatNumber, formatCurrency } from '@/lib/format';
 import { Package, AlertTriangle, XCircle, DollarSign } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer,
+  ResponsiveContainer, Cell,
 } from 'recharts';
 import { CHART_COLORS, DONUT_PALETTE, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart-theme';
 import {
@@ -16,13 +16,37 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 
 interface InvItem {
-  variant_id: string;
   product_title: string;
   sku: string;
   price: number;
   inventory_quantity: number;
   vendor: string;
   product_type: string;
+}
+
+// Fetch all rows in pages of 1000
+async function fetchAllInventory(): Promise<InvItem[]> {
+  const allItems: InvItem[] = [];
+  const pageSize = 1000;
+  let from = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const { data, error } = await supabase
+      .from('shopify_inventory')
+      .select('product_title, sku, price, inventory_quantity, vendor, product_type')
+      .range(from, from + pageSize - 1);
+
+    if (error || !data || data.length === 0) {
+      hasMore = false;
+    } else {
+      allItems.push(...(data as InvItem[]));
+      from += pageSize;
+      if (data.length < pageSize) hasMore = false;
+    }
+  }
+
+  return allItems;
 }
 
 export default function InventoryPage() {
@@ -40,64 +64,65 @@ export default function InventoryPage() {
     setLoading(true);
 
     async function fetchData() {
-      const { data } = await supabase
-        .from('shopify_inventory')
-        .select('variant_id, product_title, sku, price, inventory_quantity, vendor, product_type');
+      try {
+        const items = await fetchAllInventory();
 
-      if (cancelled || !data) return;
-      const items = data as InvItem[];
+        if (cancelled) return;
 
-      setTotalSkus(items.length);
+        setTotalSkus(items.length);
 
-      const oos = items.filter((i) => (Number(i.inventory_quantity) || 0) <= 0);
-      setOutOfStock(oos.length);
+        const oos = items.filter((i) => (Number(i.inventory_quantity) || 0) <= 0);
+        setOutOfStock(oos.length);
 
-      const low = items.filter((i) => {
-        const qty = Number(i.inventory_quantity) || 0;
-        return qty > 0 && qty <= 2;
-      });
-      setLowStock(low.length);
+        const low = items.filter((i) => {
+          const qty = Number(i.inventory_quantity) || 0;
+          return qty > 0 && qty <= 2;
+        });
+        setLowStock(low.length);
 
-      const value = items.reduce(
-        (s, i) => s + (Math.max(Number(i.inventory_quantity) || 0, 0) * (Number(i.price) || 0)),
-        0
-      );
-      setTotalValue(value);
+        const value = items.reduce(
+          (s, i) => s + (Math.max(Number(i.inventory_quantity) || 0, 0) * (Number(i.price) || 0)),
+          0
+        );
+        setTotalValue(value);
 
-      // Out of stock by brand
-      const brandMap: Record<string, number> = {};
-      oos.forEach((i) => {
-        const v = i.vendor || 'Unknown';
-        brandMap[v] = (brandMap[v] || 0) + 1;
-      });
-      setOutByBrand(
-        Object.entries(brandMap)
-          .map(([vendor, count]) => ({ vendor, count }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 10)
-      );
+        // Out of stock by brand
+        const brandMap: Record<string, number> = {};
+        oos.forEach((i) => {
+          const v = i.vendor || 'Unknown';
+          brandMap[v] = (brandMap[v] || 0) + 1;
+        });
+        setOutByBrand(
+          Object.entries(brandMap)
+            .map(([vendor, count]) => ({ vendor, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 10)
+        );
 
-      // Inventory by product type
-      const typeMap: Record<string, number> = {};
-      items.forEach((i) => {
-        const t = i.product_type || 'Other';
-        typeMap[t] = (typeMap[t] || 0) + Math.max(Number(i.inventory_quantity) || 0, 0);
-      });
-      setByType(
-        Object.entries(typeMap)
-          .map(([type, count]) => ({ type, count }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 12)
-      );
+        // Inventory by product type
+        const typeMap: Record<string, number> = {};
+        items.forEach((i) => {
+          const t = i.product_type || 'Other';
+          typeMap[t] = (typeMap[t] || 0) + Math.max(Number(i.inventory_quantity) || 0, 0);
+        });
+        setByType(
+          Object.entries(typeMap)
+            .map(([type, count]) => ({ type, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 12)
+        );
 
-      // Low stock items table
-      setLowStockItems(
-        low
-          .sort((a, b) => (Number(a.inventory_quantity) || 0) - (Number(b.inventory_quantity) || 0))
-          .slice(0, 20)
-      );
+        // Low stock items table
+        setLowStockItems(
+          low
+            .sort((a, b) => (Number(a.inventory_quantity) || 0) - (Number(b.inventory_quantity) || 0))
+            .slice(0, 20)
+        );
+      } catch (err) {
+        console.error('Inventory fetch error:', err);
+      }
 
-      setLoading(false);
+      if (!cancelled) setLoading(false);
     }
 
     fetchData();
@@ -168,6 +193,12 @@ export default function InventoryPage() {
                     <TableCell><Skeleton className="h-4 w-12 ml-auto" /></TableCell>
                   </TableRow>
                 ))
+              ) : lowStockItems.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-center text-xs text-muted-foreground py-8">
+                    沒有低庫存商品 No low stock items
+                  </TableCell>
+                </TableRow>
               ) : (
                 lowStockItems.map((item, i) => (
                   <TableRow key={i}>

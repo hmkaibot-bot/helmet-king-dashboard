@@ -70,8 +70,16 @@ export default function MarketingPage() {
         : 0,
     }));
 
+  const hasData = ads.length > 0;
+
   return (
     <div className="space-y-4 max-w-[1400px]">
+      {!loading && !hasData && (
+        <div className="rounded-lg border border-border/40 bg-card p-8 text-center">
+          <p className="text-muted-foreground text-sm">暫無廣告數據 No advertising data available</p>
+          <p className="text-muted-foreground text-xs mt-1">Meta ad insights data will appear here once available</p>
+        </div>
+      )}
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <KpiCard title="廣告支出" subtitle="Ad Spend" value={formatCurrency(totalSpend)} icon={DollarSign} loading={loading} testId="kpi-spend" />

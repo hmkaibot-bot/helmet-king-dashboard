@@ -18,6 +18,35 @@ interface OrderRow {
   financial_status: string;
 }
 
+// Paginated fetch for tables with >1000 rows
+async function fetchAllOrders(dateFrom: string | null): Promise<OrderRow[]> {
+  const all: OrderRow[] = [];
+  const pageSize = 1000;
+  let from = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    let query = supabase
+      .from('shopify_orders')
+      .select('total_price, customer_id, created_at, financial_status')
+      .range(from, from + pageSize - 1);
+
+    if (dateFrom) {
+      query = query.gte('created_at', dateFrom);
+    }
+
+    const { data, error } = await query;
+    if (error || !data || data.length === 0) {
+      hasMore = false;
+    } else {
+      all.push(...(data as OrderRow[]));
+      from += pageSize;
+      if (data.length < pageSize) hasMore = false;
+    }
+  }
+  return all;
+}
+
 export default function SalesPage() {
   const { dateRange } = useDateRange();
   const [loading, setLoading] = useState(true);
@@ -28,18 +57,14 @@ export default function SalesPage() {
     setLoading(true);
 
     async function fetchOrders() {
-      let query = supabase
-        .from('shopify_orders')
-        .select('total_price, customer_id, created_at, financial_status');
-
-      const dateFrom = getDateFrom(dateRange);
-      if (dateFrom) {
-        query = query.gte('created_at', dateFrom);
-      }
-
-      const { data, error } = await query;
-      if (!cancelled && !error && data) {
-        setOrders(data as OrderRow[]);
+      try {
+        const dateFrom = getDateFrom(dateRange);
+        const data = await fetchAllOrders(dateFrom);
+        if (!cancelled) {
+          setOrders(data);
+        }
+      } catch (err) {
+        console.error('Sales fetch error:', err);
       }
       if (!cancelled) setLoading(false);
     }
@@ -62,7 +87,7 @@ export default function SalesPage() {
       .map((o) => o.customer_id)
   ).size;
 
-  // Revenue by day (last 30 days relative to latest order)
+  // Revenue by day (last 30 days)
   const revenueByDay = (() => {
     const map: Record<string, number> = {};
     validOrders.forEach((o) => {
@@ -73,7 +98,7 @@ export default function SalesPage() {
       .sort(([a], [b]) => a.localeCompare(b))
       .slice(-30)
       .map(([date, revenue]) => ({
-        date: date.substring(5), // MM-DD
+        date: date.substring(5),
         revenue: Math.round(revenue),
       }));
   })();
@@ -89,7 +114,7 @@ export default function SalesPage() {
       .sort(([a], [b]) => a.localeCompare(b))
       .slice(-12)
       .map(([month, revenue]) => ({
-        month: month.substring(2), // YY-MM
+        month: month.substring(2),
         revenue: Math.round(revenue),
       }));
   })();
