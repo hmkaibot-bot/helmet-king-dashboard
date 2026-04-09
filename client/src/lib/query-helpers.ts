@@ -102,6 +102,41 @@ export async function queryInBatches(
 }
 
 /**
+ * Query ALL records from a table using 1000-per-page pagination.
+ * Supabase REST API caps responses at 1000 rows — this loops through all pages.
+ */
+export async function queryAllPages(
+  table: string,
+  columns: string,
+  extraFilters?: { column: string; op: 'eq' | 'gte' | 'lte'; value: string }[],
+  maxRows = 200000
+): Promise<any[]> {
+  const PAGE_SIZE = 1000;
+  let all: any[] = [];
+  let offset = 0;
+  while (all.length < maxRows) {
+    let query = supabase
+      .from(table)
+      .select(columns)
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (extraFilters) {
+      for (const f of extraFilters) {
+        if (f.op === 'eq')  query = (query as any).eq(f.column, f.value);
+        if (f.op === 'gte') query = (query as any).gte(f.column, f.value);
+        if (f.op === 'lte') query = (query as any).lte(f.column, f.value);
+      }
+    }
+    const { data, error } = await query;
+    if (error) { console.error(`Pagination error on ${table}:`, error); break; }
+    if (!data || data.length === 0) break;
+    all = [...all, ...data];
+    if (data.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+  return all;
+}
+
+/**
  * Count records in a table.
  */
 export async function queryCount(

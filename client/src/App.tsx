@@ -21,6 +21,10 @@ import RestockPage from "@/pages/restock";
 import VendorsPage from "@/pages/vendors";
 import ReturnsPage from "@/pages/returns";
 import DailyWeeklyPage from "@/pages/daily-weekly";
+import VelocityPage from "@/pages/velocity";
+import NewProductsPage from "@/pages/new-products";
+import WeeklyReviewPage from "@/pages/weekly-review";
+import MarselloApprovalPage from "@/pages/marsello-approval";
 import NotFound from "@/pages/not-found";
 
 function AppRouter() {
@@ -40,6 +44,10 @@ function AppRouter() {
         <Route path="/retail/returns" component={ReturnsPage} />
         <Route path="/procurement/vendors" component={VendorsPage} />
         <Route path="/performance/daily" component={DailyWeeklyPage} />
+        <Route path="/performance/velocity" component={VelocityPage} />
+        <Route path="/performance/new-products" component={NewProductsPage} />
+        <Route path="/performance/weekly-review" component={WeeklyReviewPage} />
+        <Route path="/crm/marsello-approval" component={MarselloApprovalPage} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

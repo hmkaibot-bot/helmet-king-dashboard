@@ -1,7 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
-import { supabase } from '@/lib/supabase';
+import { queryWithDateRange, queryAll, queryAllPages } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
@@ -27,18 +26,14 @@ export default function VendorsPage() {
       try {
         // BC purchase data should NOT be date-filtered — show all available data
         const [inv, ln] = await Promise.all([
-          queryAll(
+          queryAllPages(
             'bc_purchase_invoices',
             'id,number,posting_date,vendor_number,vendor_name,total_amount_incl_tax,dimension1_code'
           ),
-          (async () => {
-            const { data, error } = await supabase
-              .from('bc_purchase_invoice_lines')
-              .select('invoice_id,item_number,description,quantity,unit_cost,amount_incl_tax')
-              .limit(50000);
-            if (error) { console.error('Lines error:', error); return []; }
-            return data || [];
-          })(),
+          queryAllPages(
+            'bc_purchase_invoice_lines',
+            'invoice_id,item_number,description,quantity,unit_cost,amount_incl_tax'
+          ),
         ]);
         if (cancelled) return;
         setInvoices(inv);

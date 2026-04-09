@@ -26,6 +26,10 @@ import {
   Truck,
   Building2,
   CalendarCheck,
+  TrendingUp,
+  Sparkles,
+  ClipboardCheck,
+  Award,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -81,11 +85,23 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     path: '/performance',
-    label: '每日報告',
-    sublabel: 'Daily Reports',
+    label: '報告',
+    sublabel: 'Reports',
     icon: CalendarCheck,
     children: [
-      { path: '/performance/daily', label: '昨日/本週', sublabel: 'Daily/Weekly', icon: Calendar },
+      { path: '/performance/daily',         label: '昨日/本週',   sublabel: 'Daily/Weekly',      icon: Calendar },
+      { path: '/performance/weekly-review',  label: '週報',        sublabel: 'Weekly Review',     icon: ClipboardCheck },
+      { path: '/performance/velocity',       label: '銷售速率',    sublabel: 'Sales Velocity',    icon: TrendingUp },
+      { path: '/performance/new-products',   label: '新品表現',    sublabel: 'New Products',      icon: Sparkles },
+    ],
+  },
+  {
+    path: '/crm',
+    label: '會員/CRM',
+    sublabel: 'CRM',
+    icon: Award,
+    children: [
+      { path: '/crm/marsello-approval', label: 'Marsello 積分', sublabel: 'Points Approval', icon: Award },
     ],
   },
   { path: '/marketing', label: '營銷', sublabel: 'Marketing', icon: Megaphone },
@@ -111,7 +127,7 @@ function isParentActive(item: NavItem, location: string): boolean {
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true, '/procurement': true, '/performance': true });
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true, '/procurement': true, '/performance': true, '/crm': true });
   const [location] = useLocation();
   const { dateRange, setDateRange, customFrom, customTo, setCustomFrom, setCustomTo } = useDateRange();
   const { logout } = useAuth();

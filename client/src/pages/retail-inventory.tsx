@@ -53,7 +53,7 @@ const DEFAULT_FILTERS: FilterState = {
 async function fetchAllInventory(): Promise<any[]> {
   let allInventory: any[] = [];
   let from = 0;
-  const pageSize = 5000;
+  const pageSize = 1000; // Supabase REST API max is 1000 rows per request
   while (true) {
     const { data } = await supabase
       .from('shopify_inventory')

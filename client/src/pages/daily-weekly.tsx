@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
-import { queryAll } from '@/lib/query-helpers';
+import { queryAll, queryAllPages } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber } from '@/lib/format';
@@ -160,13 +160,11 @@ export default function DailyWeeklyPage() {
               .limit(5000);
             return (data || []) as any[];
           })(),
-          queryAll(
+          queryAllPages(
             'shopify_order_lines',
-            'order_id,product_id,title,sku,vendor,quantity,price,product_type,created_at',
-            undefined,
-            50000
+            'order_id,product_id,title,sku,vendor,quantity,price,product_type,created_at'
           ) as Promise<any[]>,
-          queryAll('shopify_products', 'id,product_type', undefined, 10000) as Promise<any[]>,
+          queryAllPages('shopify_products', 'id,product_type') as Promise<any[]>,
         ]);
 
         if (cancelled) return;
