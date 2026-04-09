@@ -6,11 +6,14 @@ import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
-import { DollarSign, ShoppingCart, TrendingUp, Users, Store, Wrench } from 'lucide-react';
+import { DollarSign, ShoppingCart, TrendingUp, Users, Store, Wrench, Ticket, Package } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
 } from 'recharts';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Badge } from '@/components/ui/badge';
 
 export default function OverviewPage() {
   const { bounds } = useDateRange();
@@ -24,6 +27,8 @@ export default function OverviewPage() {
   const [trendData, setTrendData] = useState<any[]>([]);
   const [splitData, setSplitData] = useState<any[]>([]);
   const [adVsRevData, setAdVsRevData] = useState<any[]>([]);
+  const [promoCodes, setPromoCodes] = useState<any[]>([]);
+  const [yesterdayProducts, setYesterdayProducts] = useState<any[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,6 +103,48 @@ export default function OverviewPage() {
             spend: adMap[d] || 0,
           }))
         );
+
+        // Promo codes: fetch orders with discount_codes in last 30 days
+        const thirtyAgo = new Date();
+        thirtyAgo.setDate(thirtyAgo.getDate() - 30);
+        const promoOrders = await queryWithDateRange('shopify_orders', 'id,total_price,discount_codes,financial_status,cancelled_at', 'created_at', { from: thirtyAgo.toISOString().slice(0, 10), to: new Date().toISOString().slice(0, 10) });
+        const validPromoOrders = promoOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at && o.discount_codes);
+        const codeMap: Record<string, { code: string; type: string; uses: number; totalDiscount: number; totalRevenue: number }> = {};
+        validPromoOrders.forEach((o: any) => {
+          let codes: any[] = [];
+          try {
+            codes = typeof o.discount_codes === 'string' ? JSON.parse(o.discount_codes) : (o.discount_codes || []);
+          } catch { return; }
+          if (!Array.isArray(codes) || codes.length === 0) return;
+          codes.forEach((dc: any) => {
+            const name = (dc.code || '').toUpperCase();
+            if (!name) return;
+            if (!codeMap[name]) codeMap[name] = { code: name, type: dc.type || '—', uses: 0, totalDiscount: 0, totalRevenue: 0 };
+            codeMap[name].uses++;
+            codeMap[name].totalDiscount += parseFloat(dc.amount) || 0;
+            codeMap[name].totalRevenue += parseFloat(o.total_price) || 0;
+          });
+        });
+        setPromoCodes(Object.values(codeMap).sort((a, b) => b.uses - a.uses));
+
+        // Yesterday's products
+        const now = new Date();
+        const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+        const hkt = new Date(utc + 8 * 3600000);
+        hkt.setDate(hkt.getDate() - 1);
+        const yesterdayStr = hkt.toISOString().slice(0, 10);
+        const yOrders = await queryWithDateRange('shopify_orders', 'id,financial_status,cancelled_at,created_at', 'created_at', { from: yesterdayStr, to: yesterdayStr });
+        const yValidIds = new Set(yOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => o.id));
+        const allLines = await queryAll('shopify_order_lines', 'order_id,product_id,title,vendor,quantity,price', undefined, 50000);
+        const yLines = allLines.filter((l: any) => yValidIds.has(l.order_id));
+        const prodMap: Record<string, { title: string; vendor: string; qty: number; revenue: number }> = {};
+        yLines.forEach((l: any) => {
+          const key = (l.product_id || '') + '|' + (l.title || '');
+          if (!prodMap[key]) prodMap[key] = { title: l.title, vendor: l.vendor || '', qty: 0, revenue: 0 };
+          prodMap[key].qty += l.quantity || 0;
+          prodMap[key].revenue += (parseFloat(l.price) || 0) * (l.quantity || 0);
+        });
+        setYesterdayProducts(Object.values(prodMap).sort((a, b) => b.qty - a.qty).slice(0, 20));
       } catch (e) {
         console.error('Overview load error:', e);
       } finally {
@@ -160,6 +207,85 @@ export default function OverviewPage() {
           </ResponsiveContainer>
         </ChartCard>
       </div>
+      {/* Active Promo Codes */}
+      <Card className="border-border/40">
+        <CardHeader className="pb-2 pt-4 px-4">
+          <CardTitle className="text-sm font-medium">
+            🎟 活躍促銷碼 <span className="text-xs font-normal text-muted-foreground">Active Promo Codes (30 days)</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="px-4 pb-4">
+          {loading ? <Skeleton className="h-[200px] w-full" /> : promoCodes.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-8 text-center">近30日無促銷碼使用</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs" data-testid="table-promo-codes">
+                <thead>
+                  <tr className="border-b border-border/50 text-muted-foreground">
+                    <th className="py-2 text-left font-medium">促銷碼 Code</th>
+                    <th className="py-2 text-left font-medium">類型 Type</th>
+                    <th className="py-2 text-right font-medium">使用次數 Uses</th>
+                    <th className="py-2 text-right font-medium">折扣總額 Discount</th>
+                    <th className="py-2 text-right font-medium">營收 Revenue</th>
+                    <th className="py-2 text-right font-medium">均價 AOV</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {promoCodes.map((p) => (
+                    <tr key={p.code} className="border-b border-border/20 hover:bg-accent/30 transition-colors">
+                      <td className="py-2 font-mono font-medium">{p.code}</td>
+                      <td className="py-2"><Badge variant="secondary" className="text-[10px]">{p.type}</Badge></td>
+                      <td className="py-2 text-right tabular-nums">{p.uses}</td>
+                      <td className="py-2 text-right tabular-nums">{formatCurrency(p.totalDiscount)}</td>
+                      <td className="py-2 text-right tabular-nums">{formatCurrency(p.totalRevenue)}</td>
+                      <td className="py-2 text-right tabular-nums">{formatCurrency(p.uses > 0 ? p.totalRevenue / p.uses : 0)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Yesterday's Products */}
+      <Card className="border-border/40">
+        <CardHeader className="pb-2 pt-4 px-4">
+          <CardTitle className="text-sm font-medium">
+            📦 昨日出售產品 <span className="text-xs font-normal text-muted-foreground">Yesterday's Products</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="px-4 pb-4">
+          {loading ? <Skeleton className="h-[200px] w-full" /> : yesterdayProducts.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-8 text-center">昨日無銷售數據</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs" data-testid="table-yesterday-products">
+                <thead>
+                  <tr className="border-b border-border/50 text-muted-foreground">
+                    <th className="py-2 text-left font-medium w-8">#</th>
+                    <th className="py-2 text-left font-medium">產品 Product</th>
+                    <th className="py-2 text-left font-medium">品牌 Vendor</th>
+                    <th className="py-2 text-right font-medium">數量 Qty</th>
+                    <th className="py-2 text-right font-medium">營收 Revenue</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {yesterdayProducts.map((p, i) => (
+                    <tr key={i} className="border-b border-border/20 hover:bg-accent/30 transition-colors">
+                      <td className="py-2 text-muted-foreground">{i + 1}</td>
+                      <td className="py-2 max-w-[250px] truncate">{p.title}</td>
+                      <td className="py-2 text-muted-foreground">{p.vendor || '—'}</td>
+                      <td className="py-2 text-right tabular-nums font-medium">{p.qty}</td>
+                      <td className="py-2 text-right tabular-nums">{formatCurrency(p.revenue)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

@@ -5,7 +5,7 @@ import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
-import { DollarSign, ShoppingCart, TrendingUp, Package, Percent } from 'lucide-react';
+import { DollarSign, ShoppingCart, TrendingUp, Package, Percent, Layers, Calculator } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
   PieChart, Pie, Cell,
@@ -32,6 +32,8 @@ export default function RetailSalesPage() {
   const [topCustomers, setTopCustomers] = useState<any[]>([]);
   const [refundTrend, setRefundTrend] = useState<any[]>([]);
   const [recentOrders, setRecentOrders] = useState<any[]>([]);
+  const [categoryData, setCategoryData] = useState<any[]>([]);
+  const [marginData, setMarginData] = useState<any[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -128,6 +130,55 @@ export default function RetailSalesPage() {
 
         // Recent 20
         setRecentOrders(ordersData.sort((a: any, b: any) => b.created_at.localeCompare(a.created_at)).slice(0, 20));
+
+        // Category revenue: fetch full order_lines with product_type
+        const fullLines = await queryAll('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity,price,product_type', undefined, 50000);
+        const validFullLines = fullLines.filter((l: any) => orderIds.has(l.order_id));
+
+        // Group by product_type
+        const catMap: Record<string, { units: number; revenue: number; orders: Set<string> }> = {};
+        validFullLines.forEach((l: any) => {
+          const cat = l.product_type || 'Uncategorized';
+          if (!catMap[cat]) catMap[cat] = { units: 0, revenue: 0, orders: new Set() };
+          catMap[cat].units += l.quantity || 0;
+          catMap[cat].revenue += (parseFloat(l.price) || 0) * (l.quantity || 0);
+          catMap[cat].orders.add(l.order_id);
+        });
+        const totalCatRev = Object.values(catMap).reduce((s, c) => s + c.revenue, 0);
+        const categoryArr = Object.entries(catMap)
+          .map(([name, d]) => ({ name, units: d.units, revenue: d.revenue, orderCount: d.orders.size, avgPrice: d.units > 0 ? d.revenue / d.units : 0, pctTotal: totalCatRev > 0 ? (d.revenue / totalCatRev) * 100 : 0 }))
+          .sort((a, b) => b.revenue - a.revenue);
+        setCategoryData(categoryArr);
+
+        // Margin analysis: match shopify SKU to bc_inventory cost
+        const bcInv = await queryAll('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code', undefined, 50000);
+        const costMap: Record<string, { unitPrice: number; unitCost: number }> = {};
+        bcInv.forEach((item: any) => {
+          if (item.number) costMap[item.number] = { unitPrice: parseFloat(item.unit_price) || 0, unitCost: parseFloat(item.unit_cost) || 0 };
+        });
+
+        // Group lines by product (sku+title)
+        const prodMargin: Record<string, { title: string; sku: string; qty: number; revenue: number; unitCost: number | null; matched: boolean }> = {};
+        validFullLines.forEach((l: any) => {
+          const sku = l.sku || '';
+          const key = sku || l.title;
+          if (!prodMargin[key]) {
+            const cost = costMap[sku];
+            prodMargin[key] = { title: l.title, sku, qty: 0, revenue: 0, unitCost: cost ? cost.unitCost : null, matched: !!cost };
+          }
+          prodMargin[key].qty += l.quantity || 0;
+          prodMargin[key].revenue += (parseFloat(l.price) || 0) * (l.quantity || 0);
+        });
+        const marginArr = Object.values(prodMargin)
+          .sort((a, b) => b.revenue - a.revenue)
+          .slice(0, 20)
+          .map((p) => {
+            const avgSalePrice = p.qty > 0 ? p.revenue / p.qty : 0;
+            const marginPct = p.matched && p.unitCost !== null && avgSalePrice > 0 ? ((avgSalePrice - p.unitCost) / avgSalePrice) * 100 : null;
+            const totalGM = p.matched && p.unitCost !== null ? (avgSalePrice - p.unitCost) * p.qty : null;
+            return { ...p, avgSalePrice, marginPct, totalGM };
+          });
+        setMarginData(marginArr);
       } catch (e) {
         console.error('RetailSales error:', e);
       } finally {
@@ -215,6 +266,105 @@ export default function RetailSalesPage() {
           </ResponsiveContainer>
         </ChartCard>
       </div>
+
+      {/* Category Revenue */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <ChartCard title="產品分類收入" subtitle="Revenue by Category (Top 10)" loading={loading}>
+          <ResponsiveContainer width="100%" height={320}>
+            <BarChart data={categoryData.slice(0, 10)} layout="vertical">
+              <CartesianGrid {...GRID_STYLE} />
+              <XAxis type="number" tick={AXIS_STYLE} tickFormatter={(v) => `${(v / 1000).toFixed(0)}K`} />
+              <YAxis type="category" dataKey="name" tick={AXIS_STYLE} width={120} tickFormatter={(v: string) => v.length > 18 ? v.slice(0, 18) + '…' : v} />
+              <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => formatCurrency(v)} />
+              <Bar dataKey="revenue" fill={CHART_COLORS.quaternary} radius={[0, 3, 3, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <Card className="border-border/40">
+          <CardHeader className="pb-2 pt-4 px-4">
+            <CardTitle className="text-sm font-medium">分類明細 <span className="text-xs font-normal text-muted-foreground">Category Details</span></CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            {loading ? <Skeleton className="h-[280px] w-full" /> : (
+              <div className="overflow-x-auto max-h-[320px] overflow-y-auto">
+                <table className="w-full text-xs" data-testid="table-categories">
+                  <thead className="sticky top-0 bg-card">
+                    <tr className="border-b border-border/50 text-muted-foreground">
+                      <th className="py-2 text-left font-medium">分類 Category</th>
+                      <th className="py-2 text-right font-medium">件數 Units</th>
+                      <th className="py-2 text-right font-medium">營收 Revenue</th>
+                      <th className="py-2 text-right font-medium">% Total</th>
+                      <th className="py-2 text-right font-medium">均價 AOV</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {categoryData.map((c) => (
+                      <tr key={c.name} className="border-b border-border/20 hover:bg-accent/30 transition-colors">
+                        <td className="py-2 font-medium">{c.name}</td>
+                        <td className="py-2 text-right tabular-nums">{formatNumber(c.units)}</td>
+                        <td className="py-2 text-right tabular-nums">{formatCurrency(c.revenue)}</td>
+                        <td className="py-2 text-right tabular-nums">{formatPercent(c.pctTotal)}</td>
+                        <td className="py-2 text-right tabular-nums">{formatCurrency(c.avgPrice)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Margin Analysis */}
+      <Card className="border-border/40">
+        <CardHeader className="pb-2 pt-4 px-4">
+          <CardTitle className="text-sm font-medium">產品毛利分析 <span className="text-xs font-normal text-muted-foreground">Product Margin Analysis (Top 20 by Revenue)</span></CardTitle>
+        </CardHeader>
+        <CardContent className="px-4 pb-4">
+          {loading ? <Skeleton className="h-[300px] w-full" /> : marginData.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-8 text-center">數據不足</p>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs" data-testid="table-margin">
+                  <thead>
+                    <tr className="border-b border-border/50 text-muted-foreground">
+                      <th className="py-2 text-left font-medium">產品 Product</th>
+                      <th className="py-2 text-left font-medium">SKU</th>
+                      <th className="py-2 text-right font-medium">數量 Qty</th>
+                      <th className="py-2 text-right font-medium">營收 Revenue</th>
+                      <th className="py-2 text-right font-medium">成本/件 Cost</th>
+                      <th className="py-2 text-right font-medium">毛利% GM%</th>
+                      <th className="py-2 text-right font-medium">總毛利 Total GM</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {marginData.map((p, i) => (
+                      <tr key={i} className="border-b border-border/20 hover:bg-accent/30 transition-colors">
+                        <td className="py-2 max-w-[200px] truncate">{p.title}</td>
+                        <td className="py-2 font-mono text-[11px]">{p.sku || '—'}</td>
+                        <td className="py-2 text-right tabular-nums">{p.qty}</td>
+                        <td className="py-2 text-right tabular-nums">{formatCurrency(p.revenue)}</td>
+                        <td className="py-2 text-right tabular-nums">{p.matched ? formatCurrency(p.unitCost) : <span className="text-muted-foreground">N/A</span>}</td>
+                        <td className="py-2 text-right tabular-nums">
+                          {p.marginPct !== null ? (
+                            <span className={p.marginPct >= 40 ? 'text-emerald-400' : p.marginPct >= 20 ? 'text-amber-400' : 'text-red-400'}>
+                              {formatPercent(p.marginPct)}
+                            </span>
+                          ) : <span className="text-muted-foreground">N/A</span>}
+                        </td>
+                        <td className="py-2 text-right tabular-nums">{p.totalGM !== null ? formatCurrency(p.totalGM) : <span className="text-muted-foreground">N/A</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[10px] text-muted-foreground/60 mt-2">* BC品項配對，非所有產品可計算</p>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="border-border/40">
         <CardHeader className="pb-2 pt-4 px-4">

@@ -20,6 +20,7 @@ import FinancePage from "@/pages/finance";
 import RestockPage from "@/pages/restock";
 import VendorsPage from "@/pages/vendors";
 import ReturnsPage from "@/pages/returns";
+import DailyWeeklyPage from "@/pages/daily-weekly";
 import NotFound from "@/pages/not-found";
 
 function AppRouter() {
@@ -38,6 +39,7 @@ function AppRouter() {
         <Route path="/retail/restock" component={RestockPage} />
         <Route path="/retail/returns" component={ReturnsPage} />
         <Route path="/procurement/vendors" component={VendorsPage} />
+        <Route path="/performance/daily" component={DailyWeeklyPage} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

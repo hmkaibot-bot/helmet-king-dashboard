@@ -25,6 +25,7 @@ import {
   RotateCcw,
   Truck,
   Building2,
+  CalendarCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -78,6 +79,15 @@ const NAV_ITEMS: NavItem[] = [
       { path: '/procurement/vendors', label: '供應商', sublabel: 'Vendors', icon: Building2 },
     ],
   },
+  {
+    path: '/performance',
+    label: '每日報告',
+    sublabel: 'Daily Reports',
+    icon: CalendarCheck,
+    children: [
+      { path: '/performance/daily', label: '昨日/本週', sublabel: 'Daily/Weekly', icon: Calendar },
+    ],
+  },
   { path: '/marketing', label: '營銷', sublabel: 'Marketing', icon: Megaphone },
   { path: '/finance', label: '財務', sublabel: 'Finance', icon: Receipt },
 ];
@@ -101,7 +111,7 @@ function isParentActive(item: NavItem, location: string): boolean {
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true, '/procurement': true });
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true, '/procurement': true, '/performance': true });
   const [location] = useLocation();
   const { dateRange, setDateRange, customFrom, customTo, setCustomFrom, setCustomTo } = useDateRange();
   const { logout } = useAuth();
