@@ -3,3 +3,5 @@ dist/
 .env
 *.log
 *.jpg
+!dist/public
+!dist/public/assets
