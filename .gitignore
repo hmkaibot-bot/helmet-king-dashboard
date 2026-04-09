@@ -1,7 +1,7 @@
 node_modules/
-dist/
+# Only ignore the server bundle, not the compiled frontend
+dist/*.cjs
+dist/*.js
 .env
 *.log
 *.jpg
-!dist/public
-!dist/public/assets
