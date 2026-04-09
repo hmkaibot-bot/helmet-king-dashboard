@@ -17,6 +17,9 @@ import GarageOrdersPage from "@/pages/garage-orders";
 import GarageServicesPage from "@/pages/garage-services";
 import MarketingPage from "@/pages/marketing";
 import FinancePage from "@/pages/finance";
+import RestockPage from "@/pages/restock";
+import VendorsPage from "@/pages/vendors";
+import ReturnsPage from "@/pages/returns";
 import NotFound from "@/pages/not-found";
 
 function AppRouter() {
@@ -32,6 +35,9 @@ function AppRouter() {
         <Route path="/garage/services" component={GarageServicesPage} />
         <Route path="/marketing" component={MarketingPage} />
         <Route path="/finance" component={FinancePage} />
+        <Route path="/retail/restock" component={RestockPage} />
+        <Route path="/retail/returns" component={ReturnsPage} />
+        <Route path="/procurement/vendors" component={VendorsPage} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

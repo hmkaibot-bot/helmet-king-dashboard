@@ -21,6 +21,10 @@ import {
   ChevronDown,
   LogOut,
   Calendar,
+  PackageSearch,
+  RotateCcw,
+  Truck,
+  Building2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -51,6 +55,8 @@ const NAV_ITEMS: NavItem[] = [
       { path: '/retail/inventory', label: '庫存', sublabel: 'Inventory', icon: Warehouse },
       { path: '/retail/customers', label: '客戶', sublabel: 'Customers', icon: Users },
       { path: '/retail/brands', label: '品牌分析', sublabel: 'Brands', icon: Tag },
+      { path: '/retail/restock', label: '補貨管理', sublabel: 'Restock', icon: PackageSearch },
+      { path: '/retail/returns', label: '退貨', sublabel: 'Returns', icon: RotateCcw },
     ],
   },
   {
@@ -61,6 +67,15 @@ const NAV_ITEMS: NavItem[] = [
     children: [
       { path: '/garage/orders', label: '工單', sublabel: 'Work Orders', icon: ClipboardList },
       { path: '/garage/services', label: '服務分析', sublabel: 'Services', icon: Cog },
+    ],
+  },
+  {
+    path: '/procurement',
+    label: '採購',
+    sublabel: 'Procurement',
+    icon: Truck,
+    children: [
+      { path: '/procurement/vendors', label: '供應商', sublabel: 'Vendors', icon: Building2 },
     ],
   },
   { path: '/marketing', label: '營銷', sublabel: 'Marketing', icon: Megaphone },
@@ -86,7 +101,7 @@ function isParentActive(item: NavItem, location: string): boolean {
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true });
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true, '/procurement': true });
   const [location] = useLocation();
   const { dateRange, setDateRange, customFrom, customTo, setCustomFrom, setCustomTo } = useDateRange();
   const { logout } = useAuth();

@@ -73,6 +73,30 @@ export default function RetailBrandsPage() {
     return bands.map((b) => ({ name: b.label, units: filtered.filter((l: any) => { const p = parseFloat(l.price) || 0; return p >= b.min && p <= b.max; }).reduce((s: number, l: any) => s + (l.quantity || 0), 0) }));
   }, [filtered]);
 
+  const priceBandAnalysis = useMemo(() => {
+    const bands = [
+      { label: '<$200', min: 0, max: 199.99 },
+      { label: '$200-500', min: 200, max: 500 },
+      { label: '$500-1K', min: 500.01, max: 1000 },
+      { label: '$1K-2K', min: 1000.01, max: 2000 },
+      { label: '$2K-5K', min: 2000.01, max: 5000 },
+      { label: '$5K+', min: 5000.01, max: Infinity },
+    ];
+    const totalRev = filtered.reduce((s: number, l: any) => s + (parseFloat(l.price) || 0) * (l.quantity || 0), 0);
+    return bands.map((b) => {
+      const matching = filtered.filter((l: any) => {
+        const p = parseFloat(l.price) || 0;
+        return p >= b.min && p <= b.max;
+      });
+      const orders = matching.length;
+      const units = matching.reduce((s: number, l: any) => s + (l.quantity || 0), 0);
+      const rev = matching.reduce((s: number, l: any) => s + (parseFloat(l.price) || 0) * (l.quantity || 0), 0);
+      const avg = units > 0 ? rev / units : 0;
+      const pctRev = totalRev > 0 ? (rev / totalRev) * 100 : 0;
+      return { name: b.label, orders, units, revenue: rev, avgPrice: avg, pctRevenue: pctRev };
+    });
+  }, [filtered]);
+
   const brandComparison = useMemo(() => {
     const map: Record<string, { skus: Set<string>; units: number; revenue: number; stock: number; stockQty: number }> = {};
     orderLines.forEach((l: any) => { const b = l.vendor || 'Unknown'; if (!map[b]) map[b] = { skus: new Set(), units: 0, revenue: 0, stock: 0, stockQty: 0 }; map[b].units += l.quantity || 0; map[b].revenue += (parseFloat(l.price) || 0) * (l.quantity || 0); });
@@ -167,6 +191,55 @@ export default function RetailBrandsPage() {
                       <td className="py-2 text-right tabular-nums">{formatCurrency(b.avgPrice)}</td>
                       <td className="py-2 text-right tabular-nums">{formatCurrency(b.stockValue)}</td>
                       <td className="py-2 text-right tabular-nums">{formatPercent(b.sellThrough)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Price Band Analysis */}
+      <ChartCard title="價格帶分析" subtitle="Price Bands" loading={loading}>
+        <ResponsiveContainer width="100%" height={300}>
+          <BarChart data={priceBandAnalysis} layout="vertical">
+            <CartesianGrid {...GRID_STYLE} />
+            <XAxis type="number" tick={AXIS_STYLE} tickFormatter={(v) => `${(v / 1000).toFixed(0)}K`} />
+            <YAxis type="category" dataKey="name" tick={AXIS_STYLE} width={80} />
+            <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => formatCurrency(v)} />
+            <Bar dataKey="revenue" name="營收 Revenue" fill={CHART_COLORS.quaternary} radius={[0, 3, 3, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartCard>
+
+      <Card className="border-border/40">
+        <CardHeader className="pb-2 pt-4 px-4">
+          <CardTitle className="text-sm font-medium">價格帶明細 <span className="text-xs font-normal text-muted-foreground">Price Band Details</span></CardTitle>
+        </CardHeader>
+        <CardContent className="px-4 pb-4">
+          {loading ? <Skeleton className="h-[200px] w-full" /> : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs" data-testid="table-price-bands">
+                <thead>
+                  <tr className="border-b border-border/50 text-muted-foreground">
+                    <th className="py-2 text-left font-medium">價格帶 Price Band</th>
+                    <th className="py-2 text-right font-medium">訂單行 Orders</th>
+                    <th className="py-2 text-right font-medium">件數 Units</th>
+                    <th className="py-2 text-right font-medium">營收 Revenue</th>
+                    <th className="py-2 text-right font-medium">均價 Avg Price</th>
+                    <th className="py-2 text-right font-medium">營收佔比 %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {priceBandAnalysis.map((b) => (
+                    <tr key={b.name} className="border-b border-border/20 hover:bg-accent/30 transition-colors">
+                      <td className="py-2 font-medium">{b.name}</td>
+                      <td className="py-2 text-right tabular-nums">{formatNumber(b.orders)}</td>
+                      <td className="py-2 text-right tabular-nums">{formatNumber(b.units)}</td>
+                      <td className="py-2 text-right tabular-nums">{formatCurrency(b.revenue)}</td>
+                      <td className="py-2 text-right tabular-nums">{formatCurrency(b.avgPrice)}</td>
+                      <td className="py-2 text-right tabular-nums">{formatPercent(b.pctRevenue)}</td>
                     </tr>
                   ))}
                 </tbody>
