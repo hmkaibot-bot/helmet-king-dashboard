@@ -26,8 +26,8 @@ export default function RetailBrandsPage() {
       try {
         const [orders, lines, inv] = await Promise.all([
           queryWithDateRange('shopify_orders', 'id,created_at,financial_status,cancelled_at', 'created_at', bounds),
-          queryAll('shopify_order_lines', 'order_id,title,vendor,product_type,quantity,price,total_discount'),
-          queryAll('shopify_inventory', 'variant_id,product_title,vendor,price,inventory_quantity'),
+          queryAll('shopify_order_lines', 'order_id,title,vendor,product_type,quantity,price,total_discount', undefined, 50000),
+          queryAll('shopify_inventory', 'variant_id,product_title,vendor,price,inventory_quantity', undefined, 50000),
         ]);
         if (cancelled) return;
 

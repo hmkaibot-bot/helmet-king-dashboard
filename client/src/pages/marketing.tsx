@@ -84,10 +84,10 @@ export default function MarketingPage() {
         <KpiCard title="點擊" subtitle="Clicks" value={formatNumber(totalClicks)} icon={MousePointer} loading={loading} testId="kpi-clicks" />
         <KpiCard title="CPC" subtitle="Avg" value={`HK$${avgCPC.toFixed(2)}`} icon={BarChart3} loading={loading} testId="kpi-cpc" />
         <KpiCard title="CTR" subtitle="Rate" value={formatPercent(avgCTR)} icon={Percent} loading={loading} testId="kpi-ctr" />
-        <KpiCard title="ROAS" subtitle="Return" value={`${roas.toFixed(2)}x`} icon={TrendingUp} loading={loading} testId="kpi-roas" />
+        <KpiCard title="廣告佔比率" subtitle="Rev/Spend" value={roas > 100 ? `>​99x` : `${roas.toFixed(1)}x`} icon={TrendingUp} loading={loading} testId="kpi-roas" />
       </div>
 
-      <ChartCard title="支出 vs 營收" subtitle="Daily Spend vs Revenue" loading={loading}>
+      <ChartCard title="支出 vs 營收" subtitle="Daily Spend vs Revenue" note="* 非歸因 ROAS，為期間總收入與 Meta 廣告費之比 (Not attributed ROAS — ratio of total Shopify revenue to Meta spend)">
         <ResponsiveContainer width="100%" height={280}>
           <LineChart data={spendVsRevenue}>
             <CartesianGrid {...GRID_STYLE} /><XAxis dataKey="date" tick={AXIS_STYLE} />

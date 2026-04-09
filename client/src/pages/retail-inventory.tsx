@@ -44,19 +44,28 @@ export default function RetailInventoryPage() {
         const active = inventory.filter((i: any) => (i.inventory_quantity || 0) > 0);
         const oos = inventory.filter((i: any) => (i.inventory_quantity || 0) === 0);
         const low = inventory.filter((i: any) => (i.inventory_quantity || 0) > 0 && (i.inventory_quantity || 0) <= 2);
-        const value = inventory.reduce((s: number, i: any) => s + (parseFloat(i.price) || 0) * (i.inventory_quantity || 0), 0);
+        // Only sum items with positive price AND positive quantity to avoid negative inventory value
+        const value = inventory.reduce((s: number, i: any) => {
+          const price = parseFloat(i.price) || 0;
+          const qty = i.inventory_quantity || 0;
+          return s + (price > 0 && qty > 0 ? price * qty : 0);
+        }, 0);
 
         const validOrderIds = new Set(recentOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => o.id));
         const recentLines = orderLines.filter((l: any) => validOrderIds.has(l.order_id));
         const totalSold90d = recentLines.reduce((s: number, l: any) => s + (l.quantity || 0), 0);
         const dailySalesRate = totalSold90d / 90;
-        const totalInv = inventory.reduce((s: number, i: any) => s + (i.inventory_quantity || 0), 0);
+        // Only count positive inventory for days-of-stock calculation
+        const totalInv = inventory.reduce((s: number, i: any) => {
+          const qty = i.inventory_quantity || 0;
+          return s + (qty > 0 ? qty : 0);
+        }, 0);
 
         setActiveSku(active.length);
         setOutOfStock(oos.length);
         setLowStock(low.length);
         setTotalValue(value);
-        setAvgDaysOfStock(dailySalesRate > 0 ? totalInv / dailySalesRate : 0);
+        setAvgDaysOfStock(dailySalesRate > 0 ? Math.round(totalInv / dailySalesRate) : 0);
 
         setStockStatus([
           { name: '有貨 In Stock', value: active.length - low.length },
@@ -78,7 +87,9 @@ export default function RetailInventoryPage() {
         setSellThrough(Array.from(allBrands).map((brand) => {
           const sold = soldByBrand[brand] || 0;
           const stock = stockByBrand[brand] || 0;
-          return { name: brand, rate: sold + stock > 0 ? (sold / (sold + stock)) * 100 : 0 };
+          // If no sales, rate is 0%; cap at 99% to avoid misleading 100%
+          const raw = sold > 0 && (sold + stock) > 0 ? (sold / (sold + stock)) * 100 : 0;
+          return { name: brand, rate: Math.min(99, raw) };
         }).sort((a, b) => b.rate - a.rate).slice(0, 15));
 
         // Restock alerts
@@ -100,7 +111,7 @@ export default function RetailInventoryPage() {
         <KpiCard title="缺貨" subtitle="Out of Stock" value={formatNumber(outOfStock)} icon={XCircle} loading={loading} testId="kpi-oos" />
         <KpiCard title="低庫存 ≤2" subtitle="Low Stock" value={formatNumber(lowStock)} icon={AlertTriangle} loading={loading} testId="kpi-low" />
         <KpiCard title="庫存總值" subtitle="Inventory Value" value={formatCurrency(totalValue)} icon={DollarSign} loading={loading} testId="kpi-inv-value" />
-        <KpiCard title="平均庫存天數" subtitle="Avg Days of Stock" value={`${avgDaysOfStock.toFixed(0)} days`} icon={Clock} loading={loading} testId="kpi-days" />
+        <KpiCard title="平均庫存天數" subtitle="Avg Days of Stock" value={avgDaysOfStock > 0 ? `${avgDaysOfStock} days` : '∞'} icon={Clock} loading={loading} testId="kpi-days" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -131,7 +142,7 @@ export default function RetailInventoryPage() {
         </ChartCard>
       </div>
 
-      <ChartCard title="銷售穿透率 (品牌)" subtitle="Sell-Through Rate" loading={loading}>
+      <ChartCard title="銷售穿透率 (品牌)" subtitle="Sell-Through Rate" loading={loading} note="基於最近90天 Shopify 數據 (Based on last 90 days of Shopify data)">
         <ResponsiveContainer width="100%" height={320}>
           <BarChart data={sellThrough}>
             <CartesianGrid {...GRID_STYLE} />

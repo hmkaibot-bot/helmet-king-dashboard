@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange, queryAll, queryInBatches } from '@/lib/query-helpers';
+import { queryAll, queryInBatches } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber } from '@/lib/format';
@@ -21,7 +21,8 @@ export default function GarageServicesPage() {
     async function load() {
       setLoading(true);
       try {
-        const invs = await queryWithDateRange('bc_sales_invoices', 'id,number,invoice_date,salesperson_code,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]);
+        // BC GARAGE data should NOT use date picker filter
+        const invs = await queryAll('bc_sales_invoices', 'id,number,invoice_date,salesperson_code,total_amount_incl_tax', [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]);
         const invoiceIds = invs.map((i: any) => i.id);
         const garageLines = await queryInBatches('bc_invoice_lines', 'id,invoice_id,invoice_number,item_number,description,quantity,unit_price,amount_incl_tax', 'invoice_id', invoiceIds);
         if (!cancelled) { setInvoices(invs); setLines(garageLines); }

@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange } from '@/lib/query-helpers';
+import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
@@ -25,12 +25,11 @@ export default function VendorsPage() {
     async function load() {
       setLoading(true);
       try {
+        // BC purchase data should NOT be date-filtered — show all available data
         const [inv, ln] = await Promise.all([
-          queryWithDateRange(
+          queryAll(
             'bc_purchase_invoices',
-            'id,number,posting_date,vendor_number,vendor_name,total_amount_incl_tax,dimension1_code',
-            'posting_date',
-            bounds
+            'id,number,posting_date,vendor_number,vendor_name,total_amount_incl_tax,dimension1_code'
           ),
           (async () => {
             const { data, error } = await supabase
@@ -90,7 +89,7 @@ export default function VendorsPage() {
       const m = i.posting_date?.slice(0, 7);
       if (m) map[m] = (map[m] || 0) + (parseFloat(i.total_amount_incl_tax) || 0);
     });
-    return Object.entries(map).sort(([a], [b]) => a.localeCompare(b)).map(([month, total]) => ({ month, total }));
+    return Object.entries(map).sort(([a], [b]) => a.localeCompare(b)).slice(-12).map(([month, total]) => ({ month, total }));
   }, [invoices]);
 
   // Vendor concentration donut

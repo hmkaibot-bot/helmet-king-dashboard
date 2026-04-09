@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryAll, queryWithDateRange } from '@/lib/query-helpers';
+import { queryAll, queryWithDateRange, queryCount } from '@/lib/query-helpers';
+import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatNumber, formatPercent } from '@/lib/format';
@@ -31,15 +32,22 @@ export default function RetailCustomersPage() {
     async function load() {
       setLoading(true);
       try {
-        const [customers, ordersData] = await Promise.all([
-          queryAll('marsello_customers', 'id,email,first_name,last_name,loyalty_points,tier_name,subscribed,last_seen,created_at'),
-          queryAll('shopify_orders', 'customer_id,customer_email'),
+        // Total members = ALL TIME count (not date-filtered), use head:true for accurate count
+        const ninetyAgo = new Date(Date.now() - 90 * 86400000).toISOString();
+        const [totalCount, activeCount, customers, ordersData] = await Promise.all([
+          queryCount('marsello_customers'),
+          (async () => {
+            const { count, error } = await supabase.from('marsello_customers').select('id', { count: 'exact', head: true }).gte('last_seen', ninetyAgo);
+            if (error) { console.error('Active count error:', error); return 0; }
+            return count || 0;
+          })(),
+          queryAll('marsello_customers', 'id,email,first_name,last_name,loyalty_points,tier_name,subscribed,last_seen,created_at', undefined, 50000),
+          queryAll('shopify_orders', 'customer_id,customer_email', undefined, 50000),
         ]);
         if (cancelled) return;
 
-        const total = customers.length;
-        const ninetyAgo = new Date(Date.now() - 90 * 86400000).toISOString();
-        const active = customers.filter((c: any) => c.last_seen && c.last_seen >= ninetyAgo).length;
+        const total = totalCount;
+        const active = activeCount;
         const newM = filterByDate(customers, 'created_at', bounds).length;
         const totalPts = customers.reduce((s: number, c: any) => s + (c.loyalty_points || 0), 0);
         const subCount = customers.filter((c: any) => c.subscribed === true).length;
@@ -52,14 +60,15 @@ export default function RetailCustomersPage() {
         setTotalMembers(total);
         setActiveMembers(active);
         setNewMembers(newM);
-        setAvgPoints(total > 0 ? totalPts / total : 0);
-        setSubscribedRate(total > 0 ? (subCount / total) * 100 : 0);
+        // Use customers.length for average calc since we have actual data for those
+        setAvgPoints(customers.length > 0 ? totalPts / customers.length : 0);
+        setSubscribedRate(customers.length > 0 ? (subCount / customers.length) * 100 : 0);
         setRepeatRate(uniq > 0 ? (repeats / uniq) * 100 : 0);
 
         // Monthly new
         const monthMap: Record<string, number> = {};
         customers.forEach((c: any) => { if (!c.created_at) return; const m = c.created_at.slice(0, 7); monthMap[m] = (monthMap[m] || 0) + 1; });
-        setMonthlyNew(Object.entries(monthMap).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => ({ month, count })));
+        setMonthlyNew(Object.entries(monthMap).sort(([a], [b]) => a.localeCompare(b)).slice(-12).map(([month, count]) => ({ month, count })));
 
         // Tier
         const tierMap: Record<string, number> = {};

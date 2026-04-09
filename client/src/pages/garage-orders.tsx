@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange } from '@/lib/query-helpers';
+import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber } from '@/lib/format';
@@ -31,7 +31,8 @@ export default function GarageOrdersPage() {
     async function load() {
       setLoading(true);
       try {
-        const invoices = await queryWithDateRange('bc_sales_invoices', 'id,number,invoice_date,customer_number,customer_name,status,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]);
+        // BC GARAGE data should NOT use date picker filter — show all available data
+        const invoices = await queryAll('bc_sales_invoices', 'id,number,invoice_date,customer_number,customer_name,status,total_amount_incl_tax', [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]);
         if (cancelled) return;
 
         const rev = invoices.reduce((s: number, i: any) => s + (parseFloat(i.total_amount_incl_tax) || 0), 0);
@@ -47,7 +48,7 @@ export default function GarageOrdersPage() {
         // Monthly
         const monthMap: Record<string, number> = {};
         invoices.forEach((i: any) => { const m = i.invoice_date?.slice(0, 7); if (m) monthMap[m] = (monthMap[m] || 0) + (parseFloat(i.total_amount_incl_tax) || 0); });
-        setMonthlyRevenue(Object.entries(monthMap).sort(([a], [b]) => a.localeCompare(b)).map(([month, value]) => ({ month, revenue: value })));
+        setMonthlyRevenue(Object.entries(monthMap).sort(([a], [b]) => a.localeCompare(b)).slice(-12).map(([month, value]) => ({ month, revenue: value })));
 
         // Daily
         const dayMap: Record<string, number> = {};
@@ -66,7 +67,7 @@ export default function GarageOrdersPage() {
         // Monthly customer count
         const monthCust: Record<string, Set<string>> = {};
         invoices.forEach((i: any) => { const m = i.invoice_date?.slice(0, 7); const c = i.customer_number || i.customer_name; if (!m || !c) return; if (!monthCust[m]) monthCust[m] = new Set(); monthCust[m].add(c); });
-        setMonthlyCustomers(Object.entries(monthCust).sort(([a], [b]) => a.localeCompare(b)).map(([month, s]) => ({ month, customers: s.size })));
+        setMonthlyCustomers(Object.entries(monthCust).sort(([a], [b]) => a.localeCompare(b)).slice(-12).map(([month, s]) => ({ month, customers: s.size })));
 
         setRecentInvoices(invoices.sort((a: any, b: any) => (b.invoice_date || '').localeCompare(a.invoice_date || '')).slice(0, 20));
       } catch (e) { console.error('GarageOrders error:', e); } finally { if (!cancelled) setLoading(false); }

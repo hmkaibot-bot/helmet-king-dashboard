@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange } from '@/lib/query-helpers';
+import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatPercent } from '@/lib/format';
@@ -20,10 +20,11 @@ export default function FinancePage() {
     async function load() {
       setLoading(true);
       try {
+        // BC data should NOT use picker dates — fetch all available data
         const [carshop, garage, purchases] = await Promise.all([
-          queryWithDateRange('bc_sales_invoices', 'id,invoice_date,customer_name,customer_number,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
-          queryWithDateRange('bc_sales_invoices', 'id,invoice_date,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]),
-          queryWithDateRange('bc_purchase_invoices', 'id,posting_date,vendor_number,vendor_name,total_amount_incl_tax', 'posting_date', bounds),
+          queryAll('bc_sales_invoices', 'id,invoice_date,customer_name,customer_number,total_amount_incl_tax', [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
+          queryAll('bc_sales_invoices', 'id,invoice_date,total_amount_incl_tax', [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]),
+          queryAll('bc_purchase_invoices', 'id,posting_date,vendor_number,vendor_name,total_amount_incl_tax'),
         ]);
         if (!cancelled) { setCarshopInvoices(carshop); setGarageInvoices(garage); setPurchaseInvoices(purchases); }
       } catch (e) { console.error('Finance error:', e); } finally { if (!cancelled) setLoading(false); }
@@ -35,7 +36,8 @@ export default function FinancePage() {
   const carshopRev = carshopInvoices.reduce((s, i) => s + (parseFloat(i.total_amount_incl_tax) || 0), 0);
   const garageRev = garageInvoices.reduce((s, i) => s + (parseFloat(i.total_amount_incl_tax) || 0), 0);
   const totalPurchase = purchaseInvoices.reduce((s, i) => s + (parseFloat(i.total_amount_incl_tax) || 0), 0);
-  const grossMargin = carshopRev > 0 ? ((carshopRev - totalPurchase) / carshopRev) * 100 : 0;
+  const totalBcRevenue = carshopRev + garageRev;
+  const grossMargin = totalBcRevenue > 0 ? ((totalBcRevenue - totalPurchase) / totalBcRevenue) * 100 : 0;
   const avgCarshop = carshopInvoices.length > 0 ? carshopRev / carshopInvoices.length : 0;
   const avgGarage = garageInvoices.length > 0 ? garageRev / garageInvoices.length : 0;
 
@@ -43,7 +45,7 @@ export default function FinancePage() {
     const map: Record<string, { carshop: number; garage: number }> = {};
     carshopInvoices.forEach((i) => { const m = i.invoice_date?.slice(0, 7); if (!m) return; if (!map[m]) map[m] = { carshop: 0, garage: 0 }; map[m].carshop += parseFloat(i.total_amount_incl_tax) || 0; });
     garageInvoices.forEach((i) => { const m = i.invoice_date?.slice(0, 7); if (!m) return; if (!map[m]) map[m] = { carshop: 0, garage: 0 }; map[m].garage += parseFloat(i.total_amount_incl_tax) || 0; });
-    return Object.entries(map).sort(([a], [b]) => a.localeCompare(b)).map(([month, v]) => ({ month, ...v }));
+    return Object.entries(map).sort(([a], [b]) => a.localeCompare(b)).slice(-12).map(([month, v]) => ({ month, ...v }));
   }, [carshopInvoices, garageInvoices]);
 
   const costVsRevenue = useMemo(() => {
@@ -52,7 +54,7 @@ export default function FinancePage() {
     const purchMap: Record<string, number> = {};
     purchaseInvoices.forEach((i) => { const m = i.posting_date?.slice(0, 7); if (m) purchMap[m] = (purchMap[m] || 0) + (parseFloat(i.total_amount_incl_tax) || 0); });
     const allMonths = new Set([...Object.keys(salesMap), ...Object.keys(purchMap)]);
-    return Array.from(allMonths).sort().map((m) => ({ month: m, sales: salesMap[m] || 0, purchases: purchMap[m] || 0 }));
+    return Array.from(allMonths).sort().slice(-12).map((m) => ({ month: m, sales: salesMap[m] || 0, purchases: purchMap[m] || 0 }));
   }, [carshopInvoices, garageInvoices, purchaseInvoices]);
 
   const topVendors = useMemo(() => {

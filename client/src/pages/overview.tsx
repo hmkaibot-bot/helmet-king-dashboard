@@ -30,10 +30,12 @@ export default function OverviewPage() {
     async function load() {
       setLoading(true);
       try {
+        // BC data is date-independent (invoices go back to 2023); Shopify/Meta use picker
+        const bcBounds = { from: '2023-01-01', to: '2099-12-31' };
         const [orders, carshop, garage, marsello, adData] = await Promise.all([
           queryWithDateRange('shopify_orders', 'created_at,total_price,financial_status,cancelled_at', 'created_at', bounds),
-          queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
-          queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]),
+          queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bcBounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
+          queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bcBounds, [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]),
           queryAll('marsello_customers', 'id'),
           queryWithDateRange('meta_ad_insights', 'date,spend', 'date', bounds),
         ]);

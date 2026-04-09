@@ -81,10 +81,14 @@ export default function RetailSalesPage() {
         });
         setDailyRevenue(Object.entries(dayMap).sort(([a], [b]) => a.localeCompare(b)).map(([date, val]) => ({ date: date.slice(5), revenue: val })));
 
-        // Hours
+        // Hours - convert to HKT (UTC+8)
         const hourMap: Record<number, number> = {};
         for (let i = 0; i < 24; i++) hourMap[i] = 0;
-        valid.forEach((o: any) => { const h = new Date(o.created_at).getHours(); hourMap[h]++; });
+        valid.forEach((o: any) => {
+          const utcH = new Date(o.created_at).getUTCHours();
+          const hkt = (utcH + 8) % 24;
+          hourMap[hkt]++;
+        });
         setHourlyOrders(Object.entries(hourMap).map(([h, c]) => ({ hour: `${h}:00`, orders: c })));
 
         // Source - clean up URLs to 'referral'
@@ -97,9 +101,16 @@ export default function RetailSalesPage() {
         });
         setSourceData(Object.entries(srcMap).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })));
 
-        // Top customers
+        // Top customers - exclude Unknown/empty
         const custMap: Record<string, { name: string; total: number }> = {};
-        valid.forEach((o: any) => { const key = o.customer_email || o.customer_name || 'Unknown'; if (!custMap[key]) custMap[key] = { name: o.customer_name || key, total: 0 }; custMap[key].total += parseFloat(o.total_price) || 0; });
+        valid.forEach((o: any) => {
+          const name = o.customer_name;
+          // Skip null, empty, or 'Unknown' customers
+          if (!name || name === '' || name === 'Unknown') return;
+          const key = o.customer_email || name;
+          if (!custMap[key]) custMap[key] = { name, total: 0 };
+          custMap[key].total += parseFloat(o.total_price) || 0;
+        });
         setTopCustomers(Object.values(custMap).sort((a, b) => b.total - a.total).slice(0, 10));
 
         // Refund trend by week
