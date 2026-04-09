@@ -1,11 +1,11 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { queryAll, queryWithDateRange } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
-import { Package, AlertTriangle, XCircle, DollarSign, Clock, RefreshCw, Leaf, Skull, Tag, ChevronRight, ChevronDown, History } from 'lucide-react';
+import { Package, AlertTriangle, XCircle, DollarSign, Clock, RefreshCw, Leaf, Skull, Tag, ChevronRight, ChevronDown, History, Search, X, Filter } from 'lucide-react';
 import {
   PieChart, Pie, Cell, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -28,6 +28,134 @@ interface ItemProcurement {
   firstPurchaseDate: string;
   restockCount: number;
   events: ProcurementEvent[];
+}
+
+interface FilterState {
+  vendors: string[];
+  productTypes: string[];
+  stockStatus: 'all' | 'in_stock' | 'out_of_stock' | 'low_stock';
+  minPrice: string;
+  maxPrice: string;
+  search: string;
+}
+
+const DEFAULT_FILTERS: FilterState = {
+  vendors: [],
+  productTypes: [],
+  stockStatus: 'all',
+  minPrice: '',
+  maxPrice: '',
+  search: '',
+};
+
+// ── Paginated Supabase fetch ──────────────────────────────
+
+async function fetchAllInventory(): Promise<any[]> {
+  let allInventory: any[] = [];
+  let from = 0;
+  const pageSize = 5000;
+  while (true) {
+    const { data } = await supabase
+      .from('shopify_inventory')
+      .select('variant_id, product_id, product_title, sku, price, inventory_quantity, vendor, product_type')
+      .gt('price', 0)
+      .range(from, from + pageSize - 1);
+    if (!data || data.length === 0) break;
+    allInventory = [...allInventory, ...data];
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return allInventory;
+}
+
+// ── MultiSelect Component ─────────────────────────────────
+
+function MultiSelect({ label, options, selected, onChange }: {
+  label: string;
+  options: string[];
+  selected: string[];
+  onChange: (v: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const filtered = searchTerm
+    ? options.filter(o => (o || '').toLowerCase().includes(searchTerm.toLowerCase()))
+    : options;
+
+  const displayText = selected.length === 0
+    ? label
+    : selected.length === 1
+      ? selected[0] || 'Unknown'
+      : `${selected[0] || 'Unknown'} (+${selected.length - 1})`;
+
+  const hasSelection = selected.length > 0;
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(!open)}
+        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs border transition-colors whitespace-nowrap ${
+          hasSelection
+            ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+            : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600'
+        }`}
+      >
+        <Filter className="h-3 w-3 shrink-0 opacity-60" />
+        <span className="max-w-[140px] truncate">{displayText}</span>
+        <ChevronDown className={`h-3 w-3 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute z-50 mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-60" style={{ maxHeight: 320, display: 'flex', flexDirection: 'column' }}>
+          <div className="p-2 border-b border-gray-700">
+            <input
+              type="text"
+              placeholder="Search..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-600 rounded text-gray-300 placeholder-gray-500 focus:outline-none focus:border-gray-500"
+              autoFocus
+            />
+          </div>
+          <div className="overflow-y-auto flex-1" style={{ maxHeight: 256 }}>
+            {filtered.length === 0 && (
+              <div className="px-3 py-4 text-xs text-gray-500 text-center">No matches</div>
+            )}
+            {filtered.map(opt => (
+              <label key={opt} className="flex items-center px-3 py-1.5 hover:bg-gray-700/60 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selected.includes(opt)}
+                  onChange={() => {
+                    onChange(selected.includes(opt) ? selected.filter(s => s !== opt) : [...selected, opt]);
+                  }}
+                  className="mr-2 accent-amber-500 h-3 w-3"
+                />
+                <span className="text-xs text-gray-300 truncate">{opt || 'Unknown'}</span>
+              </label>
+            ))}
+          </div>
+          {selected.length > 0 && (
+            <button
+              className="w-full px-3 py-1.5 text-[10px] text-gray-400 hover:text-gray-200 border-t border-gray-700 text-center"
+              onClick={() => { onChange([]); }}
+            >
+              Clear selection
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Procurement History Sub-Row ────────────────────────────
@@ -83,6 +211,9 @@ export default function RetailInventoryPage() {
   const [salesByProduct, setSalesByProduct] = useState<Record<string, { qty: number; lastSaleDate: string }>>({});
   const [procurementByItem, setProcurementByItem] = useState<Record<string, ItemProcurement>>({});
 
+  // Filter state
+  const [filters, setFilters] = useState<FilterState>({ ...DEFAULT_FILTERS });
+
   // Track which SKU row is expanded (only one at a time)
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
 
@@ -96,7 +227,7 @@ export default function RetailInventoryPage() {
       setLoading(true);
       try {
         const [inv, bcInv, purchaseLines, purchaseInvoices, orderLines, orders] = await Promise.all([
-          queryAll('shopify_inventory', 'variant_id,product_title,sku,price,inventory_quantity,vendor,product_type', undefined, 50000),
+          fetchAllInventory(),
           queryAll('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code', undefined, 50000),
           queryAll('bc_purchase_invoice_lines', 'invoice_id,invoice_number,item_number,quantity,unit_cost', undefined, 50000),
           queryAll('bc_purchase_invoices', 'id,posting_date,number', undefined, 50000),
@@ -138,7 +269,6 @@ export default function RetailInventoryPage() {
         setLastPurchaseDateByItem(lpMap);
 
         // ── Build full procurement history per item ──
-        // Group purchase lines by item_number
         const historyMap: Record<string, ProcurementEvent[]> = {};
         purchaseLines.forEach((l: any) => {
           if (!l.item_number) return;
@@ -154,10 +284,8 @@ export default function RetailInventoryPage() {
 
         const procMap: Record<string, ItemProcurement> = {};
         Object.entries(historyMap).forEach(([itemNumber, events]) => {
-          // Sort newest first
           events.sort((a, b) => b.date.localeCompare(a.date));
           const firstDate = events.length > 0 ? events[events.length - 1].date : '';
-          // restockCount = number of distinct invoices
           const distinctInvoices = new Set(events.map((e) => e.invoiceNumber || e.date));
           procMap[itemNumber] = {
             firstPurchaseDate: firstDate,
@@ -192,6 +320,48 @@ export default function RetailInventoryPage() {
     return () => { cancelled = true; };
   }, []);
 
+  // ── Filter logic ────────────────────────────────────────
+
+  const applyFilters = useCallback((items: any[]) => {
+    const { vendors, productTypes, stockStatus, minPrice, maxPrice, search } = filters;
+    const minP = minPrice ? parseFloat(minPrice) : null;
+    const maxP = maxPrice ? parseFloat(maxPrice) : null;
+    const searchLower = search.trim().toLowerCase();
+    return items.filter(item => {
+      if (vendors.length > 0 && !vendors.includes(item.vendor)) return false;
+      if (productTypes.length > 0 && !productTypes.includes(item.product_type)) return false;
+      if (stockStatus === 'in_stock' && (item.inventory_quantity || 0) <= 0) return false;
+      if (stockStatus === 'out_of_stock' && (item.inventory_quantity || 0) > 0) return false;
+      if (stockStatus === 'low_stock' && ((item.inventory_quantity || 0) === 0 || (item.inventory_quantity || 0) > 2)) return false;
+      if (minP !== null && (parseFloat(item.price) || 0) < minP) return false;
+      if (maxP !== null && (parseFloat(item.price) || 0) > maxP) return false;
+      if (searchLower) {
+        const title = (item.product_title || '').toLowerCase();
+        const sku = (item.sku || '').toLowerCase();
+        if (!title.includes(searchLower) && !sku.includes(searchLower)) return false;
+      }
+      return true;
+    });
+  }, [filters]);
+
+  // Filtered inventory (applies to all tabs)
+  const filteredInventory = useMemo(() => applyFilters(inventory), [inventory, applyFilters]);
+
+  // Distinct filter options from full dataset
+  const vendorOptions = useMemo(() => {
+    const set = new Set<string>();
+    inventory.forEach((i: any) => { if (i.vendor) set.add(i.vendor); });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [inventory]);
+
+  const productTypeOptions = useMemo(() => {
+    const set = new Set<string>();
+    inventory.forEach((i: any) => { if (i.product_type) set.add(i.product_type); });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [inventory]);
+
+  const hasActiveFilters = filters.vendors.length > 0 || filters.productTypes.length > 0 || filters.stockStatus !== 'all' || filters.minPrice !== '' || filters.maxPrice !== '' || filters.search !== '';
+
   // BC cost lookup
   const bcCostMap = useMemo(() => {
     const map: Record<string, { unitPrice: number; unitCost: number }> = {};
@@ -201,11 +371,11 @@ export default function RetailInventoryPage() {
     return map;
   }, [bcInventory]);
 
-  // Basic KPIs
-  const active = inventory.filter((i: any) => (i.inventory_quantity || 0) > 0);
-  const oos = inventory.filter((i: any) => (i.inventory_quantity || 0) === 0);
-  const low = inventory.filter((i: any) => (i.inventory_quantity || 0) > 0 && (i.inventory_quantity || 0) <= 2);
-  const totalValue = inventory.reduce((s: number, i: any) => {
+  // Basic KPIs — based on filtered inventory
+  const active = filteredInventory.filter((i: any) => (i.inventory_quantity || 0) > 0);
+  const oos = filteredInventory.filter((i: any) => (i.inventory_quantity || 0) === 0);
+  const low = filteredInventory.filter((i: any) => (i.inventory_quantity || 0) > 0 && (i.inventory_quantity || 0) <= 2);
+  const totalValue = filteredInventory.reduce((s: number, i: any) => {
     const p = parseFloat(i.price) || 0;
     const q = i.inventory_quantity || 0;
     return s + (p > 0 && q > 0 ? p * q : 0);
@@ -219,8 +389,8 @@ export default function RetailInventoryPage() {
     return 'one-time';
   };
 
-  const evergreenItems = useMemo(() => inventory.filter((i: any) => classifyItem(i.sku) === 'evergreen'), [inventory, purchaseCountByItem]);
-  const seasonalItems = useMemo(() => inventory.filter((i: any) => classifyItem(i.sku) === 'seasonal'), [inventory, purchaseCountByItem]);
+  const evergreenItems = useMemo(() => filteredInventory.filter((i: any) => classifyItem(i.sku) === 'evergreen'), [filteredInventory, purchaseCountByItem]);
+  const seasonalItems = useMemo(() => filteredInventory.filter((i: any) => classifyItem(i.sku) === 'seasonal'), [filteredInventory, purchaseCountByItem]);
 
   const stockStatus = [
     { name: '有貨 In Stock', value: active.length - low.length },
@@ -231,13 +401,13 @@ export default function RetailInventoryPage() {
   const stockTypeData = [
     { name: '常規 Evergreen', value: evergreenItems.length },
     { name: '季節性 Seasonal', value: seasonalItems.length },
-    { name: '一次性 One-time', value: inventory.length - evergreenItems.length - seasonalItems.length },
+    { name: '一次性 One-time', value: filteredInventory.length - evergreenItems.length - seasonalItems.length },
   ];
 
   // Brand grouping
   const brandData = useMemo(() => {
     const map: Record<string, { skus: number; stock: number; value: number; oos: number }> = {};
-    inventory.forEach((i: any) => {
+    filteredInventory.forEach((i: any) => {
       const brand = i.vendor || 'Unknown';
       if (!map[brand]) map[brand] = { skus: 0, stock: 0, value: 0, oos: 0 };
       map[brand].skus++;
@@ -247,11 +417,11 @@ export default function RetailInventoryPage() {
       if (qty === 0) map[brand].oos++;
     });
     return Object.entries(map).map(([brand, d]) => ({ brand, ...d })).sort((a, b) => b.value - a.value);
-  }, [inventory]);
+  }, [filteredInventory]);
 
   // By Value
   const byValueData = useMemo(() => {
-    return inventory
+    return filteredInventory
       .filter((i: any) => (i.inventory_quantity || 0) > 0)
       .map((i: any) => {
         const qty = i.inventory_quantity || 0;
@@ -265,12 +435,12 @@ export default function RetailInventoryPage() {
       })
       .sort((a, b) => b.totalCost - a.totalCost)
       .slice(0, 50);
-  }, [inventory, bcCostMap]);
+  }, [filteredInventory, bcCostMap]);
 
   // Dead Stock
   const now = new Date();
   const deadStockData = useMemo(() => {
-    return inventory
+    return filteredInventory
       .filter((i: any) => (i.inventory_quantity || 0) > 0)
       .map((i: any) => {
         const sku = i.sku || '';
@@ -298,7 +468,7 @@ export default function RetailInventoryPage() {
       })
       .filter((d) => d.status !== null)
       .sort((a, b) => b.totalCostAtRisk - a.totalCostAtRisk);
-  }, [inventory, salesByProduct, lastPurchaseDateByItem, bcCostMap]);
+  }, [filteredInventory, salesByProduct, lastPurchaseDateByItem, bcCostMap]);
 
   const deadCount = deadStockData.filter((d) => d.status === 'DEAD').length;
   const warningCount = deadStockData.filter((d) => d.status === 'WARNING').length;
@@ -309,7 +479,7 @@ export default function RetailInventoryPage() {
   const [expandedBrand, setExpandedBrand] = useState<string | null>(null);
   const brandProducts = useMemo(() => {
     if (!expandedBrand) return [];
-    return inventory
+    return filteredInventory
       .filter((i: any) => (i.vendor || 'Unknown') === expandedBrand)
       .map((i: any) => ({
         product: i.product_title,
@@ -319,7 +489,7 @@ export default function RetailInventoryPage() {
         type: classifyItem(i.sku),
       }))
       .sort((a, b) => b.qty - a.qty);
-  }, [expandedBrand, inventory, purchaseCountByItem]);
+  }, [expandedBrand, filteredInventory, purchaseCountByItem]);
 
   // Helper: get procurement badge text for a SKU
   const procBadge = (sku: string) => {
@@ -358,6 +528,101 @@ export default function RetailInventoryPage() {
           <TabsTrigger value="value" className="text-xs">按價值 By Value</TabsTrigger>
           <TabsTrigger value="dead" className="text-xs">死貨 Dead Stock</TabsTrigger>
         </TabsList>
+
+        {/* ═══ FILTER BAR ═══ */}
+        <div className="sticky top-0 z-20 mt-2 rounded-lg bg-gray-900 border border-gray-800 px-3 py-2" data-testid="filter-bar">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Search */}
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-gray-500" />
+              <input
+                type="text"
+                placeholder="搜尋產品/SKU..."
+                value={filters.search}
+                onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
+                className={`pl-7 pr-2 py-1.5 rounded text-xs border w-44 focus:outline-none focus:border-gray-500 ${
+                  filters.search ? 'bg-amber-500/10 border-amber-500/40 text-amber-300 placeholder-amber-400/40' : 'bg-gray-800 border-gray-700 text-gray-300 placeholder-gray-500'
+                }`}
+                data-testid="filter-search"
+              />
+            </div>
+
+            {/* Brand/Vendor */}
+            <MultiSelect
+              label="All Brands"
+              options={vendorOptions}
+              selected={filters.vendors}
+              onChange={v => setFilters(f => ({ ...f, vendors: v }))}
+            />
+
+            {/* Product Type */}
+            <MultiSelect
+              label="All Categories"
+              options={productTypeOptions}
+              selected={filters.productTypes}
+              onChange={v => setFilters(f => ({ ...f, productTypes: v }))}
+            />
+
+            {/* Stock Status */}
+            <select
+              value={filters.stockStatus}
+              onChange={e => setFilters(f => ({ ...f, stockStatus: e.target.value as FilterState['stockStatus'] }))}
+              className={`px-2 py-1.5 rounded text-xs border focus:outline-none appearance-none cursor-pointer ${
+                filters.stockStatus !== 'all'
+                  ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                  : 'bg-gray-800 border-gray-700 text-gray-300'
+              }`}
+              data-testid="filter-stock-status"
+            >
+              <option value="all">Stock: All</option>
+              <option value="in_stock">In Stock (qty&gt;0)</option>
+              <option value="out_of_stock">Out of Stock (0)</option>
+              <option value="low_stock">Low Stock (1-2)</option>
+            </select>
+
+            {/* Price Range */}
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                placeholder="Min HKD"
+                value={filters.minPrice}
+                onChange={e => setFilters(f => ({ ...f, minPrice: e.target.value }))}
+                className={`w-20 px-2 py-1.5 rounded text-xs border focus:outline-none ${
+                  filters.minPrice ? 'bg-amber-500/10 border-amber-500/40 text-amber-300' : 'bg-gray-800 border-gray-700 text-gray-300 placeholder-gray-500'
+                }`}
+                data-testid="filter-min-price"
+              />
+              <span className="text-gray-600 text-[10px]">–</span>
+              <input
+                type="number"
+                placeholder="Max HKD"
+                value={filters.maxPrice}
+                onChange={e => setFilters(f => ({ ...f, maxPrice: e.target.value }))}
+                className={`w-20 px-2 py-1.5 rounded text-xs border focus:outline-none ${
+                  filters.maxPrice ? 'bg-amber-500/10 border-amber-500/40 text-amber-300' : 'bg-gray-800 border-gray-700 text-gray-300 placeholder-gray-500'
+                }`}
+                data-testid="filter-max-price"
+              />
+            </div>
+
+            {/* Spacer + Results count + Clear */}
+            <div className="flex items-center gap-2 ml-auto">
+              <span className="text-[11px] text-gray-400 tabular-nums whitespace-nowrap" data-testid="filter-count">
+                Showing <span className={hasActiveFilters ? 'text-amber-400 font-medium' : ''}>{formatNumber(filteredInventory.length)}</span> / {formatNumber(inventory.length)} items
+              </span>
+              {hasActiveFilters && (
+                <button
+                  onClick={() => setFilters({ ...DEFAULT_FILTERS })}
+                  className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-gray-800 border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition-colors"
+                  data-testid="filter-clear"
+                >
+                  <X className="h-3 w-3" />
+                  Clear All
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
 
         {/* ═══ OVERVIEW TAB ═══ */}
         <TabsContent value="overview" className="space-y-4 mt-4">
