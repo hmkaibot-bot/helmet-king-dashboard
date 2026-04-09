@@ -25,6 +25,7 @@ import VelocityPage from "@/pages/velocity";
 import NewProductsPage from "@/pages/new-products";
 import WeeklyReviewPage from "@/pages/weekly-review";
 import MarselloApprovalPage from "@/pages/marsello-approval";
+import ProductAnalyticsPage from "@/pages/product-analytics";
 import NotFound from "@/pages/not-found";
 
 function AppRouter() {
@@ -48,6 +49,7 @@ function AppRouter() {
         <Route path="/performance/new-products" component={NewProductsPage} />
         <Route path="/performance/weekly-review" component={WeeklyReviewPage} />
         <Route path="/crm/marsello-approval" component={MarselloApprovalPage} />
+        <Route path="/performance/product-analytics" component={ProductAnalyticsPage} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

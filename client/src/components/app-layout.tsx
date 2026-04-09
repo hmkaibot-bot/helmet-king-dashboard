@@ -93,6 +93,7 @@ const NAV_ITEMS: NavItem[] = [
       { path: '/performance/weekly-review',  label: '週報',        sublabel: 'Weekly Review',     icon: ClipboardCheck },
       { path: '/performance/velocity',       label: '銷售速率',    sublabel: 'Sales Velocity',    icon: TrendingUp },
       { path: '/performance/new-products',   label: '新品表現',    sublabel: 'New Products',      icon: Sparkles },
+      { path: '/performance/product-analytics', label: '商品分析', sublabel: 'Product Analytics',  icon: BarChart3 },
     ],
   },
   {
