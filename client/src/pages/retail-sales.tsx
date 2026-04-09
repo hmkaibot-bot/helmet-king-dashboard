@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
 import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
-import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
-import { DollarSign, ShoppingCart, TrendingUp, Package, Percent, Layers, Calculator } from 'lucide-react';
+import { DollarSign, ShoppingCart, TrendingUp, Package, Percent, Target, ChevronRight } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
   PieChart, Pie, Cell,
@@ -14,7 +13,61 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
+import { KPI_TARGETS, kpiStatus } from '@/lib/kpi-targets';
+import { getDateRanges, pctChange, formatPctChange } from '@/lib/time-intelligence';
 
+// ─── Target KPI Card ───────────────────────────────────────────────
+function TargetKpiCard({
+  label, sublabel, value, target, prevValue, unit = 'HKD', loading, icon: Icon,
+}: {
+  label: string; sublabel: string; value: number; target: number; prevValue?: number | null;
+  unit?: 'HKD' | '%' | '' | 'x'; loading?: boolean; icon: any;
+}) {
+  const status = kpiStatus(value, target);
+  const mom = prevValue != null && prevValue !== 0 ? pctChange(value, prevValue) : null;
+
+  const fmtValue = unit === 'HKD' ? formatCurrency(value)
+    : unit === '%' ? formatPercent(value)
+    : unit === 'x' ? `${value.toFixed(1)}x`
+    : formatNumber(value);
+
+  return (
+    <Card className="border-border/40" data-testid={`target-kpi-${sublabel.toLowerCase().replace(/\s/g,'-')}`}>
+      <CardContent className="p-4">
+        <div className="flex justify-between items-start mb-1">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 rounded-lg bg-primary/10 text-primary">
+              <Icon className="h-3.5 w-3.5" />
+            </div>
+            <span className="text-xs text-muted-foreground">{label} <span className="opacity-70">{sublabel}</span></span>
+          </div>
+          <span className="text-base leading-none" title={status.achieved ? 'On target' : `${status.pct}% of target`}>{status.icon}</span>
+        </div>
+        {loading ? <Skeleton className="h-7 w-24 mt-1" /> : (
+          <>
+            <p className="text-xl font-semibold tabular-nums tracking-tight mt-1">{fmtValue}</p>
+            <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-1">
+              {mom !== null && (
+                <span className={mom >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                  {formatPctChange(mom)} MoM
+                </span>
+              )}
+              <span>目標 {status.pct}%</span>
+            </div>
+            <div className="mt-2 bg-muted/40 rounded-full h-1.5 overflow-hidden">
+              <div
+                className={`h-1.5 rounded-full transition-all ${status.bgColor}`}
+                style={{ width: `${Math.min(100, status.pct)}%` }}
+              />
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Page ──────────────────────────────────────────────────────────
 export default function RetailSalesPage() {
   const { bounds, prevBounds } = useDateRange();
   const [loading, setLoading] = useState(true);
@@ -35,18 +88,38 @@ export default function RetailSalesPage() {
   const [categoryData, setCategoryData] = useState<any[]>([]);
   const [marginData, setMarginData] = useState<any[]>([]);
 
+  // MTD data for targets
+  const [mtdRevenue, setMtdRevenue] = useState(0);
+  const [mtdOrders, setMtdOrders] = useState(0);
+  const [prevMtdRevenue, setPrevMtdRevenue] = useState(0);
+  const [prevMtdOrders, setPrevMtdOrders] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
       setLoading(true);
       try {
-        const [ordersData, prevOrdersData, orderLines] = await Promise.all([
+        const ranges = getDateRanges();
+
+        const [ordersData, prevOrdersData, orderLines, mtdOrdersData, prevMtdOrdersData] = await Promise.all([
           queryWithDateRange('shopify_orders', 'id,order_number,created_at,total_price,subtotal_price,total_discounts,financial_status,cancelled_at,customer_name,customer_email,source_name', 'created_at', bounds),
           queryWithDateRange('shopify_orders', 'id,total_price,subtotal_price,total_discounts,financial_status,cancelled_at', 'created_at', prevBounds),
           queryAll('shopify_order_lines', 'order_id,quantity'),
+          queryWithDateRange('shopify_orders', 'id,total_price,financial_status,cancelled_at', 'created_at', { from: ranges.mtd.start, to: ranges.mtd.end }),
+          queryWithDateRange('shopify_orders', 'id,total_price,financial_status,cancelled_at', 'created_at', { from: ranges.prevMtd.start, to: ranges.prevMtd.end }),
         ]);
 
         if (cancelled) return;
+
+        // MTD calculations
+        const mtdValid = mtdOrdersData.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at);
+        const prevMtdValid = prevMtdOrdersData.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at);
+        const mtdRev = mtdValid.reduce((s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0);
+        const pMtdRev = prevMtdValid.reduce((s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0);
+        setMtdRevenue(mtdRev);
+        setMtdOrders(mtdValid.length);
+        setPrevMtdRevenue(pMtdRev);
+        setPrevMtdOrders(prevMtdValid.length);
 
         const valid = ordersData.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at);
         const prevValid = prevOrdersData.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at);
@@ -93,7 +166,7 @@ export default function RetailSalesPage() {
         });
         setHourlyOrders(Object.entries(hourMap).map(([h, c]) => ({ hour: `${h}:00`, orders: c })));
 
-        // Source - clean up URLs to 'referral'
+        // Source
         const srcMap: Record<string, number> = {};
         valid.forEach((o: any) => {
           let src = o.source_name || 'unknown';
@@ -103,11 +176,10 @@ export default function RetailSalesPage() {
         });
         setSourceData(Object.entries(srcMap).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })));
 
-        // Top customers - exclude Unknown/empty
+        // Top customers
         const custMap: Record<string, { name: string; total: number }> = {};
         valid.forEach((o: any) => {
           const name = o.customer_name;
-          // Skip null, empty, or 'Unknown' customers
           if (!name || name === '' || name === 'Unknown') return;
           const key = o.customer_email || name;
           if (!custMap[key]) custMap[key] = { name, total: 0 };
@@ -131,11 +203,10 @@ export default function RetailSalesPage() {
         // Recent 20
         setRecentOrders(ordersData.sort((a: any, b: any) => b.created_at.localeCompare(a.created_at)).slice(0, 20));
 
-        // Category revenue: fetch full order_lines with product_type
+        // Category revenue
         const fullLines = await queryAll('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity,price,product_type', undefined, 50000);
         const validFullLines = fullLines.filter((l: any) => orderIds.has(l.order_id));
 
-        // Group by product_type
         const catMap: Record<string, { units: number; revenue: number; orders: Set<string> }> = {};
         validFullLines.forEach((l: any) => {
           const cat = l.product_type || 'Uncategorized';
@@ -150,14 +221,13 @@ export default function RetailSalesPage() {
           .sort((a, b) => b.revenue - a.revenue);
         setCategoryData(categoryArr);
 
-        // Margin analysis: match shopify SKU to bc_inventory cost
+        // Margin analysis
         const bcInv = await queryAll('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code', undefined, 50000);
         const costMap: Record<string, { unitPrice: number; unitCost: number }> = {};
         bcInv.forEach((item: any) => {
           if (item.number) costMap[item.number] = { unitPrice: parseFloat(item.unit_price) || 0, unitCost: parseFloat(item.unit_cost) || 0 };
         });
 
-        // Group lines by product (sku+title)
         const prodMargin: Record<string, { title: string; sku: string; qty: number; revenue: number; unitCost: number | null; matched: boolean }> = {};
         validFullLines.forEach((l: any) => {
           const sku = l.sku || '';
@@ -192,16 +262,105 @@ export default function RetailSalesPage() {
   const calcDelta = (curr: number, prev: number) => prev === 0 ? null : ((curr - prev) / prev) * 100;
   const aov = orders > 0 ? revenue / orders : 0;
   const prevAov = prevOrders > 0 ? prevRevenue / prevOrders : 0;
+  const mtdAov = mtdOrders > 0 ? mtdRevenue / mtdOrders : 0;
+  const prevMtdAov = prevMtdOrders > 0 ? prevMtdRevenue / prevMtdOrders : 0;
+
+  // Target statuses
+  const revStatus = kpiStatus(mtdRevenue, KPI_TARGETS.monthlyRevenue);
+  const aovStatus = kpiStatus(mtdAov, KPI_TARGETS.aov);
 
   return (
     <div className="space-y-4">
+      {/* ── MTD Target Progress ── */}
+      <Card className="border-border/40 border-amber-500/20 bg-gradient-to-r from-amber-500/5 to-transparent" data-testid="mtd-target-progress">
+        <CardContent className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Target className="h-4 w-4 text-amber-400" />
+            <span className="text-sm font-medium">月銷售目標進度 <span className="text-xs font-normal text-muted-foreground">Monthly Revenue Progress</span></span>
+          </div>
+          {loading ? <Skeleton className="h-12 w-full" /> : (
+            <div>
+              <div className="flex items-baseline gap-2 mb-2">
+                <span className="text-2xl font-bold tabular-nums">{formatCurrency(mtdRevenue)}</span>
+                <span className="text-muted-foreground text-sm">/ {formatCurrency(KPI_TARGETS.monthlyRevenue)} 目標</span>
+                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className={`text-sm font-semibold ${revStatus.color}`}>{revStatus.pct}% 達成 {revStatus.icon}</span>
+              </div>
+              <div className="bg-muted/40 rounded-full h-2.5 overflow-hidden">
+                <div
+                  className={`h-2.5 rounded-full transition-all ${revStatus.bgColor}`}
+                  style={{ width: `${Math.min(100, revStatus.pct)}%` }}
+                />
+              </div>
+              {!revStatus.achieved && (
+                <p className="text-[11px] text-muted-foreground mt-1.5">
+                  距目標尚差 {formatCurrency(revStatus.gap)}
+                </p>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── Target KPI Cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-        <KpiCard title="營收" subtitle="Revenue" value={formatCurrency(revenue)} icon={DollarSign} loading={loading} delta={calcDelta(revenue, prevRevenue)} testId="kpi-revenue" />
-        <KpiCard title="訂單" subtitle="Orders" value={formatNumber(orders)} icon={ShoppingCart} loading={loading} delta={calcDelta(orders, prevOrders)} testId="kpi-orders" />
-        <KpiCard title="平均單價" subtitle="AOV" value={formatCurrency(aov)} icon={TrendingUp} loading={loading} delta={calcDelta(aov, prevAov)} testId="kpi-aov" />
-        <KpiCard title="售出件數" subtitle="Items Sold" value={formatNumber(itemsSold)} icon={Package} loading={loading} delta={calcDelta(itemsSold, prevItemsSold)} testId="kpi-items" />
-        <KpiCard title="折扣率" subtitle="Discount Rate" value={formatPercent(discountRate)} icon={Percent} loading={loading} delta={calcDelta(discountRate, prevDiscountRate)} testId="kpi-discount" />
+        <TargetKpiCard label="MTD 營收" sublabel="Revenue" value={mtdRevenue} target={KPI_TARGETS.monthlyRevenue} prevValue={prevMtdRevenue} unit="HKD" loading={loading} icon={DollarSign} />
+        <TargetKpiCard label="MTD 訂單" sublabel="Orders" value={mtdOrders} target={1000} prevValue={prevMtdOrders} unit="" loading={loading} icon={ShoppingCart} />
+        <TargetKpiCard label="MTD 平均單價" sublabel="AOV" value={mtdAov} target={KPI_TARGETS.aov} prevValue={prevMtdAov} unit="HKD" loading={loading} icon={TrendingUp} />
+        <TargetKpiCard label="售出件數" sublabel="Items Sold" value={itemsSold} target={0} prevValue={prevItemsSold} unit="" loading={loading} icon={Package} />
+        <TargetKpiCard label="折扣率" sublabel="Discount Rate" value={discountRate} target={10} prevValue={prevDiscountRate} unit="%" loading={loading} icon={Percent} />
       </div>
+
+      {/* ── Period Comparison Table ── */}
+      <Card className="border-border/40" data-testid="period-comparison">
+        <CardHeader className="pb-2 pt-4 px-4">
+          <CardTitle className="text-sm font-medium">期間比較 <span className="text-xs font-normal text-muted-foreground">Period Comparison (selected range vs previous)</span></CardTitle>
+        </CardHeader>
+        <CardContent className="px-4 pb-4">
+          {loading ? <Skeleton className="h-[120px] w-full" /> : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs" data-testid="table-period-comparison">
+                <thead>
+                  <tr className="border-b border-border/50 text-muted-foreground">
+                    <th className="py-2 text-left font-medium">指標 Metric</th>
+                    <th className="py-2 text-right font-medium">本期 This Period</th>
+                    <th className="py-2 text-right font-medium">上期 Last Period</th>
+                    <th className="py-2 text-right font-medium">MoM %</th>
+                    <th className="py-2 text-right font-medium">同期去年 YoY</th>
+                    <th className="py-2 text-right font-medium">YoY %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    { label: '營收 Revenue', curr: revenue, prev: prevRevenue, fmt: formatCurrency },
+                    { label: '訂單 Orders', curr: orders, prev: prevOrders, fmt: formatNumber },
+                    { label: '平均單價 AOV', curr: aov, prev: prevAov, fmt: formatCurrency },
+                    { label: '售出件數 Items', curr: itemsSold, prev: prevItemsSold, fmt: formatNumber },
+                    { label: '折扣率 Discount', curr: discountRate, prev: prevDiscountRate, fmt: formatPercent },
+                  ].map((row) => {
+                    const change = row.prev !== 0 ? pctChange(row.curr, row.prev) : null;
+                    return (
+                      <tr key={row.label} className="border-b border-border/20 hover:bg-accent/30 transition-colors">
+                        <td className="py-2 font-medium">{row.label}</td>
+                        <td className="py-2 text-right tabular-nums">{row.fmt(row.curr)}</td>
+                        <td className="py-2 text-right tabular-nums text-muted-foreground">{row.fmt(row.prev)}</td>
+                        <td className="py-2 text-right tabular-nums">
+                          {change !== null ? (
+                            <span className={change >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatPctChange(change)}</span>
+                          ) : <span className="text-muted-foreground">—</span>}
+                        </td>
+                        <td className="py-2 text-right tabular-nums text-muted-foreground">N/A</td>
+                        <td className="py-2 text-right tabular-nums text-muted-foreground">N/A</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <p className="text-[10px] text-muted-foreground/60 mt-2">* YoY 需要超過60天 Shopify 歷史數據，暫不可用</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <ChartCard title="每日營收" subtitle="Revenue by Day" loading={loading}>
         <ResponsiveContainer width="100%" height={260}>

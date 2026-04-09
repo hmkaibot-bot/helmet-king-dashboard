@@ -6,7 +6,7 @@ import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
-import { DollarSign, ShoppingCart, TrendingUp, Users, Store, Wrench, Ticket, Package } from 'lucide-react';
+import { DollarSign, ShoppingCart, TrendingUp, Users, Store, Wrench, Ticket, Package, Target } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
@@ -14,6 +14,47 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
+import { KPI_TARGETS, kpiStatus } from '@/lib/kpi-targets';
+import { getDateRanges } from '@/lib/time-intelligence';
+
+// ─── Monthly Target Card ───────────────────────────────────────────
+function MonthlyTargetCard({
+  label, sublabel, value, target, unit = 'HKD', loading,
+}: {
+  label: string; sublabel: string; value: number; target: number;
+  unit?: 'HKD' | '%' | ''; loading?: boolean;
+}) {
+  const status = kpiStatus(value, target);
+  const fmtValue = unit === 'HKD' ? formatCurrency(value)
+    : unit === '%' ? `${value.toFixed(1)}%`
+    : formatNumber(value);
+  const fmtTarget = unit === 'HKD' ? formatCurrency(target)
+    : unit === '%' ? `${target}%`
+    : formatNumber(target);
+
+  return (
+    <Card className="border-border/40" data-testid={`target-${sublabel.toLowerCase().replace(/\s/g,'-')}`}>
+      <CardContent className="p-4">
+        <div className="flex justify-between items-start mb-1">
+          <span className="text-xs text-muted-foreground">{label} <span className="opacity-70">{sublabel}</span></span>
+          <span className="text-base leading-none">{status.icon}</span>
+        </div>
+        {loading ? <Skeleton className="h-7 w-20 mt-1" /> : (
+          <>
+            <p className="text-lg font-semibold tabular-nums tracking-tight mt-1">{fmtValue}</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">目標 {fmtTarget} · {status.pct}% 達成</p>
+            <div className="mt-2 bg-muted/40 rounded-full h-1.5 overflow-hidden">
+              <div
+                className={`h-1.5 rounded-full transition-all ${status.bgColor}`}
+                style={{ width: `${Math.min(100, status.pct)}%` }}
+              />
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function OverviewPage() {
   const { bounds } = useDateRange();
@@ -30,19 +71,29 @@ export default function OverviewPage() {
   const [promoCodes, setPromoCodes] = useState<any[]>([]);
   const [yesterdayProducts, setYesterdayProducts] = useState<any[]>([]);
 
+  // MTD target data
+  const [mtdRevenue, setMtdRevenue] = useState(0);
+  const [mtdOrders, setMtdOrders] = useState(0);
+  const [mtdGrossMargin, setMtdGrossMargin] = useState<number | null>(null);
+  const [newMembersThisMonth, setNewMembersThisMonth] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
       setLoading(true);
       try {
-        // BC data is date-independent (invoices go back to 2023); Shopify/Meta use picker
         const bcBounds = { from: '2023-01-01', to: '2099-12-31' };
-        const [orders, carshop, garage, marsello, adData] = await Promise.all([
+        const ranges = getDateRanges();
+
+        const [orders, carshop, garage, marsello, adData, mtdOrdersData, bcInv, marselloAll] = await Promise.all([
           queryWithDateRange('shopify_orders', 'created_at,total_price,financial_status,cancelled_at', 'created_at', bounds),
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bcBounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bcBounds, [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]),
           queryAll('marsello_customers', 'id'),
           queryWithDateRange('meta_ad_insights', 'date,spend', 'date', bounds),
+          queryWithDateRange('shopify_orders', 'id,total_price,financial_status,cancelled_at', 'created_at', { from: ranges.mtd.start, to: ranges.mtd.end }),
+          queryAll('bc_inventory', 'number,unit_price,unit_cost', undefined, 50000),
+          queryAll('marsello_customers', 'id,created_at', undefined, 50000),
         ]);
 
         if (cancelled) return;
@@ -62,6 +113,25 @@ export default function OverviewPage() {
         setBcGarageRevenue(garRev);
 
         setMarselloCount(marsello.length);
+
+        // MTD revenue
+        const mtdValid = mtdOrdersData.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at);
+        const mtdRev = mtdValid.reduce((s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0);
+        setMtdRevenue(mtdRev);
+        setMtdOrders(mtdValid.length);
+
+        // Gross margin from BC inventory (average unit margin)
+        const costItems = bcInv.filter((i: any) => parseFloat(i.unit_price) > 0 && parseFloat(i.unit_cost) > 0);
+        if (costItems.length > 0) {
+          const totalPrice = costItems.reduce((s: number, i: any) => s + (parseFloat(i.unit_price) || 0), 0);
+          const totalCost = costItems.reduce((s: number, i: any) => s + (parseFloat(i.unit_cost) || 0), 0);
+          setMtdGrossMargin(totalPrice > 0 ? ((totalPrice - totalCost) / totalPrice) * 100 : null);
+        }
+
+        // New members this month
+        const monthStart = ranges.mtd.start;
+        const newMembers = marselloAll.filter((m: any) => m.created_at && m.created_at >= monthStart);
+        setNewMembersThisMonth(newMembers.length);
 
         // Revenue trend by day
         const dayMap: Record<string, { shopify: number; bc: number }> = {};
@@ -83,7 +153,6 @@ export default function OverviewPage() {
             .map(([date, val]) => ({ date: date.slice(5), shopify: val.shopify, bc: val.bc, total: val.shopify + val.bc }))
         );
 
-        // Retail vs Garage donut
         setSplitData([
           { name: '零售 Retail', value: rev + carRev },
           { name: '車房 Garage', value: garRev },
@@ -104,7 +173,7 @@ export default function OverviewPage() {
           }))
         );
 
-        // Promo codes: fetch orders with discount_codes in last 30 days
+        // Promo codes
         const thirtyAgo = new Date();
         thirtyAgo.setDate(thirtyAgo.getDate() - 30);
         const promoOrders = await queryWithDateRange('shopify_orders', 'id,total_price,discount_codes,financial_status,cancelled_at', 'created_at', { from: thirtyAgo.toISOString().slice(0, 10), to: new Date().toISOString().slice(0, 10) });
@@ -155,6 +224,8 @@ export default function OverviewPage() {
     return () => { cancelled = true; };
   }, [bounds]);
 
+  const mtdAov = mtdOrders > 0 ? mtdRevenue / mtdOrders : 0;
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -165,6 +236,24 @@ export default function OverviewPage() {
         <KpiCard title="平均單價" subtitle="AOV" value={formatCurrency(aov)} icon={TrendingUp} loading={loading} testId="kpi-aov" />
         <KpiCard title="Marsello 會員" subtitle="Members" value={formatNumber(marselloCount)} icon={Users} loading={loading} testId="kpi-marsello" />
       </div>
+
+      {/* ── Monthly Targets 2×2 Grid ── */}
+      <Card className="border-border/40 border-amber-500/20" data-testid="monthly-targets">
+        <CardHeader className="pb-2 pt-4 px-4">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Target className="h-4 w-4 text-amber-400" />
+            月度目標 <span className="text-xs font-normal text-muted-foreground">Monthly Targets</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="px-4 pb-4">
+          <div className="grid grid-cols-2 gap-3">
+            <MonthlyTargetCard label="月銷售進度" sublabel="MTD Revenue" value={mtdRevenue} target={KPI_TARGETS.monthlyRevenue} unit="HKD" loading={loading} />
+            <MonthlyTargetCard label="平均訂單" sublabel="AOV" value={mtdAov} target={KPI_TARGETS.aov} unit="HKD" loading={loading} />
+            <MonthlyTargetCard label="毛利率" sublabel="Gross Margin %" value={mtdGrossMargin ?? 0} target={KPI_TARGETS.grossMarginPct} unit="%" loading={loading} />
+            <MonthlyTargetCard label="新會員" sublabel="New Members" value={newMembersThisMonth} target={KPI_TARGETS.newMembersMonth} unit="" loading={loading} />
+          </div>
+        </CardContent>
+      </Card>
 
       <ChartCard title="綜合營收趨勢" subtitle="Combined Revenue Trend" loading={loading}>
         <ResponsiveContainer width="100%" height={280}>
@@ -211,7 +300,7 @@ export default function OverviewPage() {
       <Card className="border-border/40">
         <CardHeader className="pb-2 pt-4 px-4">
           <CardTitle className="text-sm font-medium">
-            🎟 活躍促銷碼 <span className="text-xs font-normal text-muted-foreground">Active Promo Codes (30 days)</span>
+            活躍促銷碼 <span className="text-xs font-normal text-muted-foreground">Active Promo Codes (30 days)</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="px-4 pb-4">
@@ -252,7 +341,7 @@ export default function OverviewPage() {
       <Card className="border-border/40">
         <CardHeader className="pb-2 pt-4 px-4">
           <CardTitle className="text-sm font-medium">
-            📦 昨日出售產品 <span className="text-xs font-normal text-muted-foreground">Yesterday's Products</span>
+            昨日出售產品 <span className="text-xs font-normal text-muted-foreground">Yesterday's Products</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="px-4 pb-4">
