@@ -5,14 +5,20 @@ import { useDateRange } from '@/lib/date-context';
 import { useAuth } from '@/lib/auth';
 import { DATE_RANGE_LABELS, type DateRange } from '@/lib/format';
 import {
+  LayoutDashboard,
+  ShoppingBag,
   BarChart3,
-  Package,
+  Warehouse,
   Users,
+  Tag,
+  Wrench,
+  ClipboardList,
+  Cog,
   Megaphone,
   Receipt,
-  Warehouse,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   LogOut,
   Calendar,
 } from 'lucide-react';
@@ -25,29 +31,78 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-const NAV_ITEMS = [
-  { path: '/', label: '銷售總覽', sublabel: 'Sales', icon: BarChart3 },
-  { path: '/products', label: '產品分析', sublabel: 'Products', icon: Package },
-  { path: '/customers', label: '客戶分析', sublabel: 'Customers', icon: Users },
-  { path: '/marketing', label: '營銷效果', sublabel: 'Marketing', icon: Megaphone },
-  { path: '/finance', label: '財務概覽', sublabel: 'Finance', icon: Receipt },
-  { path: '/inventory', label: '庫存管理', sublabel: 'Inventory', icon: Warehouse },
+interface NavItem {
+  path: string;
+  label: string;
+  sublabel: string;
+  icon: any;
+  children?: NavItem[];
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { path: '/', label: '總覽', sublabel: 'Overview', icon: LayoutDashboard },
+  {
+    path: '/retail',
+    label: '零售',
+    sublabel: 'Retail',
+    icon: ShoppingBag,
+    children: [
+      { path: '/retail/sales', label: '銷售', sublabel: 'Sales', icon: BarChart3 },
+      { path: '/retail/inventory', label: '庫存', sublabel: 'Inventory', icon: Warehouse },
+      { path: '/retail/customers', label: '客戶', sublabel: 'Customers', icon: Users },
+      { path: '/retail/brands', label: '品牌分析', sublabel: 'Brands', icon: Tag },
+    ],
+  },
+  {
+    path: '/garage',
+    label: '車房',
+    sublabel: 'Garage',
+    icon: Wrench,
+    children: [
+      { path: '/garage/orders', label: '工單', sublabel: 'Work Orders', icon: ClipboardList },
+      { path: '/garage/services', label: '服務分析', sublabel: 'Services', icon: Cog },
+    ],
+  },
+  { path: '/marketing', label: '營銷', sublabel: 'Marketing', icon: Megaphone },
+  { path: '/finance', label: '財務', sublabel: 'Finance', icon: Receipt },
 ];
+
+function findCurrentPage(location: string): { label: string; sublabel: string } {
+  for (const item of NAV_ITEMS) {
+    if (item.path === location) return item;
+    if (item.children) {
+      for (const child of item.children) {
+        if (child.path === location) return child;
+      }
+    }
+  }
+  return NAV_ITEMS[0];
+}
+
+function isParentActive(item: NavItem, location: string): boolean {
+  if (item.path === location) return true;
+  return item.children?.some((c) => c.path === location) ?? false;
+}
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true });
   const [location] = useLocation();
-  const { dateRange, setDateRange } = useDateRange();
+  const { dateRange, setDateRange, customFrom, customTo, setCustomFrom, setCustomTo } = useDateRange();
   const { logout } = useAuth();
 
-  const currentPage = NAV_ITEMS.find((item) => item.path === location) || NAV_ITEMS[0];
+  const currentPage = findCurrentPage(location);
+
+  const toggleGroup = (path: string) => {
+    setExpandedGroups((prev) => ({ ...prev, [path]: !prev[path] }));
+  };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    <div className="flex h-screen overflow-hidden bg-background dark">
       {/* Sidebar */}
       <aside
         className={`flex flex-col border-r border-border/50 bg-sidebar transition-all duration-200 shrink-0 ${
-          collapsed ? 'w-16' : 'w-52'
+          collapsed ? 'w-16' : 'w-56'
         }`}
       >
         {/* Logo area */}
@@ -64,13 +119,72 @@ export function AppLayout({ children }: { children: ReactNode }) {
         {/* Nav items */}
         <nav className="flex-1 py-2 px-2 space-y-0.5 overflow-y-auto">
           {NAV_ITEMS.map((item) => {
-            const isActive = location === item.path;
+            const hasChildren = !!item.children;
+            const isActive = isParentActive(item, location);
+            const isExpanded = expandedGroups[item.path] ?? false;
+
+            if (hasChildren) {
+              return (
+                <div key={item.path}>
+                  <button
+                    onClick={() => toggleGroup(item.path)}
+                    className={`flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm cursor-pointer transition-colors w-full ${
+                      isActive
+                        ? 'text-primary font-medium'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+                    }`}
+                    data-testid={`nav-${item.sublabel.toLowerCase()}`}
+                  >
+                    <item.icon className="h-4 w-4 shrink-0" />
+                    {!collapsed && (
+                      <>
+                        <div className="min-w-0 flex-1 text-left">
+                          <span className="block text-sm leading-tight truncate">{item.label}</span>
+                          <span className="block text-[10px] opacity-60 leading-tight">{item.sublabel}</span>
+                        </div>
+                        <ChevronDown
+                          className={`h-3 w-3 shrink-0 transition-transform ${isExpanded ? '' : '-rotate-90'}`}
+                        />
+                      </>
+                    )}
+                  </button>
+                  {!collapsed && isExpanded && (
+                    <div className="ml-4 pl-2 border-l border-border/30 space-y-0.5 mt-0.5">
+                      {item.children!.map((child) => {
+                        const childActive = location === child.path;
+                        return (
+                          <Link key={child.path} href={child.path}>
+                            <div
+                              data-testid={`nav-${child.sublabel.toLowerCase()}`}
+                              className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-sm cursor-pointer transition-colors ${
+                                childActive
+                                  ? 'bg-primary/10 text-primary font-medium'
+                                  : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+                              }`}
+                            >
+                              <child.icon className="h-3.5 w-3.5 shrink-0" />
+                              <div className="min-w-0">
+                                <span className="block text-xs leading-tight truncate">{child.label}</span>
+                                <span className="block text-[9px] opacity-60 leading-tight">{child.sublabel}</span>
+                              </div>
+                            </div>
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
+            // Top-level item without children
+            const itemActive = location === item.path;
             return (
               <Link key={item.path} href={item.path}>
                 <div
                   data-testid={`nav-${item.sublabel.toLowerCase()}`}
                   className={`flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm cursor-pointer transition-colors ${
-                    isActive
+                    itemActive
                       ? 'bg-primary/10 text-primary font-medium'
                       : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
                   }`}
@@ -111,12 +225,31 @@ export function AppLayout({ children }: { children: ReactNode }) {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Header */}
-        <header className="flex items-center justify-between h-14 px-4 border-b border-border/50 shrink-0 bg-background/80 backdrop-blur-sm">
+        <header className="flex items-center justify-between h-14 px-4 border-b border-border/50 shrink-0 bg-background/80 backdrop-blur-sm sticky top-0 z-10">
           <div>
             <h1 className="text-base font-semibold leading-tight">{currentPage.label}</h1>
-            <p className="text-xs text-muted-foreground">{currentPage.sublabel} Overview</p>
+            <p className="text-xs text-muted-foreground">{currentPage.sublabel}</p>
           </div>
           <div className="flex items-center gap-2">
+            {dateRange === 'custom' && (
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="date"
+                  value={customFrom}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                  className="h-8 px-2 text-xs rounded-md border border-border bg-background"
+                  data-testid="input-custom-from"
+                />
+                <span className="text-xs text-muted-foreground">–</span>
+                <input
+                  type="date"
+                  value={customTo}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                  className="h-8 px-2 text-xs rounded-md border border-border bg-background"
+                  data-testid="input-custom-to"
+                />
+              </div>
+            )}
             <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
             <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRange)}>
               <SelectTrigger className="w-[130px] h-8 text-xs" data-testid="select-date-range">
@@ -125,7 +258,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
               <SelectContent>
                 {Object.entries(DATE_RANGE_LABELS).map(([key, label]) => (
                   <SelectItem key={key} value={key} className="text-xs">
-                    {label}
+                    {label.zh} {label.en}
                   </SelectItem>
                 ))}
               </SelectContent>

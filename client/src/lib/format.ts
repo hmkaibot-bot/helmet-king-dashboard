@@ -20,24 +20,88 @@ export function formatDecimal(value: number | null | undefined, digits = 2): str
   return value.toFixed(digits);
 }
 
-export type DateRange = '7d' | '30d' | '90d' | '1y' | 'all';
+export type DateRange = 'today' | '7d' | '30d' | '90d' | 'this_week' | 'this_month' | 'custom';
 
-export function getDateFrom(range: DateRange): string | null {
-  if (range === 'all') return null;
-  const d = new Date();
-  switch (range) {
-    case '7d': d.setDate(d.getDate() - 7); break;
-    case '30d': d.setDate(d.getDate() - 30); break;
-    case '90d': d.setDate(d.getDate() - 90); break;
-    case '1y': d.setFullYear(d.getFullYear() - 1); break;
-  }
-  return d.toISOString();
+export interface DateBounds {
+  from: string; // ISO date string YYYY-MM-DD
+  to: string;   // ISO date string YYYY-MM-DD
 }
 
-export const DATE_RANGE_LABELS: Record<DateRange, string> = {
-  '7d': '最近7天',
-  '30d': '最近30天',
-  '90d': '最近90天',
-  '1y': '最近1年',
-  'all': '全部時間',
+export function getDateBounds(range: DateRange, customFrom?: string, customTo?: string): DateBounds {
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  
+  switch (range) {
+    case 'today': {
+      return { from: todayStr, to: todayStr };
+    }
+    case 'this_week': {
+      const d = new Date(now);
+      const day = d.getDay();
+      const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+      d.setDate(diff);
+      return { from: d.toISOString().slice(0, 10), to: todayStr };
+    }
+    case 'this_month': {
+      const d = new Date(now.getFullYear(), now.getMonth(), 1);
+      return { from: d.toISOString().slice(0, 10), to: todayStr };
+    }
+    case '7d': {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 7);
+      return { from: d.toISOString().slice(0, 10), to: todayStr };
+    }
+    case '30d': {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 30);
+      return { from: d.toISOString().slice(0, 10), to: todayStr };
+    }
+    case '90d': {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 90);
+      return { from: d.toISOString().slice(0, 10), to: todayStr };
+    }
+    case 'custom': {
+      return {
+        from: customFrom || todayStr,
+        to: customTo || todayStr,
+      };
+    }
+  }
+}
+
+/** Get the previous period bounds for delta calculation */
+export function getPreviousPeriodBounds(bounds: DateBounds): DateBounds {
+  const fromDate = new Date(bounds.from + 'T00:00:00Z');
+  const toDate = new Date(bounds.to + 'T23:59:59Z');
+  const durationMs = toDate.getTime() - fromDate.getTime();
+  const prevTo = new Date(fromDate.getTime() - 86400000); // day before
+  const prevFrom = new Date(prevTo.getTime() - durationMs);
+  return {
+    from: prevFrom.toISOString().slice(0, 10),
+    to: prevTo.toISOString().slice(0, 10),
+  };
+}
+
+/**
+ * Filter an array of records by a date field within bounds.
+ * Works as a JS-side replacement for .lte() which the proxy doesn't support.
+ */
+export function filterByDate<T>(records: T[], dateField: keyof T, bounds: DateBounds): T[] {
+  const fromStr = bounds.from;
+  const toStr = bounds.to + '\xff'; // ensures any time on the to-date is included
+  return records.filter((r) => {
+    const val = String(r[dateField] || '');
+    return val >= fromStr && val <= toStr;
+  });
+}
+
+export const DATE_RANGE_LABELS: Record<DateRange, { zh: string; en: string }> = {
+  'today': { zh: '今天', en: 'Today' },
+  'this_week': { zh: '本週', en: 'This Week' },
+  'this_month': { zh: '本月', en: 'This Month' },
+  '7d': { zh: '最近7天', en: 'Last 7d' },
+  '30d': { zh: '最近30天', en: 'Last 30d' },
+  '90d': { zh: '最近90天', en: 'Last 90d' },
+  'custom': { zh: '自訂', en: 'Custom' },
 };
