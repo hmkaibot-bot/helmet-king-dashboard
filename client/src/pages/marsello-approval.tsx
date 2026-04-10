@@ -56,22 +56,18 @@ interface MarselloCustomer {
   loyalty_points: number | null;
 }
 
-// ── Helpers ───────────────────────────────────────────────────
-function normalizeName(n: string) {
-  return n.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/gi, '');
-}
+// ── Excluded customer numbers (internal/maintenance accounts) ───
+const EXCLUDED_CUSTOMERS = new Set(['C012885', 'C013052']);
 
-function matchScore(bcName: string, marselloFirst: string | null, marselloLast: string | null): number {
-  const bc = normalizeName(bcName);
-  const m  = normalizeName(`${marselloFirst || ''} ${marselloLast || ''}`);
-  if (!bc || !m) return 0;
-  // Exact full-name match
-  if (bc === m) return 1.0;
-  // One contained in the other
-  if (bc.includes(m) || m.includes(bc)) return 0.8;
-  // Partial overlap
-  const commonLen = [...bc].filter(c => m.includes(c)).length;
-  return commonLen / Math.max(bc.length, m.length);
+// ── Phone normalization ─────────────────────────────────────────
+function normalizePhone(raw: string | null | undefined): string {
+  if (!raw) return '';
+  let p = raw.replace(/[\s\-\(\)]/g, '');
+  // Strip HK country code: +852, 852, +
+  if (p.startsWith('+852')) p = p.slice(4);
+  else if (p.startsWith('852') && p.length > 10) p = p.slice(3);
+  else if (p.startsWith('+')) p = p.slice(1);
+  return p.replace(/\D/g, '');
 }
 
 function StatusBadge({ status }: { status: QueueStatus }) {
@@ -155,7 +151,7 @@ export default function MarselloApprovalPage() {
       cutoff.setDate(cutoff.getDate() - 90);
       const cutoffStr = cutoff.toISOString().slice(0, 10);
 
-      const [invoices, marselloCustomers, existingIds] = await Promise.all([
+      const [invoices, marselloCustomers, bcCustomers, existingIds] = await Promise.all([
         queryAllPages('bc_sales_invoices',
           'id,number,invoice_date,customer_number,customer_name,total_amount_incl_tax',
           [
@@ -164,59 +160,82 @@ export default function MarselloApprovalPage() {
           ]
         ),
         queryAllPages('marsello_customers', 'id,email,first_name,last_name,phone,loyalty_points'),
-        // Get already-queued invoice IDs to skip
+        // BC customer master (for phone numbers)
+        queryAllPages('bc_customers', 'number,display_name,phone_number,email'),
+        // Already-queued invoice IDs
         (async () => {
           const { data } = await supabase.from('garage_marsello_queue').select('bc_invoice_id');
           return new Set((data || []).map((r: any) => r.bc_invoice_id));
         })(),
       ]);
 
-      // 2. Filter out already-queued invoices
-      const newInvoices = (invoices as any[]).filter((inv: any) => !existingIds.has(inv.id));
+      // 2. Filter: exclude internal accounts + already-queued
+      const newInvoices = (invoices as any[]).filter((inv: any) =>
+        !existingIds.has(inv.id) &&
+        !EXCLUDED_CUSTOMERS.has(inv.customer_number)
+      );
       if (newInvoices.length === 0) {
         alert('沒有新發票需要處理 (No new invoices to process)');
         return;
       }
 
-      // 3. Match each BC customer to Marsello
-      const marselloList = marselloCustomers as MarselloCustomer[];
-      const toInsert: any[] = [];
+      // 3. Build lookup maps
+      // BC customer_number → phone
+      const bcPhoneMap: Record<string, string> = {};
+      const bcEmailMap: Record<string, string> = {};
+      (bcCustomers as any[]).forEach((c: any) => {
+        if (c.phone_number) bcPhoneMap[c.number] = c.phone_number;
+        if (c.email)        bcEmailMap[c.number] = c.email;
+      });
 
+      // Marsello: normalized phone → customer (for fast lookup)
+      const marselloList = marselloCustomers as MarselloCustomer[];
+      const marselloByPhone: Record<string, MarselloCustomer> = {};
+      const marselloByEmail: Record<string, MarselloCustomer> = {};
+      marselloList.forEach(m => {
+        const np = normalizePhone(m.phone);
+        if (np && np.length >= 8) marselloByPhone[np] = m;
+        if (m.email) marselloByEmail[m.email.toLowerCase().trim()] = m;
+      });
+
+      // 4. Match: phone first, then email, NO name matching
+      const toInsert: any[] = [];
       for (const inv of newInvoices) {
         let matched: MarselloCustomer | null = null;
         let matchType: MatchType = 'unmatched';
+        const custNum = inv.customer_number || '';
 
-        // Try name match
-        let bestScore = 0;
-        for (const m of marselloList) {
-          const score = matchScore(
-            inv.customer_name || '',
-            m.first_name,
-            m.last_name
-          );
-          if (score > bestScore) {
-            bestScore = score;
-            matched = m;
+        // Priority 1: Phone match (with normalization)
+        const bcPhone = bcPhoneMap[custNum];
+        if (bcPhone) {
+          const np = normalizePhone(bcPhone);
+          if (np && marselloByPhone[np]) {
+            matched = marselloByPhone[np];
+            matchType = 'phone_match';
           }
         }
 
-        if (bestScore >= 0.8) {
-          matchType = 'name_match';
-        } else if (bestScore >= 0.5) {
-          // Low confidence — still show as suggestion but mark as unmatched
-          matchType = 'unmatched';
-          matched = null;
-        } else {
-          matched = null;
+        // Priority 2: Email match (fallback)
+        if (!matched) {
+          const bcEmail = bcEmailMap[custNum];
+          if (bcEmail) {
+            const ne = bcEmail.toLowerCase().trim();
+            if (marselloByEmail[ne]) {
+              matched = marselloByEmail[ne];
+              matchType = 'exact_email';
+            }
+          }
         }
+
+        // No name matching — too many false positives
 
         toInsert.push({
           bc_invoice_id:         inv.id,
           bc_invoice_number:     inv.number || '',
           bc_invoice_date:       inv.invoice_date,
-          bc_customer_number:    inv.customer_number || '',
+          bc_customer_number:    custNum,
           bc_customer_name:      inv.customer_name || '',
-          bc_customer_email:     null,
+          bc_customer_email:     bcEmailMap[custNum] || null,
           invoice_amount:        parseFloat(inv.total_amount_incl_tax) || 0,
           marsello_customer_id:   matched?.id || null,
           marsello_customer_name: matched ? `${matched.first_name || ''} ${matched.last_name || ''}`.trim() : null,
