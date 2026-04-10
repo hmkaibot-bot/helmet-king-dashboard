@@ -8,7 +8,7 @@ import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart
 import {
   DollarSign, ShoppingCart, TrendingUp, Calendar, Trophy, Package,
   ChevronDown, ChevronRight, AlertTriangle, Tag, Zap,
-  Monitor, Store, Bike, Cloud, Thermometer, Droplets, Wind,
+  Monitor, Store, Bike, Cloud, Thermometer, Droplets, Wind, Users,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -211,6 +211,23 @@ export default function DailyWeeklyPage() {
     temp: null, humidity: null, icon: null, warning: '', updateTime: '', forecast: [],
   });
 
+  // ── Staff name mapping (localStorage) ──────────────────
+  const [staffNames, setStaffNames] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem('hk_staff_names') || '{}'); } catch { return {}; }
+  });
+  const [editingUid, setEditingUid] = useState<string | null>(null);
+  const [editName, setEditName]     = useState('');
+
+  function saveStaffName(uid: string, name: string) {
+    const updated = { ...staffNames, [uid]: name.trim() };
+    setStaffNames(updated);
+    localStorage.setItem('hk_staff_names', JSON.stringify(updated));
+    setEditingUid(null);
+  }
+  function getStaffName(uid: string) {
+    return staffNames[uid] || `Staff ···${uid.slice(-4)}`;
+  }
+
   // ── Weather: HK Observatory API ─────────────────────────
   useEffect(() => {
     async function fetchWeather() {
@@ -247,16 +264,19 @@ export default function DailyWeeklyPage() {
     async function load() {
       setLoading(true);
       try {
-        const twoWeeksAgo = new Date();
-        twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 16);
-        const fromDate = twoWeeksAgo.toISOString().slice(0, 10);
+        // Load from 1st of current month OR 45 days ago, whichever is earlier
+        // (ensures full MTD coverage even in late month)
+        const hktNow    = getHKNow();
+        const firstOfMo = new Date(hktNow.getFullYear(), hktNow.getMonth(), 1);
+        const fortyFiveAgo = new Date(hktNow); fortyFiveAgo.setDate(hktNow.getDate() - 45);
+        const fromDate  = toDateStr(firstOfMo < fortyFiveAgo ? fortyFiveAgo : firstOfMo);
 
         // Phase 1: parallel
         const [ordersRaw, orderLines, productsData] = await Promise.all([
           (async () => {
             const { data } = await supabase
               .from('shopify_orders')
-              .select('id,order_number,created_at,total_price,financial_status,cancelled_at,customer_name,customer_id,discount_codes,source_name')
+              .select('id,order_number,created_at,total_price,financial_status,cancelled_at,customer_name,customer_id,discount_codes,source_name,user_id')
               .gte('created_at', fromDate)
               .limit(5000);
             return (data || []) as any[];
@@ -369,6 +389,40 @@ export default function DailyWeeklyPage() {
       other:    calc(groups.other),
     };
   }, [yOrders]);
+
+  // ── Staff performance: yesterday + MTD ────────────────
+  const staffPerformance = useMemo(() => {
+    const hktNow   = getHKNow();
+    const mtdStart = toDateStr(new Date(hktNow.getFullYear(), hktNow.getMonth(), 1));
+    const mtdEnd   = toDateStr(hktNow);
+    const mtdOrders = filterOrders(allOrders, mtdStart, mtdEnd);
+
+    const addTo = (map: Record<string, { rev: number; cnt: number }>, orders: any[]) => {
+      orders.forEach((o: any) => {
+        const uid = String(o.user_id || '');
+        if (!uid) return;
+        if (!map[uid]) map[uid] = { rev: 0, cnt: 0 };
+        map[uid].rev += parseFloat(o.total_price) || 0;
+        map[uid].cnt++;
+      });
+    };
+
+    const dayMap: Record<string, { rev: number; cnt: number }> = {};
+    const mtdMap: Record<string, { rev: number; cnt: number }> = {};
+    addTo(dayMap, yOrders.filter((o: any) => o.user_id));  // yesterday POS only
+    addTo(mtdMap, mtdOrders.filter((o: any) => o.user_id));
+
+    const allUids = [...new Set([...Object.keys(dayMap), ...Object.keys(mtdMap)])];
+    return allUids
+      .map(uid => ({
+        uid,
+        dayRev:  dayMap[uid]?.rev  || 0,
+        dayCnt:  dayMap[uid]?.cnt  || 0,
+        mtdRev:  mtdMap[uid]?.rev  || 0,
+        mtdCnt:  mtdMap[uid]?.cnt  || 0,
+      }))
+      .sort((a, b) => b.mtdRev - a.mtdRev);
+  }, [allOrders, yOrders, filterOrders]);
 
   // ── Yesterday holiday / upcoming holidays ──────────────
   const yesterdayHoliday = HK_HOLIDAYS[yesterday] || null;
@@ -712,15 +766,121 @@ export default function DailyWeeklyPage() {
                       </div>
                     ))}
                   </div>
-                  {/* Staff data note */}
+                  {/* Per-staff MTD link */}
                   <p className="text-[11px] text-muted-foreground/60 flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500/60 shrink-0 inline-block" />
-                    員工個人銷售分析需要從 Shopify POS 同步 <span className="font-mono">user_id</span> 欄位。ETL 更新後可顯示每位 Sales 的業績。
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-500/60 shrink-0 inline-block" />
+                    員工個人銷售詳情見下方「員工表現」。點擊姓名可設定專名。
                   </p>
                 </div>
               )}
             </CardContent>
           </Card>
+
+          {/* ── Staff Performance Table ─────────────────────────── */}
+          {staffPerformance.length > 0 && (
+            <Card className="border-border/40">
+              <CardHeader className="pb-2 pt-3 px-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Users className="h-3.5 w-3.5 text-primary" />
+                  員工表現
+                  <span className="text-xs font-normal text-muted-foreground">
+                    POS Staff Performance — 昨日 vs 本月至今 (MTD)
+                  </span>
+                  <span className="ml-auto text-[10px] text-muted-foreground/60">點擊姓名可重命名</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 pb-4">
+                {loading ? (
+                  <Skeleton className="h-32 w-full" />
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-border/50 text-muted-foreground">
+                          <th className="py-2 text-left font-medium">姓名 Staff</th>
+                          <th className="py-2 text-right font-medium">昨日訂單</th>
+                          <th className="py-2 text-right font-medium">昨日物餅</th>
+                          <th className="py-2 text-right font-medium">MTD 訂單</th>
+                          <th className="py-2 text-right font-medium pr-1">MTD 累積物餅</th>
+                          <th className="py-2 text-right font-medium">MTD 均偕</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {staffPerformance.map((s, i) => (
+                          <tr key={s.uid} className={`border-b border-border/20 hover:bg-accent/30 transition-colors ${
+                            i === 0 ? 'bg-amber-500/5' : ''
+                          }`}>
+                            <td className="py-2">
+                              {editingUid === s.uid ? (
+                                <form
+                                  className="flex items-center gap-1"
+                                  onSubmit={e => { e.preventDefault(); saveStaffName(s.uid, editName); }}
+                                >
+                                  <input
+                                    autoFocus
+                                    value={editName}
+                                    onChange={e => setEditName(e.target.value)}
+                                    placeholder="輸入姓名..."
+                                    className="w-24 px-1.5 py-0.5 text-xs bg-gray-800 border border-gray-600 rounded text-gray-200 focus:outline-none focus:border-primary"
+                                  />
+                                  <button type="submit" className="text-[10px] px-1.5 py-0.5 bg-primary/80 text-primary-foreground rounded">存</button>
+                                  <button type="button" onClick={() => setEditingUid(null)} className="text-[10px] px-1 text-muted-foreground">取</button>
+                                </form>
+                              ) : (
+                                <button
+                                  onClick={() => { setEditingUid(s.uid); setEditName(staffNames[s.uid] || ''); }}
+                                  className="flex items-center gap-1.5 group"
+                                >
+                                  {i === 0 && <span className="text-amber-400">🥇</span>}
+                                  {i === 1 && <span className="text-gray-400">🥈</span>}
+                                  {i === 2 && <span className="text-amber-700">🥉</span>}
+                                  <span className={`font-medium ${ staffNames[s.uid] ? '' : 'text-muted-foreground italic' }`}>
+                                    {getStaffName(s.uid)}
+                                  </span>
+                                  <span className="text-[10px] text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity">✏️</span>
+                                </button>
+                              )}
+                            </td>
+                            <td className="py-2 text-right tabular-nums text-muted-foreground">
+                              {s.dayCnt > 0 ? s.dayCnt : <span className="opacity-30">—</span>}
+                            </td>
+                            <td className={`py-2 text-right tabular-nums font-semibold ${ s.dayRev > 0 ? '' : 'text-muted-foreground/30' }`}>
+                              {s.dayRev > 0 ? formatCurrency(s.dayRev) : '—'}
+                            </td>
+                            <td className="py-2 text-right tabular-nums text-muted-foreground">{s.mtdCnt}</td>
+                            <td className="py-2 text-right tabular-nums pr-1">
+                              <span className="font-bold text-[13px]">{formatCurrency(s.mtdRev)}</span>
+                            </td>
+                            <td className="py-2 text-right tabular-nums text-muted-foreground">
+                              {s.mtdCnt > 0 ? formatCurrency(s.mtdRev / s.mtdCnt) : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t border-border/40 bg-muted/10">
+                          <td className="py-2 text-xs font-semibold text-muted-foreground">小計 Total POS</td>
+                          <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">
+                            {staffPerformance.reduce((s, r) => s + r.dayCnt, 0)}
+                          </td>
+                          <td className="py-2 text-right tabular-nums font-semibold text-xs">
+                            {formatCurrency(staffPerformance.reduce((s, r) => s + r.dayRev, 0))}
+                          </td>
+                          <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">
+                            {staffPerformance.reduce((s, r) => s + r.mtdCnt, 0)}
+                          </td>
+                          <td className="py-2 text-right tabular-nums font-bold text-xs pr-1">
+                            {formatCurrency(staffPerformance.reduce((s, r) => s + r.mtdRev, 0))}
+                          </td>
+                          <td className="py-2" />
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {/* ── Category Breakdown ───────────────────────────────── */}
           <Card className="border-border/40">
