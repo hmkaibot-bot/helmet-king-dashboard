@@ -107,7 +107,7 @@ function MultiSelect({ label, options, selected, onChange }: {
         className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs border transition-colors whitespace-nowrap ${
           hasSelection
             ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
-            : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600'
+            : 'bg-muted border-border text-foreground hover:border-border'
         }`}
       >
         <Filter className="h-3 w-3 shrink-0 opacity-60" />
@@ -115,14 +115,14 @@ function MultiSelect({ label, options, selected, onChange }: {
         <ChevronDown className={`h-3 w-3 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="absolute z-50 mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl w-60" style={{ maxHeight: 320, display: 'flex', flexDirection: 'column' }}>
-          <div className="p-2 border-b border-gray-700">
+        <div className="absolute z-50 mt-1 bg-muted border border-border rounded-lg shadow-xl w-60" style={{ maxHeight: 320, display: 'flex', flexDirection: 'column' }}>
+          <div className="p-2 border-b border-border">
             <input
               type="text"
               placeholder="Search..."
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
-              className="w-full px-2 py-1 text-xs bg-gray-900 border border-gray-600 rounded text-gray-300 placeholder-gray-500 focus:outline-none focus:border-gray-500"
+              className="w-full px-2 py-1 text-xs bg-background border border-border rounded text-foreground placeholder-muted-foreground focus:outline-none focus:border-gray-500"
               autoFocus
             />
           </div>
@@ -131,7 +131,7 @@ function MultiSelect({ label, options, selected, onChange }: {
               <div className="px-3 py-4 text-xs text-gray-500 text-center">No matches</div>
             )}
             {filtered.map(opt => (
-              <label key={opt} className="flex items-center px-3 py-1.5 hover:bg-gray-700/60 cursor-pointer">
+              <label key={opt} className="flex items-center px-3 py-1.5 hover:bg-accent/60 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={selected.includes(opt)}
@@ -140,13 +140,13 @@ function MultiSelect({ label, options, selected, onChange }: {
                   }}
                   className="mr-2 accent-amber-500 h-3 w-3"
                 />
-                <span className="text-xs text-gray-300 truncate">{opt || 'Unknown'}</span>
+                <span className="text-xs text-foreground truncate">{opt || 'Unknown'}</span>
               </label>
             ))}
           </div>
           {selected.length > 0 && (
             <button
-              className="w-full px-3 py-1.5 text-[10px] text-gray-400 hover:text-gray-200 border-t border-gray-700 text-center"
+              className="w-full px-3 py-1.5 text-[10px] text-muted-foreground hover:text-foreground border-t border-border text-center"
               onClick={() => { onChange([]); }}
             >
               Clear selection
@@ -530,7 +530,7 @@ export default function RetailInventoryPage() {
         </TabsList>
 
         {/* ═══ FILTER BAR ═══ */}
-        <div className="sticky top-0 z-20 mt-2 rounded-lg bg-gray-900 border border-gray-800 px-3 py-2" data-testid="filter-bar">
+        <div className="sticky top-0 z-20 mt-2 rounded-lg bg-background border border-gray-800 px-3 py-2" data-testid="filter-bar">
           <div className="flex items-center gap-2 flex-wrap">
             {/* Search */}
             <div className="relative">
@@ -541,7 +541,7 @@ export default function RetailInventoryPage() {
                 value={filters.search}
                 onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
                 className={`pl-7 pr-2 py-1.5 rounded text-xs border w-44 focus:outline-none focus:border-gray-500 ${
-                  filters.search ? 'bg-amber-500/10 border-amber-500/40 text-amber-300 placeholder-amber-400/40' : 'bg-gray-800 border-gray-700 text-gray-300 placeholder-gray-500'
+                  filters.search ? 'bg-amber-500/10 border-amber-500/40 text-amber-300 placeholder-amber-400/40' : 'bg-muted border-border text-foreground placeholder-muted-foreground'
                 }`}
                 data-testid="filter-search"
               />
@@ -570,7 +570,7 @@ export default function RetailInventoryPage() {
               className={`px-2 py-1.5 rounded text-xs border focus:outline-none appearance-none cursor-pointer ${
                 filters.stockStatus !== 'all'
                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
-                  : 'bg-gray-800 border-gray-700 text-gray-300'
+                  : 'bg-muted border-border text-foreground'
               }`}
               data-testid="filter-stock-status"
             >
@@ -588,7 +588,7 @@ export default function RetailInventoryPage() {
                 value={filters.minPrice}
                 onChange={e => setFilters(f => ({ ...f, minPrice: e.target.value }))}
                 className={`w-20 px-2 py-1.5 rounded text-xs border focus:outline-none ${
-                  filters.minPrice ? 'bg-amber-500/10 border-amber-500/40 text-amber-300' : 'bg-gray-800 border-gray-700 text-gray-300 placeholder-gray-500'
+                  filters.minPrice ? 'bg-amber-500/10 border-amber-500/40 text-amber-300' : 'bg-muted border-border text-foreground placeholder-muted-foreground'
                 }`}
                 data-testid="filter-min-price"
               />
@@ -599,7 +599,7 @@ export default function RetailInventoryPage() {
                 value={filters.maxPrice}
                 onChange={e => setFilters(f => ({ ...f, maxPrice: e.target.value }))}
                 className={`w-20 px-2 py-1.5 rounded text-xs border focus:outline-none ${
-                  filters.maxPrice ? 'bg-amber-500/10 border-amber-500/40 text-amber-300' : 'bg-gray-800 border-gray-700 text-gray-300 placeholder-gray-500'
+                  filters.maxPrice ? 'bg-amber-500/10 border-amber-500/40 text-amber-300' : 'bg-muted border-border text-foreground placeholder-muted-foreground'
                 }`}
                 data-testid="filter-max-price"
               />
@@ -607,13 +607,13 @@ export default function RetailInventoryPage() {
 
             {/* Spacer + Results count + Clear */}
             <div className="flex items-center gap-2 ml-auto">
-              <span className="text-[11px] text-gray-400 tabular-nums whitespace-nowrap" data-testid="filter-count">
+              <span className="text-[11px] text-muted-foreground tabular-nums whitespace-nowrap" data-testid="filter-count">
                 Showing <span className={hasActiveFilters ? 'text-amber-400 font-medium' : ''}>{formatNumber(filteredInventory.length)}</span> / {formatNumber(inventory.length)} items
               </span>
               {hasActiveFilters && (
                 <button
                   onClick={() => setFilters({ ...DEFAULT_FILTERS })}
-                  className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-gray-800 border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition-colors"
+                  className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-muted border border-border text-muted-foreground hover:text-foreground hover:border-border transition-colors"
                   data-testid="filter-clear"
                 >
                   <X className="h-3 w-3" />

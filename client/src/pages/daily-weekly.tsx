@@ -15,6 +15,8 @@ import {
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { FoorirLogin } from '@/components/foorir-login';
+import { getFoorirToken, getKPI, type FoorirKPI, type FoorirPeriod } from '@/lib/foorir';
 
 // ── Types ─────────────────────────────────────────────────────
 type ViewMode = 'yesterday' | 'this_week' | 'last_week';
@@ -126,7 +128,7 @@ function getCatStyle(type: string) {
   for (const [prefix, cfg] of CAT_GROUPS) {
     if (type.startsWith(prefix)) return cfg;
   }
-  return { color: 'text-gray-400', border: 'border-gray-500/30', bg: 'bg-gray-500/5' };
+  return { color: 'text-muted-foreground', border: 'border-gray-500/30', bg: 'bg-gray-500/5' };
 }
 
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -211,6 +213,8 @@ export default function DailyWeeklyPage() {
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
   const [productTypeMap, setProductTypeMap] = useState<Record<string, string>>({});
   const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set());
+  const [foorirData, setFoorirData] = useState<FoorirKPI | null>(null);
+  const [foorirConnected, setFoorirConnected] = useState(false);
   const [weather, setWeather] = useState<{
     temp: number | null;
     humidity: number | null;
@@ -744,6 +748,69 @@ export default function DailyWeeklyPage() {
             </Card>
           </div>
 
+          {/* ── Foot Traffic (Foorir) ────────────────────────── */}
+          <FoorirLogin
+            compact
+            onSuccess={async () => {
+              setFoorirConnected(true);
+              const data = await getKPI('yesterday');
+              if (data) setFoorirData(data);
+            }}
+          />
+          {foorirConnected && foorirData && (
+            <Card className="border-border/40">
+              <CardHeader className="pb-2 pt-3 px-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Users className="h-3.5 w-3.5 text-cyan-400" />
+                  昨日客流
+                  <span className="text-xs font-normal text-muted-foreground">Foot Traffic — {yesterday}</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 pb-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {[
+                    { label: '進店人數', sublabel: 'Entered', value: foorirData.flowIn, color: 'text-cyan-400' },
+                    { label: '路過人數', sublabel: 'Passerby', value: foorirData.flowPassby, color: 'text-blue-400' },
+                    { label: '團體客', sublabel: 'Groups', value: foorirData.batch, color: 'text-purple-400' },
+                    {
+                      label: '轉化率',
+                      sublabel: 'Conversion',
+                      value: foorirData.flowIn > 0 ? ((yOrders.length / foorirData.flowIn) * 100) : 0,
+                      color: 'text-green-400',
+                      isPercent: true,
+                    },
+                  ].map((m, i) => (
+                    <div key={i} className="rounded-lg border border-border/30 bg-accent/20 p-3">
+                      <p className={`text-[11px] font-medium ${m.color}`}>{m.label}</p>
+                      <p className="text-xs text-muted-foreground mb-1">{m.sublabel}</p>
+                      <p className="text-lg font-bold tabular-nums">
+                        {'isPercent' in m && m.isPercent
+                          ? `${(m.value as number).toFixed(1)}%`
+                          : formatNumber(m.value)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                {foorirData.flowIn > 0 && (
+                  <div className="mt-3 grid grid-cols-3 gap-3 text-[11px]">
+                    <div className="rounded border border-border/20 p-2 text-center">
+                      <p className="text-muted-foreground">每客消費</p>
+                      <p className="font-semibold tabular-nums">{formatCurrency(yRevenue / foorirData.flowIn)}</p>
+                    </div>
+                    <div className="rounded border border-border/20 p-2 text-center">
+                      <p className="text-muted-foreground">成人</p>
+                      <p className="font-semibold tabular-nums">{formatNumber(foorirData.adult)}</p>
+                    </div>
+                    <div className="rounded border border-border/20 p-2 text-center">
+                      <p className="text-muted-foreground">平均停留</p>
+                      <p className="font-semibold tabular-nums">{foorirData.averageDwellTime > 0 ? `${Math.round(foorirData.averageDwellTime)}分` : '—'}</p>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {/* ── Sales Channel Breakdown ───────────────────────────── */}
           <Card className="border-border/40">
             <CardHeader className="pb-2 pt-3 px-4">
@@ -766,7 +833,7 @@ export default function DailyWeeklyPage() {
                       { key: 'pos',      label: '門市 POS',          icon: Store,   color: 'text-amber-400',  border: 'border-amber-500/20',  bg: 'bg-amber-500/5',   data: channelBreakdown.pos },
                       { key: 'web',      label: '網店 Online',        icon: Monitor, color: 'text-blue-400',   border: 'border-blue-500/20',   bg: 'bg-blue-500/5',    data: channelBreakdown.web },
                       { key: 'referral', label: '轉介 Referral',      icon: Bike,    color: 'text-green-400',  border: 'border-green-500/20',  bg: 'bg-green-500/5',   data: channelBreakdown.referral },
-                      { key: 'other',    label: '其他 Other',         icon: Zap,     color: 'text-gray-400',   border: 'border-gray-500/20',   bg: 'bg-gray-500/5',    data: channelBreakdown.other },
+                      { key: 'other',    label: '其他 Other',         icon: Zap,     color: 'text-muted-foreground',   border: 'border-gray-500/20',   bg: 'bg-gray-500/5',    data: channelBreakdown.other },
                     ].map(ch => (
                       <div key={ch.key} className={`rounded-lg border ${ch.border} ${ch.bg} p-3`}>
                         <div className="flex items-center gap-1.5 mb-2">
@@ -877,7 +944,7 @@ export default function DailyWeeklyPage() {
                                       </div>
                                       <form className="flex items-center gap-1" onSubmit={e => { e.preventDefault(); saveStaffName(s.uid, editName); }}>
                                         <input autoFocus value={editName} onChange={e => setEditName(e.target.value)} placeholder="自行輸入..."
-                                          className="w-24 px-1.5 py-0.5 text-xs bg-gray-800 border border-gray-600 rounded text-gray-200 focus:outline-none focus:border-primary" />
+                                          className="w-24 px-1.5 py-0.5 text-xs bg-muted border border-border rounded text-foreground focus:outline-none focus:border-primary" />
                                         <button type="submit" className="text-[10px] px-1.5 py-0.5 bg-primary/80 text-primary-foreground rounded">存</button>
                                         <button type="button" onClick={() => setEditingUid(null)} className="text-[10px] px-1 text-muted-foreground">取</button>
                                       </form>
@@ -886,7 +953,7 @@ export default function DailyWeeklyPage() {
                                     <button onClick={() => { setEditingUid(s.uid); setEditName(staffNames[s.uid] || ''); }}
                                       className="flex items-center gap-1.5 group">
                                       {i === 0 && rev > 0 && <span className="text-amber-400">🥇</span>}
-                                      {i === 1 && rev > 0 && <span className="text-gray-300">🥈</span>}
+                                      {i === 1 && rev > 0 && <span className="text-foreground">🥈</span>}
                                       {i === 2 && rev > 0 && <span className="text-amber-700">🥉</span>}
                                       <span className={`font-medium ${staffNames[s.uid] ? '' : 'text-muted-foreground italic'}`}>
                                         {getStaffName(s.uid)}

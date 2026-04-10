@@ -466,7 +466,7 @@ export default function MarselloApprovalPage() {
                     value={marselloApiKey}
                     onChange={e => setMarselloApiKey(e.target.value)}
                     placeholder="Paste Marsello Store API Key here..."
-                    className="flex-1 px-2 py-1.5 text-xs bg-gray-800 border border-gray-600 rounded text-gray-300 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                    className="flex-1 px-2 py-1.5 text-xs bg-muted border border-border rounded text-foreground placeholder-muted-foreground focus:outline-none focus:border-blue-500"
                   />
                   <button
                     onClick={() => {
@@ -533,7 +533,7 @@ export default function MarselloApprovalPage() {
           placeholder="搜索發票/客戶..."
           value={searchText}
           onChange={e => setSearchText(e.target.value)}
-          className="px-2.5 py-1.5 text-xs bg-gray-800 border border-gray-600 rounded text-gray-300 placeholder-gray-500 focus:outline-none focus:border-gray-500 w-48"
+          className="px-2.5 py-1.5 text-xs bg-muted border border-border rounded text-foreground placeholder-muted-foreground focus:outline-none focus:border-gray-500 w-48"
         />
         <span className="text-xs text-muted-foreground ml-auto">顯示 {filtered.length} / {queue.length} 筆</span>
       </div>
