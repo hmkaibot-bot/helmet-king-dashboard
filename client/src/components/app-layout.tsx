@@ -30,8 +30,11 @@ import {
   Sparkles,
   ClipboardCheck,
   Award,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useTheme } from '@/lib/theme';
 import {
   Select,
   SelectContent,
@@ -132,6 +135,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const [location] = useLocation();
   const { dateRange, setDateRange, customFrom, customTo, setCustomFrom, setCustomTo } = useDateRange();
   const { logout } = useAuth();
+  const { theme, toggle: toggleTheme } = useTheme();
 
   const currentPage = findCurrentPage(location);
 
@@ -273,6 +277,17 @@ export function AppLayout({ children }: { children: ReactNode }) {
             <p className="text-xs text-muted-foreground">{currentPage.sublabel}</p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Light / Dark toggle */}
+            <button
+              onClick={toggleTheme}
+              title={theme === 'dark' ? '切換白天模式' : '切換深色模式'}
+              className="h-8 w-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            >
+              {theme === 'dark'
+                ? <Sun className="h-4 w-4" />
+                : <Moon className="h-4 w-4" />
+              }
+            </button>
             {dateRange === 'custom' && (
               <div className="flex items-center gap-1.5">
                 <input
