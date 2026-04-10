@@ -3,6 +3,31 @@ import { queryAllPages } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { formatNumber } from '@/lib/format';
 import { TrendingUp, AlertTriangle, AlertOctagon, XCircle, Search, Filter, ChevronRight, ChevronDown } from 'lucide-react';
+
+// ── Variant Title Parser ────────────────────────────────────
+const SIZE_TOKENS = new Set([
+  'XXS','XS','S','M','L','XL','XXL','XXXL','2XL','3XL','4XL',
+  'SM','MD','LG','O/S','OS','ONE SIZE','FREE SIZE',
+  '52','53','54','55','56','57','58','59','60','61','62','63','64',
+  '52-53','54-55','56-57','58-59','60-61','62-63',
+]);
+
+function parseVariantTitle(vt: string | null | undefined): { color: string; size: string } {
+  if (!vt || vt === 'Default Title') return { color: '', size: '' };
+  const trimmed = vt.trim();
+  if (trimmed.includes(' / ')) {
+    const parts = trimmed.split(' / ');
+    const last = parts[parts.length - 1].trim().toUpperCase();
+    if (SIZE_TOKENS.has(last) || /^\d{1,3}(-\d{1,3})?$/.test(last)) {
+      return { color: parts.slice(0, -1).join(' / ').trim(), size: parts[parts.length - 1].trim() };
+    }
+    return { color: parts[0].trim(), size: parts.slice(1).join(' / ').trim() };
+  }
+  if (SIZE_TOKENS.has(trimmed.toUpperCase()) || /^\d{1,3}(-\d{1,3})?$/.test(trimmed)) {
+    return { color: '', size: trimmed };
+  }
+  return { color: trimmed, size: '' };
+}
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
@@ -19,6 +44,7 @@ interface VelocityRow {
   sku: string;
   vendor: string;
   productType: string;
+  variantTitle: string;
   stock: number;
   vel7: number;
   vel30: number;
@@ -126,7 +152,7 @@ export default function VelocityPage() {
 
         // Paginated fetches in parallel
         const [inventoryRaw, orderLinesRaw] = await Promise.all([
-          queryAllPages('shopify_inventory', 'sku,product_title,price,inventory_quantity,vendor,product_type,snapshot_date'),
+          queryAllPages('shopify_inventory', 'sku,product_title,variant_title,price,inventory_quantity,vendor,product_type,snapshot_date'),
           queryAllPages('shopify_order_lines', 'sku,title,vendor,product_type,quantity,price,created_at'),
         ]);
 
@@ -134,7 +160,7 @@ export default function VelocityPage() {
 
         // Build inventory map: sku → latest snapshot
         // For each SKU keep entry with most recent snapshot_date
-        const invMap: Record<string, { stock: number; title: string; vendor: string; productType: string; price: number }> = {};
+        const invMap: Record<string, { stock: number; title: string; vendor: string; productType: string; variantTitle: string; price: number }> = {};
         for (const inv of inventoryRaw) {
           const sku = inv.sku || '';
           if (!sku) continue;
@@ -144,6 +170,7 @@ export default function VelocityPage() {
               title: inv.product_title || '',
               vendor: inv.vendor || '',
               productType: inv.product_type || '',
+              variantTitle: inv.variant_title || '',
               price: parseFloat(inv.price) || 0,
               _snap: inv.snapshot_date || '',
             } as any;
@@ -202,6 +229,7 @@ export default function VelocityPage() {
           const title = inv?.title || meta.title || sku;
           const vendor = inv?.vendor || meta.vendor || '';
           const productType = inv?.productType || meta.productType || '';
+          const variantTitle = inv?.variantTitle || '';
           const stock = inv?.stock ?? 0;
 
           const vel60 = s60 / 60;
@@ -217,6 +245,7 @@ export default function VelocityPage() {
             sku,
             vendor,
             productType,
+            variantTitle,
             stock,
             vel7,
             vel30,
@@ -601,6 +630,7 @@ export default function VelocityPage() {
                           {/* Variant detail rows (when expanded) */}
                           {isExpanded && group.variants.map((row) => {
                             const vrb = RISK_BADGE[row.risk];
+                            const vp = parseVariantTitle(row.variantTitle);
                             return (
                               <tr
                                 key={row.key}
@@ -608,14 +638,14 @@ export default function VelocityPage() {
                               >
                                 {/* Indent spacer */}
                                 <td className="py-1.5 w-6" />
-                                {/* Title (indented, show SKU inline) */}
+                                {/* SKU + Color/Size */}
                                 <td className="py-1.5 pl-4 text-muted-foreground max-w-[200px]">
                                   <span className="font-mono text-[11px]">{row.sku || '—'}</span>
                                 </td>
-                                {/* Vendor */}
-                                <td className="py-1.5 text-muted-foreground text-[11px]">{row.vendor || '—'}</td>
-                                {/* Category */}
-                                <td className="py-1.5 text-muted-foreground text-[11px]">{row.productType || '—'}</td>
+                                {/* Color/Style */}
+                                <td className="py-1.5 text-muted-foreground text-[11px]">{vp.color || '—'}</td>
+                                {/* Size */}
+                                <td className="py-1.5 text-muted-foreground text-[11px]">{vp.size || '—'}</td>
                                 {/* Stock */}
                                 <td className={`py-1.5 text-right tabular-nums text-[11px] ${stockColor(row.stock)}`}>
                                   {formatNumber(row.stock)}

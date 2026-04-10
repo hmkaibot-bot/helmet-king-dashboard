@@ -15,6 +15,38 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
+// ── Variant Title Parser ────────────────────────────────────
+const SIZE_TOKENS = new Set([
+  'XXS','XS','S','M','L','XL','XXL','XXXL','2XL','3XL','4XL',
+  'SM','MD','LG','O/S','OS','ONE SIZE','FREE SIZE',
+  '52','53','54','55','56','57','58','59','60','61','62','63','64',
+  '52-53','54-55','56-57','58-59','60-61','62-63',
+]);
+
+function parseVariantTitle(vt: string | null | undefined): { color: string; size: string } {
+  if (!vt || vt === 'Default Title') return { color: '', size: '' };
+  const trimmed = vt.trim();
+  // Check for " / " separator
+  if (trimmed.includes(' / ')) {
+    const parts = trimmed.split(' / ');
+    const last = parts[parts.length - 1].trim().toUpperCase();
+    if (SIZE_TOKENS.has(last) || /^\d{1,3}(-\d{1,3})?$/.test(last)) {
+      return {
+        color: parts.slice(0, -1).join(' / ').trim(),
+        size: parts[parts.length - 1].trim(),
+      };
+    }
+    // If last token isn't a recognized size, treat first as color and rest ambiguous
+    return { color: parts[0].trim(), size: parts.slice(1).join(' / ').trim() };
+  }
+  // No separator — check if entire string is a size
+  if (SIZE_TOKENS.has(trimmed.toUpperCase()) || /^\d{1,3}(-\d{1,3})?$/.test(trimmed)) {
+    return { color: '', size: trimmed };
+  }
+  // Otherwise treat as color/style
+  return { color: trimmed, size: '' };
+}
+
 // ── Types ──────────────────────────────────────────────────
 
 interface ProcurementEvent {
@@ -57,7 +89,7 @@ async function fetchAllInventory(): Promise<any[]> {
   while (true) {
     const { data } = await supabase
       .from('shopify_inventory')
-      .select('variant_id, product_id, product_title, sku, price, inventory_quantity, vendor, product_type')
+      .select('variant_id, product_id, product_title, variant_title, sku, price, inventory_quantity, vendor, product_type')
       .gt('price', 0)
       .range(from, from + pageSize - 1);
     if (!data || data.length === 0) break;
@@ -733,7 +765,8 @@ export default function RetailInventoryPage() {
                         <th className="py-2 w-5"></th>
                         <th className="py-2 text-left font-medium">產品 Product</th>
                         <th className="py-2 text-left font-medium">品牌 Vendor</th>
-                        <th className="py-2 text-left font-medium">類型 Type</th>
+                        <th className="py-2 text-left font-medium">顏色/款式 Color</th>
+                        <th className="py-2 text-left font-medium">尺碼 Size</th>
                         <th className="py-2 text-right font-medium">型號數 Variants</th>
                         <th className="py-2 text-right font-medium">總庫存 Total Stock</th>
                         <th className="py-2 text-right font-medium">價格範圍 Price Range</th>
@@ -759,7 +792,7 @@ export default function RetailInventoryPage() {
                               </td>
                               <td className="py-2 font-medium max-w-[240px] truncate">{pg.title}</td>
                               <td className="py-2 text-muted-foreground">{pg.vendor || '—'}</td>
-                              <td className="py-2 text-muted-foreground">{pg.productType || '—'}</td>
+                              <td className="py-2 text-muted-foreground text-[10px]" colSpan={2}>{pg.productType || '—'}</td>
                               <td className="py-2 text-right tabular-nums">{pg.variantCount}</td>
                               <td className="py-2 text-right tabular-nums font-medium">{pg.totalStock}</td>
                               <td className="py-2 text-right tabular-nums">{priceRange}</td>
@@ -767,13 +800,14 @@ export default function RetailInventoryPage() {
                             {isExpanded && pg.items.map((variant: any, vi: number) => {
                               const varKey = variant.sku || `${pg.title}-v${vi}`;
                               const sales60d = salesByProduct[variant.sku] || salesByProduct[variant.product_title];
+                              const parsed = parseVariantTitle(variant.variant_title);
                               return (
                                 <tr key={varKey} className="border-b border-border/10 bg-accent/10">
                                   <td className="py-1.5"></td>
-                                  <td className="py-1.5 pl-4 text-muted-foreground">{variant.variant_title || '—'}</td>
-                                  <td className="py-1.5 font-mono text-[10px] text-muted-foreground" colSpan={1}>{variant.sku || '—'}</td>
-                                  <td className="py-1.5 text-muted-foreground text-[10px]">{variant.product_type || '—'}</td>
-                                  <td className="py-1.5 text-right tabular-nums text-[10px] text-muted-foreground">{sales60d ? sales60d.qty : '—'} sold</td>
+                                  <td className="py-1.5 pl-4 font-mono text-[10px] text-muted-foreground">{variant.sku || '—'}</td>
+                                  <td className="py-1.5 text-muted-foreground text-[11px]">{parsed.color || '—'}</td>
+                                  <td className="py-1.5 text-muted-foreground text-[11px]">{parsed.size || '—'}</td>
+                                  <td className="py-1.5 text-right tabular-nums text-[10px] text-muted-foreground">{sales60d ? `${sales60d.qty} sold` : '—'}</td>
                                   <td className="py-1.5 text-right tabular-nums">{variant.inventory_quantity ?? 0}</td>
                                   <td className="py-1.5 text-right tabular-nums">{formatCurrency(parseFloat(variant.price) || 0)}</td>
                                 </tr>
@@ -981,16 +1015,19 @@ export default function RetailInventoryPage() {
                                   <td className="py-1.5 text-right text-[10px] text-muted-foreground">{pg.variantCount} variants</td>
                                   <td className="py-1.5 text-right tabular-nums text-[10px]">{priceRange}</td>
                                 </tr>
-                                {isPgExpanded && pg.items.map((variant: any, vi: number) => (
-                                  <tr key={variant.sku || `${pgKey}-v${vi}`} className="border-b border-border/10 bg-accent/5">
-                                    <td className="py-1 pl-6" colSpan={1}></td>
-                                    <td className="py-1 pl-4 text-muted-foreground text-[10px]" colSpan={1}>{variant.variant_title || '—'}</td>
-                                    <td className="py-1 font-mono text-[10px] text-muted-foreground">{variant.sku || '—'}</td>
-                                    <td className="py-1 text-right tabular-nums text-[10px]">{variant.inventory_quantity ?? 0}</td>
-                                    <td className="py-1 text-right tabular-nums text-[10px]">{formatCurrency(parseFloat(variant.price) || 0)}</td>
-                                    <td></td>
-                                  </tr>
-                                ))}
+                                {isPgExpanded && pg.items.map((variant: any, vi: number) => {
+                                  const vp = parseVariantTitle(variant.variant_title);
+                                  return (
+                                    <tr key={variant.sku || `${pgKey}-v${vi}`} className="border-b border-border/10 bg-accent/5">
+                                      <td className="py-1 pl-6"></td>
+                                      <td className="py-1 pl-4 font-mono text-[10px] text-muted-foreground" colSpan={1}>{variant.sku || '—'}</td>
+                                      <td className="py-1 text-muted-foreground text-[10px]">{vp.color || '—'}</td>
+                                      <td className="py-1 text-muted-foreground text-[10px]">{vp.size || '—'}</td>
+                                      <td className="py-1 text-right tabular-nums text-[10px]">{variant.inventory_quantity ?? 0}</td>
+                                      <td className="py-1 text-right tabular-nums text-[10px]">{formatCurrency(parseFloat(variant.price) || 0)}</td>
+                                    </tr>
+                                  );
+                                })}
                               </>
                             );
                           })}
