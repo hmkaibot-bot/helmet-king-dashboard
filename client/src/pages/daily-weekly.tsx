@@ -401,39 +401,50 @@ export default function DailyWeeklyPage() {
     };
   }, [yOrders]);
 
-  // ── Staff performance: yesterday + MTD ────────────────
-  const staffPerformance = useMemo(() => {
-    const hktNow   = getHKNow();
-    const mtdStart = toDateStr(new Date(hktNow.getFullYear(), hktNow.getMonth(), 1));
-    const mtdEnd   = toDateStr(hktNow);
-    const mtdOrders = filterOrders(allOrders, mtdStart, mtdEnd);
+  // ── Staff performance ─────────────────────────────────────
+  const [staffTab, setStaffTab] = useState<'yesterday' | 'this_week' | 'this_month'>('yesterday');
 
-    const addTo = (map: Record<string, { rev: number; cnt: number }>, orders: any[]) => {
-      orders.forEach((o: any) => {
-        const uid = String(o.user_id || '');
-        if (!uid) return;
-        if (!map[uid]) map[uid] = { rev: 0, cnt: 0 };
-        map[uid].rev += parseFloat(o.total_price) || 0;
-        map[uid].cnt++;
+  const staffPerformance = useMemo(() => {
+    const hktNow  = getHKNow();
+    const mtdStart = toDateStr(new Date(hktNow.getFullYear(), hktNow.getMonth(), 1));
+    const wkStart  = thisWeek.from;
+    const wkEnd    = toDateStr(hktNow);
+
+    const toMap = (orders: any[]) => {
+      const m: Record<string, { rev: number; cnt: number }> = {};
+      orders.filter((o: any) => o.user_id).forEach((o: any) => {
+        const uid = String(o.user_id);
+        if (!m[uid]) m[uid] = { rev: 0, cnt: 0 };
+        m[uid].rev += parseFloat(o.total_price) || 0;
+        m[uid].cnt++;
       });
+      return m;
     };
 
-    const dayMap: Record<string, { rev: number; cnt: number }> = {};
-    const mtdMap: Record<string, { rev: number; cnt: number }> = {};
-    addTo(dayMap, yOrders.filter((o: any) => o.user_id));  // yesterday POS only
-    addTo(mtdMap, mtdOrders.filter((o: any) => o.user_id));
+    const dayMap  = toMap(yOrders);
+    const wkMap   = toMap(filterOrders(allOrders, wkStart, wkEnd));
+    const mtdMap  = toMap(filterOrders(allOrders, mtdStart, toDateStr(hktNow)));
 
-    const allUids = [...new Set([...Object.keys(dayMap), ...Object.keys(mtdMap)])];
-    return allUids
-      .map(uid => ({
-        uid,
-        dayRev:  dayMap[uid]?.rev  || 0,
-        dayCnt:  dayMap[uid]?.cnt  || 0,
-        mtdRev:  mtdMap[uid]?.rev  || 0,
-        mtdCnt:  mtdMap[uid]?.cnt  || 0,
-      }))
-      .sort((a, b) => b.mtdRev - a.mtdRev);
-  }, [allOrders, yOrders, filterOrders]);
+    const allUids = [...new Set([
+      ...Object.keys(dayMap),
+      ...Object.keys(wkMap),
+      ...Object.keys(mtdMap),
+    ])];
+
+    const rows = allUids.map(uid => ({
+      uid,
+      dayRev: dayMap[uid]?.rev  || 0,  dayCnt: dayMap[uid]?.cnt  || 0,
+      wkRev:  wkMap[uid]?.rev   || 0,  wkCnt:  wkMap[uid]?.cnt   || 0,
+      mtdRev: mtdMap[uid]?.rev  || 0,  mtdCnt: mtdMap[uid]?.cnt  || 0,
+    }));
+
+    // Sort by the currently active tab
+    return rows.sort((a, b) =>
+      staffTab === 'yesterday' ? b.dayRev - a.dayRev :
+      staffTab === 'this_week' ? b.wkRev  - a.wkRev  :
+      b.mtdRev - a.mtdRev
+    );
+  }, [allOrders, yOrders, thisWeek, filterOrders, staffTab]);
 
   // ── Yesterday holiday / upcoming holidays ──────────────
   const yesterdayHoliday = HK_HOLIDAYS[yesterday] || null;
@@ -788,124 +799,144 @@ export default function DailyWeeklyPage() {
           </Card>
 
           {/* ── Staff Performance Table ─────────────────────────── */}
-          {staffPerformance.length > 0 && (
-            <Card className="border-border/40">
-              <CardHeader className="pb-2 pt-3 px-4">
-                <CardTitle className="text-sm font-medium flex items-center gap-2">
-                  <Users className="h-3.5 w-3.5 text-primary" />
-                  員工表現
-                  <span className="text-xs font-normal text-muted-foreground">
-                    POS Staff Performance — 昨日 vs 本月至今 (MTD)
-                  </span>
-                  <span className="ml-auto text-[10px] text-muted-foreground/60">點擊姓名可重命名</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 pb-4">
-                {loading ? (
-                  <Skeleton className="h-32 w-full" />
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="border-b border-border/50 text-muted-foreground">
-                          <th className="py-2 text-left font-medium">姓名 Staff</th>
-                          <th className="py-2 text-right font-medium">昨日訂單</th>
-                          <th className="py-2 text-right font-medium">昨日物餅</th>
-                          <th className="py-2 text-right font-medium">MTD 訂單</th>
-                          <th className="py-2 text-right font-medium pr-1">MTD 累積物餅</th>
-                          <th className="py-2 text-right font-medium">MTD 均偕</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {staffPerformance.map((s, i) => (
-                          <tr key={s.uid} className={`border-b border-border/20 hover:bg-accent/30 transition-colors ${
-                            i === 0 ? 'bg-amber-500/5' : ''
-                          }`}>
-                            <td className="py-2">
-                              {editingUid === s.uid ? (
-                                <div className="flex items-center gap-1 flex-wrap">
-                                  {/* Quick-pick roster buttons */}
-                                  <div className="flex flex-wrap gap-1 mb-1">
-                                    {STAFF_ROSTER.map(name => (
-                                      <button
-                                        key={name}
-                                        onClick={() => saveStaffName(s.uid, name)}
-                                        className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary border border-primary/30 rounded hover:bg-primary/30 transition-colors"
-                                      >
-                                        {name}
-                                      </button>
-                                    ))}
-                                  </div>
-                                  <form
-                                    className="flex items-center gap-1"
-                                    onSubmit={e => { e.preventDefault(); saveStaffName(s.uid, editName); }}
-                                  >
-                                    <input
-                                      autoFocus
-                                      value={editName}
-                                      onChange={e => setEditName(e.target.value)}
-                                      placeholder="自行輸入..."
-                                      className="w-24 px-1.5 py-0.5 text-xs bg-gray-800 border border-gray-600 rounded text-gray-200 focus:outline-none focus:border-primary"
-                                    />
-                                    <button type="submit" className="text-[10px] px-1.5 py-0.5 bg-primary/80 text-primary-foreground rounded">存</button>
-                                    <button type="button" onClick={() => setEditingUid(null)} className="text-[10px] px-1 text-muted-foreground">取</button>
-                                  </form>
-                                </div>
-                              ) : (
-                                <button
-                                  onClick={() => { setEditingUid(s.uid); setEditName(staffNames[s.uid] || ''); }}
-                                  className="flex items-center gap-1.5 group"
-                                >
-                                  {i === 0 && <span className="text-amber-400">🥇</span>}
-                                  {i === 1 && <span className="text-gray-400">🥈</span>}
-                                  {i === 2 && <span className="text-amber-700">🥉</span>}
-                                  <span className={`font-medium ${ staffNames[s.uid] ? '' : 'text-muted-foreground italic' }`}>
-                                    {getStaffName(s.uid)}
-                                  </span>
-                                  <span className="text-[10px] text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity">✏️</span>
-                                </button>
-                              )}
-                            </td>
-                            <td className="py-2 text-right tabular-nums text-muted-foreground">
-                              {s.dayCnt > 0 ? s.dayCnt : <span className="opacity-30">—</span>}
-                            </td>
-                            <td className={`py-2 text-right tabular-nums font-semibold ${ s.dayRev > 0 ? '' : 'text-muted-foreground/30' }`}>
-                              {s.dayRev > 0 ? formatCurrency(s.dayRev) : '—'}
-                            </td>
-                            <td className="py-2 text-right tabular-nums text-muted-foreground">{s.mtdCnt}</td>
-                            <td className="py-2 text-right tabular-nums pr-1">
-                              <span className="font-bold text-[13px]">{formatCurrency(s.mtdRev)}</span>
-                            </td>
-                            <td className="py-2 text-right tabular-nums text-muted-foreground">
-                              {s.mtdCnt > 0 ? formatCurrency(s.mtdRev / s.mtdCnt) : '—'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      <tfoot>
-                        <tr className="border-t border-border/40 bg-muted/10">
-                          <td className="py-2 text-xs font-semibold text-muted-foreground">小計 Total POS</td>
-                          <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">
-                            {staffPerformance.reduce((s, r) => s + r.dayCnt, 0)}
-                          </td>
-                          <td className="py-2 text-right tabular-nums font-semibold text-xs">
-                            {formatCurrency(staffPerformance.reduce((s, r) => s + r.dayRev, 0))}
-                          </td>
-                          <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">
-                            {staffPerformance.reduce((s, r) => s + r.mtdCnt, 0)}
-                          </td>
-                          <td className="py-2 text-right tabular-nums font-bold text-xs pr-1">
-                            {formatCurrency(staffPerformance.reduce((s, r) => s + r.mtdRev, 0))}
-                          </td>
-                          <td className="py-2" />
-                        </tr>
-                      </tfoot>
-                    </table>
+          {staffPerformance.length > 0 && (() => {
+            const tabRev  = (r: typeof staffPerformance[0]) => staffTab === 'yesterday' ? r.dayRev : staffTab === 'this_week' ? r.wkRev : r.mtdRev;
+            const tabCnt  = (r: typeof staffPerformance[0]) => staffTab === 'yesterday' ? r.dayCnt : staffTab === 'this_week' ? r.wkCnt : r.mtdCnt;
+            const tabLabel = staffTab === 'yesterday' ? '昨日' : staffTab === 'this_week' ? '本週' : '本月MTD';
+            const totalRev = staffPerformance.reduce((s, r) => s + tabRev(r), 0);
+            const totalCnt = staffPerformance.reduce((s, r) => s + tabCnt(r), 0);
+            return (
+              <Card className="border-border/40">
+                <CardHeader className="pb-0 pt-3 px-4">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <Users className="h-3.5 w-3.5 text-primary" />
+                      員工表現
+                      <span className="text-xs font-normal text-muted-foreground">POS Staff Performance</span>
+                    </CardTitle>
+                    {/* Tab switcher */}
+                    <div className="flex items-center gap-1 bg-accent/30 rounded p-0.5 ml-auto">
+                      {([
+                        { key: 'yesterday',  label: '昨日' },
+                        { key: 'this_week',  label: '本週' },
+                        { key: 'this_month', label: '本月' },
+                      ] as const).map(t => (
+                        <button
+                          key={t.key}
+                          onClick={() => setStaffTab(t.key)}
+                          className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                            staffTab === t.key
+                              ? 'bg-primary text-primary-foreground'
+                              : 'text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="text-[10px] text-muted-foreground/60 hidden sm:block">點擊姓名可設定</span>
                   </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
+                </CardHeader>
+                <CardContent className="px-4 pb-4 pt-3">
+                  {loading ? (
+                    <Skeleton className="h-32 w-full" />
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-border/50 text-muted-foreground">
+                            <th className="py-2 text-left font-medium">姓名 Staff</th>
+                            <th className="py-2 text-right font-medium">{tabLabel}訂單</th>
+                            <th className="py-2 text-right font-medium">{tabLabel}物餅</th>
+                            <th className="py-2 text-right font-medium">{tabLabel}均偕</th>
+                            <th className="py-2 text-right font-medium">占比</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {staffPerformance.map((s, i) => {
+                            const rev = tabRev(s);
+                            const cnt = tabCnt(s);
+                            const pct = totalRev > 0 ? (rev / totalRev) * 100 : 0;
+                            return (
+                              <tr key={s.uid} className={`border-b border-border/20 hover:bg-accent/30 transition-colors ${
+                                i === 0 && rev > 0 ? 'bg-amber-500/5' : ''
+                              }`}>
+                                <td className="py-2">
+                                  {editingUid === s.uid ? (
+                                    <div className="space-y-1">
+                                      <div className="flex flex-wrap gap-1">
+                                        {STAFF_ROSTER.map(name => (
+                                          <button
+                                            key={name}
+                                            onClick={() => saveStaffName(s.uid, name)}
+                                            className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary border border-primary/30 rounded hover:bg-primary/30 transition-colors"
+                                          >
+                                            {name}
+                                          </button>
+                                        ))}
+                                      </div>
+                                      <form className="flex items-center gap-1" onSubmit={e => { e.preventDefault(); saveStaffName(s.uid, editName); }}>
+                                        <input autoFocus value={editName} onChange={e => setEditName(e.target.value)} placeholder="自行輸入..."
+                                          className="w-24 px-1.5 py-0.5 text-xs bg-gray-800 border border-gray-600 rounded text-gray-200 focus:outline-none focus:border-primary" />
+                                        <button type="submit" className="text-[10px] px-1.5 py-0.5 bg-primary/80 text-primary-foreground rounded">存</button>
+                                        <button type="button" onClick={() => setEditingUid(null)} className="text-[10px] px-1 text-muted-foreground">取</button>
+                                      </form>
+                                    </div>
+                                  ) : (
+                                    <button onClick={() => { setEditingUid(s.uid); setEditName(staffNames[s.uid] || ''); }}
+                                      className="flex items-center gap-1.5 group">
+                                      {i === 0 && rev > 0 && <span className="text-amber-400">🥇</span>}
+                                      {i === 1 && rev > 0 && <span className="text-gray-300">🥈</span>}
+                                      {i === 2 && rev > 0 && <span className="text-amber-700">🥉</span>}
+                                      <span className={`font-medium ${staffNames[s.uid] ? '' : 'text-muted-foreground italic'}`}>
+                                        {getStaffName(s.uid)}
+                                      </span>
+                                      <span className="text-[10px] text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity">✏️</span>
+                                    </button>
+                                  )}
+                                </td>
+                                <td className="py-2 text-right tabular-nums text-muted-foreground">
+                                  {cnt > 0 ? cnt : <span className="opacity-30">—</span>}
+                                </td>
+                                <td className={`py-2 text-right tabular-nums font-semibold ${rev > 0 ? '' : 'text-muted-foreground/30'}`}>
+                                  {rev > 0 ? formatCurrency(rev) : '—'}
+                                </td>
+                                <td className="py-2 text-right tabular-nums text-muted-foreground">
+                                  {cnt > 0 ? formatCurrency(rev / cnt) : '—'}
+                                </td>
+                                <td className="py-2 text-right">
+                                  {pct > 0 ? (
+                                    <div className="flex items-center justify-end gap-1.5">
+                                      <div className="w-12 h-1.5 bg-border/40 rounded-full overflow-hidden">
+                                        <div className="h-full bg-primary/60 rounded-full" style={{ width: `${pct}%` }} />
+                                      </div>
+                                      <span className="text-[10px] tabular-nums text-muted-foreground w-6 text-right">{pct.toFixed(0)}%</span>
+                                    </div>
+                                  ) : <span className="opacity-30">—</span>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                        <tfoot>
+                          <tr className="border-t border-border/40 bg-muted/10">
+                            <td className="py-2 text-xs font-semibold text-muted-foreground">小計</td>
+                            <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">{totalCnt}</td>
+                            <td className="py-2 text-right tabular-nums font-bold text-xs">{formatCurrency(totalRev)}</td>
+                            <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">
+                              {totalCnt > 0 ? formatCurrency(totalRev / totalCnt) : '—'}
+                            </td>
+                            <td className="py-2 text-right text-[10px] text-muted-foreground/60">100%</td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })()}
+
 
           {/* ── Category Breakdown ───────────────────────────────── */}
           <Card className="border-border/40">
