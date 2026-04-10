@@ -131,6 +131,17 @@ function getCatStyle(type: string) {
 
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+// Pre-loaded staff roster — pick from this list when assigning names to user_ids
+const STAFF_ROSTER = [
+  'Bean Tang',
+  'Dicky Leung',
+  'Kenny Chu',
+  'Part Time',
+  'SLIVER Chong',
+  'Tammy Tam',
+  'Zoe Lau',
+];
+
 // ── HK Public Holidays 2025–2026 ─────────────────────────────
 const HK_HOLIDAYS: Record<string, string> = {
   '2025-01-01': '元旦 New Year\'s Day',
@@ -812,20 +823,34 @@ export default function DailyWeeklyPage() {
                           }`}>
                             <td className="py-2">
                               {editingUid === s.uid ? (
-                                <form
-                                  className="flex items-center gap-1"
-                                  onSubmit={e => { e.preventDefault(); saveStaffName(s.uid, editName); }}
-                                >
-                                  <input
-                                    autoFocus
-                                    value={editName}
-                                    onChange={e => setEditName(e.target.value)}
-                                    placeholder="輸入姓名..."
-                                    className="w-24 px-1.5 py-0.5 text-xs bg-gray-800 border border-gray-600 rounded text-gray-200 focus:outline-none focus:border-primary"
-                                  />
-                                  <button type="submit" className="text-[10px] px-1.5 py-0.5 bg-primary/80 text-primary-foreground rounded">存</button>
-                                  <button type="button" onClick={() => setEditingUid(null)} className="text-[10px] px-1 text-muted-foreground">取</button>
-                                </form>
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  {/* Quick-pick roster buttons */}
+                                  <div className="flex flex-wrap gap-1 mb-1">
+                                    {STAFF_ROSTER.map(name => (
+                                      <button
+                                        key={name}
+                                        onClick={() => saveStaffName(s.uid, name)}
+                                        className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary border border-primary/30 rounded hover:bg-primary/30 transition-colors"
+                                      >
+                                        {name}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <form
+                                    className="flex items-center gap-1"
+                                    onSubmit={e => { e.preventDefault(); saveStaffName(s.uid, editName); }}
+                                  >
+                                    <input
+                                      autoFocus
+                                      value={editName}
+                                      onChange={e => setEditName(e.target.value)}
+                                      placeholder="自行輸入..."
+                                      className="w-24 px-1.5 py-0.5 text-xs bg-gray-800 border border-gray-600 rounded text-gray-200 focus:outline-none focus:border-primary"
+                                    />
+                                    <button type="submit" className="text-[10px] px-1.5 py-0.5 bg-primary/80 text-primary-foreground rounded">存</button>
+                                    <button type="button" onClick={() => setEditingUid(null)} className="text-[10px] px-1 text-muted-foreground">取</button>
+                                  </form>
+                                </div>
                               ) : (
                                 <button
                                   onClick={() => { setEditingUid(s.uid); setEditName(staffNames[s.uid] || ''); }}
