@@ -8,6 +8,7 @@ import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart
 import {
   DollarSign, ShoppingCart, TrendingUp, Calendar, Trophy, Package,
   ChevronDown, ChevronRight, AlertTriangle, Tag, Zap,
+  Monitor, Store, Bike, Cloud, Thermometer, Droplets, Wind,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -130,6 +131,66 @@ function getCatStyle(type: string) {
 
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+// ── HK Public Holidays 2025–2026 ─────────────────────────────
+const HK_HOLIDAYS: Record<string, string> = {
+  '2025-01-01': '元旦 New Year\'s Day',
+  '2025-01-29': '農曆新年初一 CNY Day 1',
+  '2025-01-30': '農曆新年初二 CNY Day 2',
+  '2025-01-31': '農曆新年初三 CNY Day 3',
+  '2025-04-04': '清明節 Ching Ming',
+  '2025-04-18': '耶穌受難節 Good Friday',
+  '2025-04-19': '受難節翌日 Day after Good Friday',
+  '2025-04-21': '復活節星期一 Easter Monday',
+  '2025-05-01': '勞動節 Labour Day',
+  '2025-05-05': '佛誕 Buddha\'s Birthday',
+  '2025-06-02': '端午節 Tuen Ng Festival',
+  '2025-07-01': '香港回歸紀念日 HKSAR Establishment Day',
+  '2025-09-07': '中秋節翌日 Day after Mid-Autumn',
+  '2025-10-01': '國慶日 National Day',
+  '2025-10-02': '國慶日翌日 Day after National Day',
+  '2025-10-07': '重陽節 Chung Yeung Festival',
+  '2025-12-25': '聖誕節 Christmas Day',
+  '2025-12-26': '聖誕節後第一個周日 Boxing Day',
+  '2026-01-01': '元旦 New Year\'s Day',
+  '2026-02-17': '農曆新年初一 CNY Day 1',
+  '2026-02-18': '農曆新年初二 CNY Day 2',
+  '2026-02-19': '農曆新年初三 CNY Day 3',
+  '2026-04-03': '耶穌受難節 Good Friday',
+  '2026-04-04': '受難節翌日 / 清明節 Day after GF / Ching Ming',
+  '2026-04-06': '復活節星期一 Easter Monday',
+  '2026-05-01': '勞動節 Labour Day',
+  '2026-05-25': '佛誕 Buddha\'s Birthday',
+  '2026-06-19': '端午節 Tuen Ng Festival',
+  '2026-07-01': '香港回歸紀念日 HKSAR Establishment Day',
+  '2026-10-01': '國慶日 National Day',
+  '2026-10-04': '中秋節翌日 Day after Mid-Autumn',
+  '2026-10-26': '重陽節 Chung Yeung Festival',
+  '2026-12-25': '聖誕節 Christmas Day',
+  '2026-12-26': '聖誕節後第一個周日 Boxing Day',
+};
+
+// HK Observatory weather icon → emoji + label
+function weatherLabel(icon: number | null): { emoji: string; label: string } {
+  if (!icon) return { emoji: '🌡', label: '—' };
+  if (icon === 50) return { emoji: '☁️', label: '多雲 Cloudy' };
+  if (icon === 51) return { emoji: '☀️', label: '天晴 Fine' };
+  if (icon === 52) return { emoji: '🌤', label: '間晴 Sunny Intervals' };
+  if (icon === 53) return { emoji: '🌦', label: '間晴有驟雨 Sunny, Showers' };
+  if (icon === 54) return { emoji: '⛈', label: '間晴有雷暴 Sunny, Thunderstorms' };
+  if ([55, 56].includes(icon)) return { emoji: '🌦', label: '多雲有驟雨 Cloudy, Showers' };
+  if (icon === 60) return { emoji: '☁️', label: '多雲 Overcast' };
+  if (icon === 61) return { emoji: '🌫', label: '密雲 Dense Cloud' };
+  if ([62, 63].includes(icon)) return { emoji: '🌧', label: '密雲有微雨 Overcast, Drizzle' };
+  if ([64, 65].includes(icon)) return { emoji: '🌧', label: '有雨 Rain' };
+  if ([66, 67].includes(icon)) return { emoji: '🌧', label: '大雨 Heavy Rain' };
+  if (icon >= 70 && icon <= 76) return { emoji: '🌧', label: '大雨 Rainstorm' };
+  if (icon === 80) return { emoji: '🌀', label: '熱帶氣旋 Tropical Cyclone' };
+  if (icon >= 81 && icon <= 84) return { emoji: '⛈', label: '雷暴 Thunderstorm' };
+  if ([90, 91].includes(icon)) return { emoji: '🌫', label: '霧 Fog/Mist' };
+  if (icon === 93) return { emoji: '🔆', label: '酷熱 Very Hot' };
+  return { emoji: '🌡', label: `Icon ${icon}` };
+}
+
 // ── Main Component ────────────────────────────────────────────
 export default function DailyWeeklyPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('yesterday');
@@ -139,6 +200,46 @@ export default function DailyWeeklyPage() {
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
   const [productTypeMap, setProductTypeMap] = useState<Record<string, string>>({});
   const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set());
+  const [weather, setWeather] = useState<{
+    temp: number | null;
+    humidity: number | null;
+    icon: number | null;
+    warning: string;
+    updateTime: string;
+    forecast: Array<{ date: string; maxTemp: number; minTemp: number; desc: string; icon: number; psr: string }>;
+  }>({
+    temp: null, humidity: null, icon: null, warning: '', updateTime: '', forecast: [],
+  });
+
+  // ── Weather: HK Observatory API ─────────────────────────
+  useEffect(() => {
+    async function fetchWeather() {
+      try {
+        const [curr, fnd] = await Promise.all([
+          fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=en').then(r => r.json()),
+          fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=fnd&lang=en').then(r => r.json()),
+        ]);
+        const tempArr = curr?.temperature?.data || [];
+        const hkoTemp = tempArr.find((t: any) => t.place?.includes('Observatory'))?.value ?? tempArr[0]?.value ?? null;
+        const humidity = curr?.humidity?.data?.[0]?.value ?? null;
+        const icon     = (curr?.icon?.[0]) ?? null;
+        const warning  = curr?.warningMessage ?? '';
+        const updateTime = curr?.updateTime ?? '';
+        const forecast = (fnd?.weatherForecast || []).slice(0, 7).map((f: any) => ({
+          date:    String(f.forecastDate),
+          maxTemp: f.forecastMaxtemp?.value,
+          minTemp: f.forecastMintemp?.value,
+          desc:    f.forecastWeather,
+          icon:    f.ForecastIcon,
+          psr:     f.PSR,
+        }));
+        setWeather({ temp: hkoTemp, humidity, icon, warning, updateTime, forecast });
+      } catch (e) {
+        console.warn('Weather fetch failed:', e);
+      }
+    }
+    fetchWeather();
+  }, []);
 
   // ── Data Loading ──────────────────────────────────────────
   useEffect(() => {
@@ -239,6 +340,47 @@ export default function DailyWeeklyPage() {
   const yAov  = yOrders.length  > 0 ? yRevenue  / yOrders.length  : 0;
   const lwAov = lwOrders.length > 0 ? lwRevenue / lwOrders.length : 0;
   const calcDelta = (curr: number, prev: number) => prev === 0 ? null : ((curr - prev) / prev) * 100;
+
+  // ── Channel breakdown (from shopify source_name) ───────────
+  const channelBreakdown = useMemo(() => {
+    const groups: Record<string, any[]> = { pos: [], web: [], referral: [], other: [] };
+    yOrders.forEach((o: any) => {
+      const src = (o.source_name || '').toLowerCase();
+      if (src === 'pos' || /^\d+$/.test(src)) groups.pos.push(o);
+      else if (src === 'web' || src === 'mobile_web' || src === 'online_store') groups.web.push(o);
+      else if (src.startsWith('http')) groups.referral.push(o);
+      else if (src) groups.other.push(o);
+      else groups.other.push(o);
+    });
+    const calc = (list: any[]) => ({
+      count: list.length,
+      revenue: list.reduce((s, o) => s + (parseFloat(o.total_price) || 0), 0),
+      aov: list.length > 0 ? list.reduce((s, o) => s + (parseFloat(o.total_price) || 0), 0) / list.length : 0,
+    });
+    // Referral domains
+    const refDomains: Record<string, number> = {};
+    groups.referral.forEach((o: any) => {
+      try { const host = new URL(o.source_name).hostname.replace('www.',''); refDomains[host] = (refDomains[host]||0)+1; } catch {}
+    });
+    return {
+      pos:      calc(groups.pos),
+      web:      calc(groups.web),
+      referral: { ...calc(groups.referral), domains: refDomains },
+      other:    calc(groups.other),
+    };
+  }, [yOrders]);
+
+  // ── Yesterday holiday / upcoming holidays ──────────────
+  const yesterdayHoliday = HK_HOLIDAYS[yesterday] || null;
+  const upcomingHolidays = useMemo(() => {
+    const today   = toDateStr(getHKNow());
+    const cutoff  = new Date(today); cutoff.setDate(cutoff.getDate() + 14);
+    const cutStr  = toDateStr(cutoff);
+    return Object.entries(HK_HOLIDAYS)
+      .filter(([d]) => d >= today && d <= cutStr)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(0, 3);
+  }, [yesterday]);
 
   // ── Enrich product entry ──────────────────────────────────
   const enrichProduct = useCallback(
@@ -422,6 +564,163 @@ export default function DailyWeeklyPage() {
             <KpiCard title="昨日均價" subtitle="AOV"           value={formatCurrency(yAov)}           icon={TrendingUp}  loading={loading} delta={calcDelta(yAov,          lwAov)}           testId="kpi-y-aov" />
             <KpiCard title="上週同日" subtitle="Same Day LW"   value={formatCurrency(lwRevenue)}      icon={Calendar}    loading={loading}                                                    testId="kpi-y-lw" />
           </div>
+
+          {/* ── Weather + Holiday Card ──────────────────────────── */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* Weather */}
+            <Card className="border-border/40">
+              <CardHeader className="pb-1 pt-3 px-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Cloud className="h-3.5 w-3.5 text-blue-400" />
+                  今日天氣 <span className="text-xs font-normal text-muted-foreground">HK Weather (Observatory)</span>
+                  {weather.warning && (
+                    <span className="ml-auto text-[10px] font-semibold text-red-400 px-1.5 py-0.5 rounded bg-red-500/15 border border-red-500/30">
+                      ⚠️ {weather.warning}
+                    </span>
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 pb-3">
+                {weather.temp === null ? (
+                  <p className="text-xs text-muted-foreground">載入中...</p>
+                ) : (
+                  <>
+                    {/* Current conditions */}
+                    <div className="flex items-center gap-4 mb-3">
+                      <span className="text-4xl">{weatherLabel(weather.icon).emoji}</span>
+                      <div>
+                        <p className="text-2xl font-bold tabular-nums">{weather.temp}°C</p>
+                        <p className="text-xs text-muted-foreground">{weatherLabel(weather.icon).label}</p>
+                        <div className="flex items-center gap-3 mt-0.5 text-[11px] text-muted-foreground">
+                          <span className="flex items-center gap-1"><Droplets className="h-3 w-3" />{weather.humidity}%</span>
+                          <span className="text-muted-foreground/40">天文台 {weather.updateTime?.slice(11,16)} HKT</span>
+                        </div>
+                      </div>
+                    </div>
+                    {/* 7-day forecast strip */}
+                    {weather.forecast.length > 0 && (
+                      <div className="grid grid-cols-7 gap-1">
+                        {weather.forecast.map((f, i) => {
+                          const d = f.date; // YYYYMMDD
+                          const dayLabel = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`).getDay()];
+                          const isHoliday = !!HK_HOLIDAYS[`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`];
+                          return (
+                            <div key={i} className={`text-center p-1 rounded-md text-[10px] ${ isHoliday ? 'bg-red-500/15 border border-red-500/20' : 'bg-accent/30' }`}>
+                              <p className={`font-medium mb-0.5 ${isHoliday ? 'text-red-400' : 'text-muted-foreground'}`}>{dayLabel}</p>
+                              <p className="text-base leading-none">{weatherLabel(f.icon).emoji}</p>
+                              <p className="mt-0.5 tabular-nums">{f.maxTemp}°</p>
+                              <p className="text-muted-foreground/60 tabular-nums">{f.minTemp}°</p>
+                              {f.psr && f.psr !== 'Low' && (
+                                <p className={`text-[9px] mt-0.5 font-medium ${ f.psr === 'High' ? 'text-blue-400' : 'text-amber-400' }`}>{f.psr === 'High' ? '高' : '中'}雨</p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Holidays + Context */}
+            <Card className="border-border/40">
+              <CardHeader className="pb-1 pt-3 px-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <Calendar className="h-3.5 w-3.5 text-red-400" />
+                  假期 / 人流影響 <span className="text-xs font-normal text-muted-foreground">HK Holidays & Foot Traffic</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 pb-3">
+                {/* Yesterday holiday status */}
+                <div className={`rounded-lg p-3 mb-3 ${ yesterdayHoliday ? 'bg-red-500/10 border border-red-500/20' : 'bg-green-500/5 border border-green-500/15' }`}>
+                  <p className="text-xs font-semibold mb-0.5">
+                    {yesterdayHoliday ? '🔴 昨日為公眾假期' : '🟢 昨日非假期'}
+                  </p>
+                  {yesterdayHoliday ? (
+                    <p className="text-[11px] text-red-300">{yesterdayHoliday}</p>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">普通工作日 / 周末，人流屬正常水平</p>
+                  )}
+                </div>
+                {/* Upcoming holidays */}
+                {upcomingHolidays.length > 0 && (
+                  <div>
+                    <p className="text-[11px] text-muted-foreground font-medium mb-1.5">未來 14 日假期 Upcoming:</p>
+                    <div className="space-y-1">
+                      {upcomingHolidays.map(([date, name]) => {
+                        const days = Math.round((new Date(date).getTime() - new Date(toDateStr(getHKNow())).getTime()) / 86400000);
+                        return (
+                          <div key={date} className="flex items-center justify-between text-[11px] bg-amber-500/5 border border-amber-500/15 rounded px-2 py-1">
+                            <span className="text-amber-300 font-medium">{date}</span>
+                            <span className="text-muted-foreground truncate mx-2 flex-1">{name}</span>
+                            <span className="text-amber-400 shrink-0">{days === 0 ? '今日' : days === 1 ? '明日' : `${days}日後`}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {upcomingHolidays.length === 0 && (
+                  <p className="text-[11px] text-muted-foreground">未來 14 日無公眾假期</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* ── Sales Channel Breakdown ───────────────────────────── */}
+          <Card className="border-border/40">
+            <CardHeader className="pb-2 pt-3 px-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Store className="h-3.5 w-3.5 text-primary" />
+                銷售渠道分析
+                <span className="text-xs font-normal text-muted-foreground">Sales Channel Breakdown — {yesterday}</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pb-4">
+              {loading ? (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {[1,2,3,4].map(i => <Skeleton key={i} className="h-20" />)}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {/* Channel cards */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {[
+                      { key: 'pos',      label: '門市 POS',          icon: Store,   color: 'text-amber-400',  border: 'border-amber-500/20',  bg: 'bg-amber-500/5',   data: channelBreakdown.pos },
+                      { key: 'web',      label: '網店 Online',        icon: Monitor, color: 'text-blue-400',   border: 'border-blue-500/20',   bg: 'bg-blue-500/5',    data: channelBreakdown.web },
+                      { key: 'referral', label: '轉介 Referral',      icon: Bike,    color: 'text-green-400',  border: 'border-green-500/20',  bg: 'bg-green-500/5',   data: channelBreakdown.referral },
+                      { key: 'other',    label: '其他 Other',         icon: Zap,     color: 'text-gray-400',   border: 'border-gray-500/20',   bg: 'bg-gray-500/5',    data: channelBreakdown.other },
+                    ].map(ch => (
+                      <div key={ch.key} className={`rounded-lg border ${ch.border} ${ch.bg} p-3`}>
+                        <div className="flex items-center gap-1.5 mb-2">
+                          <ch.icon className={`h-3.5 w-3.5 ${ch.color}`} />
+                          <span className={`text-[11px] font-semibold ${ch.color}`}>{ch.label}</span>
+                        </div>
+                        <p className="text-lg font-bold tabular-nums">{formatCurrency(ch.data.revenue)}</p>
+                        <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted-foreground">
+                          <span>{ch.data.count} 單</span>
+                          {ch.data.count > 0 && <span>AOV {formatCurrency(ch.data.aov)}</span>}
+                        </div>
+                        {'domains' in ch.data && Object.keys(ch.data.domains).length > 0 && (
+                          <div className="mt-1.5">
+                            {Object.entries(ch.data.domains as Record<string,number>).slice(0,2).map(([d,n]) => (
+                              <p key={d} className="text-[10px] text-muted-foreground/70 truncate">{d} ×{n}</p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {/* Staff data note */}
+                  <p className="text-[11px] text-muted-foreground/60 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500/60 shrink-0 inline-block" />
+                    員工個人銷售分析需要從 Shopify POS 同步 <span className="font-mono">user_id</span> 欄位。ETL 更新後可顯示每位 Sales 的業績。
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* ── Category Breakdown ───────────────────────────────── */}
           <Card className="border-border/40">
