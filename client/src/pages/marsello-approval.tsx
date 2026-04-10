@@ -365,6 +365,97 @@ export default function MarselloApprovalPage() {
     setScanning(false);
   }
 
+  // ── Refresh matching for queued items ─────────────────────
+  async function refreshMatching() {
+    setScanning(true);
+    try {
+      // Re-fetch latest Marsello + BC customer data
+      const [marselloCustomers, bcCustomers] = await Promise.all([
+        queryAllPages('marsello_customers', 'id,email,first_name,last_name,phone,loyalty_points'),
+        queryAllPages('bc_customers', 'number,display_name,phone_number,email'),
+      ]);
+
+      // Build lookup maps
+      const bcPhoneMap: Record<string, string> = {};
+      const bcEmailMap: Record<string, string> = {};
+      (bcCustomers as any[]).forEach((c: any) => {
+        if (c.phone_number) bcPhoneMap[c.number] = c.phone_number;
+        if (c.email)        bcEmailMap[c.number] = c.email;
+      });
+
+      const marselloList = marselloCustomers as MarselloCustomer[];
+      const marselloByPhone: Record<string, MarselloCustomer> = {};
+      const marselloByEmail: Record<string, MarselloCustomer> = {};
+      marselloList.forEach(m => {
+        const np = normalizePhone(m.phone);
+        if (np && np.length >= 8) marselloByPhone[np] = m;
+        if (m.email) marselloByEmail[m.email.toLowerCase().trim()] = m;
+      });
+
+      // Re-match all pending items (especially unmatched ones)
+      const pendingItems = queue.filter(q => q.status === 'pending');
+      let updatedCount = 0;
+
+      for (const item of pendingItems) {
+        let matched: MarselloCustomer | null = null;
+        let matchType: MatchType = 'unmatched';
+        const custNum = item.bc_customer_number || '';
+
+        // Priority 1: Phone match
+        const bcPhone = bcPhoneMap[custNum];
+        if (bcPhone) {
+          const np = normalizePhone(bcPhone);
+          if (np && marselloByPhone[np]) {
+            matched = marselloByPhone[np];
+            matchType = 'phone_match';
+          }
+        }
+
+        // Priority 2: Email match
+        if (!matched) {
+          const bcEmail = bcEmailMap[custNum];
+          if (bcEmail) {
+            const ne = bcEmail.toLowerCase().trim();
+            if (marselloByEmail[ne]) {
+              matched = marselloByEmail[ne];
+              matchType = 'exact_email';
+            }
+          }
+        }
+
+        // Also update bc_customer_email if we have it now
+        const newEmail = bcEmailMap[custNum] || item.bc_customer_email || null;
+
+        // Check if anything changed
+        const oldMatchId = item.marsello_customer_id || null;
+        const newMatchId = matched?.id || null;
+        if (newMatchId !== oldMatchId || matchType !== item.match_type || newEmail !== item.bc_customer_email) {
+          await supabase.from('garage_marsello_queue').update({
+            marsello_customer_id:    newMatchId,
+            marsello_customer_name:  matched ? `${matched.first_name || ''} ${matched.last_name || ''}`.trim() : null,
+            marsello_customer_email: matched?.email || null,
+            marsello_current_points: matched?.loyalty_points || null,
+            match_type:              matchType,
+            bc_customer_email:       newEmail,
+          }).eq('id', item.id);
+          updatedCount++;
+        }
+      }
+
+      await loadQueue();
+      alert(
+        `✅ 已重新匹配 ${pendingItems.length} 個待審批項目。\n` +
+        `更新了 ${updatedCount} 個匹配結果。\n\n` +
+        `(Refreshed ${pendingItems.length} pending items, ${updatedCount} updated)`
+      );
+    } catch (e) {
+      console.error('Refresh matching error:', e);
+      alert('刷新匹配失敗，請檢查控制台錯誤');
+    } finally {
+      setScanning(false);
+    }
+  }
+
   // ── Reject action ──────────────────────────────────────────
   async function rejectItem(item: QueueItem) {
     setActionLoading(item.id);
@@ -456,6 +547,15 @@ export default function MarselloApprovalPage() {
               同步 {counts.approved} 個已批准
             </button>
           )}
+          <button
+            onClick={refreshMatching}
+            disabled={scanning}
+            className="px-3 py-1.5 text-xs bg-amber-500/20 text-amber-400 rounded border border-amber-500/30 hover:bg-amber-500/30 transition-colors flex items-center gap-1.5"
+            title="重新匹配所有待審批項目的 Marsello 客戶（用最新資料）"
+          >
+            <RefreshCw className={`h-3 w-3 ${scanning ? 'animate-spin' : ''}`} />
+            刷新匹配
+          </button>
           <button
             onClick={scanInvoices}
             disabled={scanning}
