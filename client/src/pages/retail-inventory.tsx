@@ -216,6 +216,10 @@ export default function RetailInventoryPage() {
 
   // Track which SKU row is expanded (only one at a time)
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
+  // Track which product (by product_title) is expanded in the products tab and brand tab
+  const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
+  // Track which variant (by sku) is expanded inside a product group in the products/brand tab
+  const [expandedProductVariant, setExpandedProductVariant] = useState<string | null>(null);
 
   const toggleExpand = useCallback((sku: string) => {
     setExpandedSku((prev) => prev === sku ? null : sku);
@@ -477,19 +481,68 @@ export default function RetailInventoryPage() {
 
   // Brand detail expansion
   const [expandedBrand, setExpandedBrand] = useState<string | null>(null);
-  const brandProducts = useMemo(() => {
-    if (!expandedBrand) return [];
-    return filteredInventory
-      .filter((i: any) => (i.vendor || 'Unknown') === expandedBrand)
-      .map((i: any) => ({
-        product: i.product_title,
-        sku: i.sku,
-        qty: i.inventory_quantity || 0,
-        price: parseFloat(i.price) || 0,
-        type: classifyItem(i.sku),
+
+  // Group filteredInventory by product_title for the products tab
+  const productGroups = useMemo(() => {
+    const map: Record<string, { items: any[]; vendor: string; productType: string; totalStock: number; minPrice: number; maxPrice: number }> = {};
+    filteredInventory.forEach((i: any) => {
+      const title = i.product_title || 'Unknown';
+      if (!map[title]) {
+        map[title] = {
+          items: [],
+          vendor: i.vendor || '',
+          productType: i.product_type || '',
+          totalStock: 0,
+          minPrice: Infinity,
+          maxPrice: -Infinity,
+        };
+      }
+      map[title].items.push(i);
+      map[title].totalStock += i.inventory_quantity || 0;
+      const p = parseFloat(i.price) || 0;
+      if (p < map[title].minPrice) map[title].minPrice = p;
+      if (p > map[title].maxPrice) map[title].maxPrice = p;
+    });
+    return Object.entries(map)
+      .map(([title, d]) => ({
+        title,
+        vendor: d.vendor,
+        productType: d.productType,
+        totalStock: d.totalStock,
+        variantCount: d.items.length,
+        minPrice: d.minPrice === Infinity ? 0 : d.minPrice,
+        maxPrice: d.maxPrice === -Infinity ? 0 : d.maxPrice,
+        items: d.items,
       }))
-      .sort((a, b) => b.qty - a.qty);
-  }, [expandedBrand, filteredInventory, purchaseCountByItem]);
+      .sort((a, b) => b.totalStock - a.totalStock);
+  }, [filteredInventory]);
+
+  // Brand products grouped by product_title
+  const brandProductGroups = useMemo(() => {
+    if (!expandedBrand) return [];
+    const brandItems = filteredInventory.filter((i: any) => (i.vendor || 'Unknown') === expandedBrand);
+    const map: Record<string, { items: any[]; totalStock: number; minPrice: number; maxPrice: number; productType: string }> = {};
+    brandItems.forEach((i: any) => {
+      const title = i.product_title || 'Unknown';
+      if (!map[title]) map[title] = { items: [], totalStock: 0, minPrice: Infinity, maxPrice: -Infinity, productType: i.product_type || '' };
+      map[title].items.push(i);
+      map[title].totalStock += i.inventory_quantity || 0;
+      const p = parseFloat(i.price) || 0;
+      if (p < map[title].minPrice) map[title].minPrice = p;
+      if (p > map[title].maxPrice) map[title].maxPrice = p;
+    });
+    return Object.entries(map)
+      .map(([title, d]) => ({
+        title,
+        productType: d.productType,
+        totalStock: d.totalStock,
+        variantCount: d.items.length,
+        minPrice: d.minPrice === Infinity ? 0 : d.minPrice,
+        maxPrice: d.maxPrice === -Infinity ? 0 : d.maxPrice,
+        items: d.items,
+      }))
+      .sort((a, b) => b.totalStock - a.totalStock);
+  }, [expandedBrand, filteredInventory]);
 
   // Helper: get procurement badge text for a SKU
   const procBadge = (sku: string) => {
@@ -520,8 +573,9 @@ export default function RetailInventoryPage() {
   return (
     <div className="space-y-4">
       <Tabs defaultValue="overview" className="w-full">
-        <TabsList className="grid w-full grid-cols-6 h-9" data-testid="inventory-tabs">
+        <TabsList className="grid w-full grid-cols-7 h-9" data-testid="inventory-tabs">
           <TabsTrigger value="overview" className="text-xs">概覽 Overview</TabsTrigger>
+          <TabsTrigger value="products" className="text-xs">產品總覽 Products</TabsTrigger>
           <TabsTrigger value="evergreen" className="text-xs">常規 Evergreen</TabsTrigger>
           <TabsTrigger value="seasonal" className="text-xs">季節性 Seasonal</TabsTrigger>
           <TabsTrigger value="brand" className="text-xs">按品牌 By Brand</TabsTrigger>
@@ -662,6 +716,78 @@ export default function RetailInventoryPage() {
               </ResponsiveContainer>
             </ChartCard>
           </div>
+        </TabsContent>
+
+        {/* ═══ PRODUCTS TAB ═══ */}
+        <TabsContent value="products" className="space-y-4 mt-4">
+          <Card className="border-border/40">
+            <CardHeader className="pb-2 pt-4 px-4">
+              <CardTitle className="text-sm font-medium">產品總覽 <span className="text-xs font-normal text-muted-foreground">Grouped by product — click to expand variants</span></CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pb-4">
+              {loading ? <Skeleton className="h-[400px] w-full" /> : (
+                <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+                  <table className="w-full text-xs" data-testid="table-products">
+                    <thead className="sticky top-0 bg-card z-10">
+                      <tr className="border-b border-border/50 text-muted-foreground">
+                        <th className="py-2 w-5"></th>
+                        <th className="py-2 text-left font-medium">產品 Product</th>
+                        <th className="py-2 text-left font-medium">品牌 Vendor</th>
+                        <th className="py-2 text-left font-medium">類型 Type</th>
+                        <th className="py-2 text-right font-medium">型號數 Variants</th>
+                        <th className="py-2 text-right font-medium">總庫存 Total Stock</th>
+                        <th className="py-2 text-right font-medium">價格範圍 Price Range</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {productGroups.map((pg) => {
+                        const isExpanded = expandedProduct === pg.title;
+                        const priceRange = pg.minPrice === pg.maxPrice
+                          ? formatCurrency(pg.minPrice)
+                          : `${formatCurrency(pg.minPrice)} – ${formatCurrency(pg.maxPrice)}`;
+                        return (
+                          <>
+                            <tr
+                              key={pg.title}
+                              className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer"
+                              onClick={() => setExpandedProduct(isExpanded ? null : pg.title)}
+                            >
+                              <td className="py-2 pl-1">
+                                {isExpanded
+                                  ? <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+                                  : <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />}
+                              </td>
+                              <td className="py-2 font-medium max-w-[240px] truncate">{pg.title}</td>
+                              <td className="py-2 text-muted-foreground">{pg.vendor || '—'}</td>
+                              <td className="py-2 text-muted-foreground">{pg.productType || '—'}</td>
+                              <td className="py-2 text-right tabular-nums">{pg.variantCount}</td>
+                              <td className="py-2 text-right tabular-nums font-medium">{pg.totalStock}</td>
+                              <td className="py-2 text-right tabular-nums">{priceRange}</td>
+                            </tr>
+                            {isExpanded && pg.items.map((variant: any, vi: number) => {
+                              const varKey = variant.sku || `${pg.title}-v${vi}`;
+                              const sales60d = salesByProduct[variant.sku] || salesByProduct[variant.product_title];
+                              return (
+                                <tr key={varKey} className="border-b border-border/10 bg-accent/10">
+                                  <td className="py-1.5"></td>
+                                  <td className="py-1.5 pl-4 text-muted-foreground">{variant.variant_title || '—'}</td>
+                                  <td className="py-1.5 font-mono text-[10px] text-muted-foreground" colSpan={1}>{variant.sku || '—'}</td>
+                                  <td className="py-1.5 text-muted-foreground text-[10px]">{variant.product_type || '—'}</td>
+                                  <td className="py-1.5 text-right tabular-nums text-[10px] text-muted-foreground">{sales60d ? sales60d.qty : '—'} sold</td>
+                                  <td className="py-1.5 text-right tabular-nums">{variant.inventory_quantity ?? 0}</td>
+                                  <td className="py-1.5 text-right tabular-nums">{formatCurrency(parseFloat(variant.price) || 0)}</td>
+                                </tr>
+                              );
+                            })}
+                          </>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* ═══ EVERGREEN TAB ═══ */}
@@ -832,18 +958,42 @@ export default function RetailInventoryPage() {
                             <td className="py-2 text-right tabular-nums">{b.oos > 0 ? <span className="text-red-400">{b.oos}</span> : '0'}</td>
                             <td className="py-2 text-xs text-muted-foreground">{expandedBrand === b.brand ? '▲' : '▼'}</td>
                           </tr>
-                          {expandedBrand === b.brand && brandProducts.map((p, pi) => (
-                            <tr key={`${b.brand}-${pi}`} className="border-b border-border/10 bg-accent/10">
-                              <td className="py-1.5 pl-4 text-muted-foreground max-w-[200px] truncate">{p.product}</td>
-                              <td className="py-1.5 text-right font-mono text-[10px]">{p.sku || '—'}</td>
-                              <td className="py-1.5 text-right tabular-nums">{p.qty}</td>
-                              <td className="py-1.5 text-right tabular-nums">{formatCurrency(p.price * p.qty)}</td>
-                              <td className="py-1.5 text-right">
-                                <Badge variant="secondary" className="text-[9px]">{p.type === 'evergreen' ? '常規' : p.type === 'seasonal' ? '季節' : '一次'}</Badge>
-                              </td>
-                              <td></td>
-                            </tr>
-                          ))}
+                          {expandedBrand === b.brand && brandProductGroups.map((pg, pgi) => {
+                            const pgKey = `${b.brand}-pg-${pgi}`;
+                            const isPgExpanded = expandedProduct === pgKey;
+                            const priceRange = pg.minPrice === pg.maxPrice
+                              ? formatCurrency(pg.minPrice)
+                              : `${formatCurrency(pg.minPrice)} – ${formatCurrency(pg.maxPrice)}`;
+                            return (
+                              <>
+                                <tr
+                                  key={pgKey}
+                                  className="border-b border-border/10 bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer"
+                                  onClick={(e) => { e.stopPropagation(); setExpandedProduct(isPgExpanded ? null : pgKey); }}
+                                >
+                                  <td className="py-1.5 pl-2">
+                                    {isPgExpanded
+                                      ? <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+                                      : <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />}
+                                  </td>
+                                  <td className="py-1.5 pl-2 font-medium max-w-[200px] truncate" colSpan={2}>{pg.title}</td>
+                                  <td className="py-1.5 text-right tabular-nums">{formatNumber(pg.totalStock)}</td>
+                                  <td className="py-1.5 text-right text-[10px] text-muted-foreground">{pg.variantCount} variants</td>
+                                  <td className="py-1.5 text-right tabular-nums text-[10px]">{priceRange}</td>
+                                </tr>
+                                {isPgExpanded && pg.items.map((variant: any, vi: number) => (
+                                  <tr key={variant.sku || `${pgKey}-v${vi}`} className="border-b border-border/10 bg-accent/5">
+                                    <td className="py-1 pl-6" colSpan={1}></td>
+                                    <td className="py-1 pl-4 text-muted-foreground text-[10px]" colSpan={1}>{variant.variant_title || '—'}</td>
+                                    <td className="py-1 font-mono text-[10px] text-muted-foreground">{variant.sku || '—'}</td>
+                                    <td className="py-1 text-right tabular-nums text-[10px]">{variant.inventory_quantity ?? 0}</td>
+                                    <td className="py-1 text-right tabular-nums text-[10px]">{formatCurrency(parseFloat(variant.price) || 0)}</td>
+                                    <td></td>
+                                  </tr>
+                                ))}
+                              </>
+                            );
+                          })}
                         </>
                       ))}
                     </tbody>

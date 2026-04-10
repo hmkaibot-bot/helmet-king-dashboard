@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { queryAllPages } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { formatNumber } from '@/lib/format';
-import { TrendingUp, AlertTriangle, AlertOctagon, XCircle, Search, Filter } from 'lucide-react';
+import { TrendingUp, AlertTriangle, AlertOctagon, XCircle, Search, Filter, ChevronRight, ChevronDown } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
@@ -25,6 +25,21 @@ interface VelocityRow {
   vel60: number;
   daysToStockout: number | null;
   risk: RiskLevel;
+}
+
+interface ProductGroup {
+  key: string; // product title
+  title: string;
+  vendor: string;
+  productType: string;
+  totalStock: number;
+  totalVel7: number;
+  totalVel30: number;
+  totalVel60: number;
+  worstRisk: RiskLevel;
+  minDaysToStockout: number | null;
+  variantCount: number;
+  variants: VelocityRow[];
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -94,6 +109,8 @@ export default function VelocityPage() {
   const [riskFilter, setRiskFilter]       = useState<RiskLevel | 'all'>('all');
   const [sortKey, setSortKey]             = useState<SortKey>('risk');
   const [sortDir, setSortDir]             = useState<SortDir>('asc');
+  const [groupByProduct, setGroupByProduct] = useState(true);
+  const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -285,6 +302,72 @@ export default function VelocityPage() {
     return base;
   }, [rows, tab, search, vendorFilter, typeFilter, minVel, riskFilter, sortKey, sortDir]);
 
+  // Build product groups from displayed rows
+  const productGroups = useMemo((): ProductGroup[] => {
+    const groupMap = new Map<string, ProductGroup>();
+
+    for (const row of displayed) {
+      const groupKey = `${row.title}|||${row.vendor}`;
+      if (!groupMap.has(groupKey)) {
+        groupMap.set(groupKey, {
+          key: groupKey,
+          title: row.title,
+          vendor: row.vendor,
+          productType: row.productType,
+          totalStock: 0,
+          totalVel7: 0,
+          totalVel30: 0,
+          totalVel60: 0,
+          worstRisk: 'none',
+          minDaysToStockout: null,
+          variantCount: 0,
+          variants: [],
+        });
+      }
+      const group = groupMap.get(groupKey)!;
+      group.totalStock += row.stock;
+      group.totalVel7  += row.vel7;
+      group.totalVel30 += row.vel30;
+      group.totalVel60 += row.vel60;
+      group.variantCount += 1;
+      group.variants.push(row);
+
+      // Worst risk
+      if (RISK_ORDER[row.risk] < RISK_ORDER[group.worstRisk]) {
+        group.worstRisk = row.risk;
+      }
+      // Min days to stockout (treat null as infinity)
+      if (row.daysToStockout !== null) {
+        if (group.minDaysToStockout === null || row.daysToStockout < group.minDaysToStockout) {
+          group.minDaysToStockout = row.daysToStockout;
+        }
+      }
+    }
+
+    // Sort groups by worst risk first, then by minDaysToStockout
+    const groups = Array.from(groupMap.values());
+    groups.sort((a, b) => {
+      const rDiff = RISK_ORDER[a.worstRisk] - RISK_ORDER[b.worstRisk];
+      if (rDiff !== 0) return rDiff;
+      const aD = a.minDaysToStockout ?? 99999;
+      const bD = b.minDaysToStockout ?? 99999;
+      return aD - bD;
+    });
+    return groups;
+  }, [displayed]);
+
+  function toggleExpanded(key: string) {
+    setExpandedProducts((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
+
   function handleSort(key: SortKey) {
     if (sortKey === key) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -342,7 +425,9 @@ export default function VelocityPage() {
             銷售速率 <span className="text-xs font-normal text-muted-foreground">Sales Velocity — All Products</span>
             {!loading && (
               <span className="ml-2 text-xs font-normal text-muted-foreground">
-                顯示 {displayed.length} / {rows.length} 項
+                {groupByProduct
+                  ? `顯示 ${Math.min(productGroups.length, 500)} 組 / ${productGroups.length} 組，共 ${displayed.length} 項`
+                  : `顯示 ${displayed.length} / ${rows.length} 項`}
               </span>
             )}
           </CardTitle>
@@ -397,6 +482,17 @@ export default function VelocityPage() {
               <option value="ok">🟢 OK</option>
               <option value="none">— No velocity</option>
             </select>
+            {/* Group toggle button */}
+            <button
+              onClick={() => setGroupByProduct((v) => !v)}
+              className={`px-3 py-1.5 rounded-md text-xs border transition-colors ${
+                groupByProduct
+                  ? 'bg-primary/15 text-primary border-primary/30 font-medium'
+                  : 'bg-accent/40 text-muted-foreground border-border/40 hover:text-foreground hover:bg-accent/60'
+              }`}
+            >
+              {groupByProduct ? '按產品群組 Group by Product' : '按SKU Flat View'}
+            </button>
           </div>
 
           {loading ? (
@@ -408,12 +504,15 @@ export default function VelocityPage() {
               <table className="w-full text-xs" data-testid="table-velocity">
                 <thead className="sticky top-0 bg-card z-10">
                   <tr className="border-b border-border/50 text-muted-foreground">
+                    {groupByProduct && <th className="py-2 w-6" />}
                     <th className={thCls} onClick={() => handleSort('title')}>
                       產品 Product <SortIcon col="title" />
                     </th>
-                    <th className={thCls} onClick={() => handleSort('sku')}>
-                      SKU <SortIcon col="sku" />
-                    </th>
+                    {!groupByProduct && (
+                      <th className={thCls} onClick={() => handleSort('sku')}>
+                        SKU <SortIcon col="sku" />
+                      </th>
+                    )}
                     <th className={thCls} onClick={() => handleSort('vendor')}>
                       品牌 Brand <SortIcon col="vendor" />
                     </th>
@@ -441,45 +540,161 @@ export default function VelocityPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {displayed.slice(0, 500).map((row) => {
-                    const rb = RISK_BADGE[row.risk];
-                    return (
-                      <tr
-                        key={row.key}
-                        className={`border-b border-border/20 hover:bg-accent/30 transition-colors ${rowTint(row.risk)}`}
-                      >
-                        <td className="py-2 max-w-[200px] truncate font-medium">{row.title}</td>
-                        <td className="py-2 font-mono text-[11px] text-muted-foreground">{row.sku || '—'}</td>
-                        <td className="py-2 text-muted-foreground">{row.vendor || '—'}</td>
-                        <td className="py-2 text-muted-foreground">{row.productType || '—'}</td>
-                        <td className={`py-2 text-right tabular-nums ${stockColor(row.stock)}`}>
-                          {formatNumber(row.stock)}
-                        </td>
-                        <td className="py-2 text-right tabular-nums">{velFmt(row.vel7)}</td>
-                        <td className="py-2 text-right tabular-nums">{velFmt(row.vel30)}</td>
-                        <td className="py-2 text-right tabular-nums">{velFmt(row.vel60)}</td>
-                        <td className="py-2 text-right tabular-nums">
-                          {row.daysToStockout === null ? '—' : (
-                            <span className={
-                              row.daysToStockout === 0 ? 'text-red-400 font-semibold' :
-                              row.daysToStockout <= 7 ? 'text-red-400' :
-                              row.daysToStockout <= 21 ? 'text-yellow-400' : ''
-                            }>
-                              {daysFmt(row.daysToStockout)}
+                  {groupByProduct ? (
+                    // ── Grouped view ──────────────────────────────────
+                    productGroups.slice(0, 500).map((group) => {
+                      const isExpanded = expandedProducts.has(group.key);
+                      const rb = RISK_BADGE[group.worstRisk];
+                      return (
+                        <>
+                          {/* Group summary row */}
+                          <tr
+                            key={group.key}
+                            className={`border-b border-border/30 hover:bg-accent/30 transition-colors cursor-pointer ${rowTint(group.worstRisk)}`}
+                            onClick={() => toggleExpanded(group.key)}
+                          >
+                            {/* Chevron */}
+                            <td className="py-2 pr-1 w-6 text-muted-foreground">
+                              {isExpanded
+                                ? <ChevronDown className="h-3.5 w-3.5" />
+                                : <ChevronRight className="h-3.5 w-3.5" />}
+                            </td>
+                            {/* Title + variant badge */}
+                            <td className="py-2 max-w-[200px] font-semibold">
+                              <span className="truncate block">{group.title}</span>
+                              <span className="ml-0 mt-0.5 inline-block px-1.5 py-0 rounded text-[10px] bg-primary/10 text-primary border border-primary/20 font-normal">
+                                {group.variantCount} variant{group.variantCount !== 1 ? 's' : ''}
+                              </span>
+                            </td>
+                            {/* Vendor */}
+                            <td className="py-2 text-muted-foreground">{group.vendor || '—'}</td>
+                            {/* Category */}
+                            <td className="py-2 text-muted-foreground">{group.productType || '—'}</td>
+                            {/* Total stock */}
+                            <td className={`py-2 text-right tabular-nums ${stockColor(group.totalStock)}`}>
+                              {formatNumber(group.totalStock)}
+                            </td>
+                            {/* Velocities (sum) */}
+                            <td className="py-2 text-right tabular-nums">{velFmt(group.totalVel7)}</td>
+                            <td className="py-2 text-right tabular-nums">{velFmt(group.totalVel30)}</td>
+                            <td className="py-2 text-right tabular-nums">{velFmt(group.totalVel60)}</td>
+                            {/* Min days to stockout */}
+                            <td className="py-2 text-right tabular-nums">
+                              {group.minDaysToStockout === null ? '—' : (
+                                <span className={
+                                  group.minDaysToStockout === 0 ? 'text-red-400 font-semibold' :
+                                  group.minDaysToStockout <= 7 ? 'text-red-400' :
+                                  group.minDaysToStockout <= 21 ? 'text-yellow-400' : ''
+                                }>
+                                  {daysFmt(group.minDaysToStockout)}
+                                </span>
+                              )}
+                            </td>
+                            {/* Worst risk */}
+                            <td className="py-2">
+                              <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium border ${rb.cls}`}>
+                                {rb.label}
+                              </span>
+                            </td>
+                          </tr>
+
+                          {/* Variant detail rows (when expanded) */}
+                          {isExpanded && group.variants.map((row) => {
+                            const vrb = RISK_BADGE[row.risk];
+                            return (
+                              <tr
+                                key={row.key}
+                                className={`border-b border-border/10 hover:bg-accent/20 transition-colors ${rowTint(row.risk)}`}
+                              >
+                                {/* Indent spacer */}
+                                <td className="py-1.5 w-6" />
+                                {/* Title (indented, show SKU inline) */}
+                                <td className="py-1.5 pl-4 text-muted-foreground max-w-[200px]">
+                                  <span className="font-mono text-[11px]">{row.sku || '—'}</span>
+                                </td>
+                                {/* Vendor */}
+                                <td className="py-1.5 text-muted-foreground text-[11px]">{row.vendor || '—'}</td>
+                                {/* Category */}
+                                <td className="py-1.5 text-muted-foreground text-[11px]">{row.productType || '—'}</td>
+                                {/* Stock */}
+                                <td className={`py-1.5 text-right tabular-nums text-[11px] ${stockColor(row.stock)}`}>
+                                  {formatNumber(row.stock)}
+                                </td>
+                                {/* Velocities */}
+                                <td className="py-1.5 text-right tabular-nums text-[11px]">{velFmt(row.vel7)}</td>
+                                <td className="py-1.5 text-right tabular-nums text-[11px]">{velFmt(row.vel30)}</td>
+                                <td className="py-1.5 text-right tabular-nums text-[11px]">{velFmt(row.vel60)}</td>
+                                {/* Days to stockout */}
+                                <td className="py-1.5 text-right tabular-nums text-[11px]">
+                                  {row.daysToStockout === null ? '—' : (
+                                    <span className={
+                                      row.daysToStockout === 0 ? 'text-red-400 font-semibold' :
+                                      row.daysToStockout <= 7 ? 'text-red-400' :
+                                      row.daysToStockout <= 21 ? 'text-yellow-400' : ''
+                                    }>
+                                      {daysFmt(row.daysToStockout)}
+                                    </span>
+                                  )}
+                                </td>
+                                {/* Risk */}
+                                <td className="py-1.5">
+                                  <span className={`inline-block px-1.5 py-0 rounded-full text-[10px] font-medium border ${vrb.cls}`}>
+                                    {vrb.label}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </>
+                      );
+                    })
+                  ) : (
+                    // ── Flat view (original) ──────────────────────────
+                    displayed.slice(0, 500).map((row) => {
+                      const rb = RISK_BADGE[row.risk];
+                      return (
+                        <tr
+                          key={row.key}
+                          className={`border-b border-border/20 hover:bg-accent/30 transition-colors ${rowTint(row.risk)}`}
+                        >
+                          <td className="py-2 max-w-[200px] truncate font-medium">{row.title}</td>
+                          <td className="py-2 font-mono text-[11px] text-muted-foreground">{row.sku || '—'}</td>
+                          <td className="py-2 text-muted-foreground">{row.vendor || '—'}</td>
+                          <td className="py-2 text-muted-foreground">{row.productType || '—'}</td>
+                          <td className={`py-2 text-right tabular-nums ${stockColor(row.stock)}`}>
+                            {formatNumber(row.stock)}
+                          </td>
+                          <td className="py-2 text-right tabular-nums">{velFmt(row.vel7)}</td>
+                          <td className="py-2 text-right tabular-nums">{velFmt(row.vel30)}</td>
+                          <td className="py-2 text-right tabular-nums">{velFmt(row.vel60)}</td>
+                          <td className="py-2 text-right tabular-nums">
+                            {row.daysToStockout === null ? '—' : (
+                              <span className={
+                                row.daysToStockout === 0 ? 'text-red-400 font-semibold' :
+                                row.daysToStockout <= 7 ? 'text-red-400' :
+                                row.daysToStockout <= 21 ? 'text-yellow-400' : ''
+                              }>
+                                {daysFmt(row.daysToStockout)}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2">
+                            <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium border ${rb.cls}`}>
+                              {rb.label}
                             </span>
-                          )}
-                        </td>
-                        <td className="py-2">
-                          <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium border ${rb.cls}`}>
-                            {rb.label}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
-              {displayed.length > 500 && (
+              {groupByProduct && productGroups.length > 500 && (
+                <p className="text-xs text-muted-foreground text-center py-2">
+                  顯示前 500 組，共 {productGroups.length} 組。請用篩選縮小範圍。
+                </p>
+              )}
+              {!groupByProduct && displayed.length > 500 && (
                 <p className="text-xs text-muted-foreground text-center py-2">
                   顯示前 500 項，共 {displayed.length} 項。請用篩選縮小範圍。
                 </p>
