@@ -95,12 +95,14 @@ export async function loginFoorir(code: string, uuid: string): Promise<{ ok: boo
   const resp = await fetch(`${BASE}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: USERNAME, password: encPw, code, key: uuid }),
+    body: JSON.stringify({ username: USERNAME, password: encPw, code, uuid }),
   });
   const data = await resp.json();
 
   if (data.token) {
-    setFoorirToken(data.token);
+    // Token from API may include "Bearer " prefix — strip it for storage
+    const raw = data.token.replace(/^Bearer\s+/i, '');
+    setFoorirToken(raw);
     return { ok: true, message: 'Login successful' };
   }
   return { ok: false, message: data.message || 'Login failed' };
