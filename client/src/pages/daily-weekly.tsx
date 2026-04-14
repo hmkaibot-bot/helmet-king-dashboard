@@ -7,8 +7,8 @@ import { formatCurrency, formatNumber } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart-theme';
 import {
   DollarSign, ShoppingCart, TrendingUp, Calendar, Trophy, Package,
-  ChevronDown, ChevronRight, AlertTriangle, Tag, Zap,
-  Monitor, Store, Bike, Cloud, Thermometer, Droplets, Wind, Users,
+  ChevronDown, ChevronRight, AlertTriangle, Tag, Zap, Percent, Award,
+  Monitor, Store, Bike, Cloud, Thermometer, Droplets, Wind, Users, ArrowUp, ArrowDown,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -610,6 +610,83 @@ export default function DailyWeeklyPage() {
     });
   }, []);
 
+  // ── Active Promotions (discount codes with ongoing usage) ──
+  const activePromotions = useMemo(() => {
+    // Look at last 30 days of orders with discount codes
+    const hkt = getHKNow();
+    const thirtyAgo = new Date(hkt); thirtyAgo.setDate(hkt.getDate() - 30);
+    const thirtyStr = toDateStr(thirtyAgo);
+    const recentOrders = allOrders.filter((o: any) => toHKDateStr(o.created_at) >= thirtyStr && o.discount_codes);
+
+    const codeMap: Record<string, { code: string; uses: number; totalDiscount: number; totalSales: number; firstUse: string; lastUse: string; yesterdayUses: number; yesterdaySales: number }> = {};
+    recentOrders.forEach((o: any) => {
+      try {
+        const codes = typeof o.discount_codes === 'string' ? JSON.parse(o.discount_codes) : o.discount_codes;
+        if (!Array.isArray(codes)) return;
+        const orderDate = toHKDateStr(o.created_at);
+        codes.forEach((c: any) => {
+          const code = (c.code || '').trim();
+          if (!code) return;
+          // Skip random loyalty codes (pattern: single letter + 7 digits)
+          if (/^[A-Z]\d{7}$/.test(code)) return;
+          const amt = parseFloat(c.amount || '0');
+          if (!codeMap[code]) codeMap[code] = { code, uses: 0, totalDiscount: 0, totalSales: 0, firstUse: orderDate, lastUse: orderDate, yesterdayUses: 0, yesterdaySales: 0 };
+          codeMap[code].uses++;
+          codeMap[code].totalDiscount += amt;
+          codeMap[code].totalSales += parseFloat(o.total_price) || 0;
+          if (orderDate < codeMap[code].firstUse) codeMap[code].firstUse = orderDate;
+          if (orderDate > codeMap[code].lastUse) codeMap[code].lastUse = orderDate;
+          if (orderDate === yesterday) {
+            codeMap[code].yesterdayUses++;
+            codeMap[code].yesterdaySales += parseFloat(o.total_price) || 0;
+          }
+        });
+      } catch {}
+    });
+    // Only show codes used 2+ times or used yesterday
+    return Object.values(codeMap)
+      .filter(c => c.uses >= 2 || c.yesterdayUses > 0)
+      .sort((a, b) => b.uses - a.uses);
+  }, [allOrders, yesterday]);
+
+  // ── Brand Sales: Yesterday vs Day Before ──────────────────
+  const brandComparison = useMemo(() => {
+    const dayBefore = (() => { const d = new Date(yesterday + 'T00:00:00'); d.setDate(d.getDate() - 1); return toDateStr(d); })();
+    const yOrderIds = new Set(yOrders.map((o: any) => o.id));
+    const dbOrders = filterOrders(allOrders, dayBefore, dayBefore);
+    const dbOrderIds = new Set(dbOrders.map((o: any) => o.id));
+
+    const yBrands: Record<string, { qty: number; revenue: number }> = {};
+    const dbBrands: Record<string, { qty: number; revenue: number }> = {};
+
+    allOrderLines.forEach((l: any) => {
+      const vendor = l.vendor || 'Other';
+      const qty = l.quantity || 0;
+      const rev = (parseFloat(l.price) || 0) * qty;
+      if (yOrderIds.has(l.order_id)) {
+        if (!yBrands[vendor]) yBrands[vendor] = { qty: 0, revenue: 0 };
+        yBrands[vendor].qty += qty;
+        yBrands[vendor].revenue += rev;
+      }
+      if (dbOrderIds.has(l.order_id)) {
+        if (!dbBrands[vendor]) dbBrands[vendor] = { qty: 0, revenue: 0 };
+        dbBrands[vendor].qty += qty;
+        dbBrands[vendor].revenue += rev;
+      }
+    });
+
+    const allVendors = [...new Set([...Object.keys(yBrands), ...Object.keys(dbBrands)])];
+    return allVendors.map(v => ({
+      vendor: v,
+      yQty: yBrands[v]?.qty || 0,
+      yRevenue: yBrands[v]?.revenue || 0,
+      dbQty: dbBrands[v]?.qty || 0,
+      dbRevenue: dbBrands[v]?.revenue || 0,
+      qtyDelta: (yBrands[v]?.qty || 0) - (dbBrands[v]?.qty || 0),
+      revDelta: (yBrands[v]?.revenue || 0) - (dbBrands[v]?.revenue || 0),
+    })).sort((a, b) => b.yRevenue - a.yRevenue);
+  }, [yOrders, allOrders, allOrderLines, yesterday, filterOrders]);
+
   // ── Render ────────────────────────────────────────────────
   return (
     <div className="space-y-4">
@@ -1116,6 +1193,126 @@ export default function DailyWeeklyPage() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* ── Active Promotions ─────────────────────────────── */}
+          <Card className="border-border/40">
+            <CardHeader className="pb-2 pt-4 px-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Percent className="h-3.5 w-3.5 text-primary shrink-0" />
+                生效中 Promotions
+                <span className="text-xs font-normal text-muted-foreground">Active Discount Codes (30 Days)</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pb-4">
+              {loading ? (
+                <Skeleton className="h-24 w-full" />
+              ) : activePromotions.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">近 30 天無活躍折扣碼</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs" data-testid="table-active-promotions">
+                    <thead>
+                      <tr className="border-b border-border/50 text-muted-foreground">
+                        <th className="py-2 text-left font-medium">折扣碼 Code</th>
+                        <th className="py-2 text-right font-medium">30天使用次數</th>
+                        <th className="py-2 text-right font-medium">30天帶動銷售</th>
+                        <th className="py-2 text-right font-medium">30天折扣額</th>
+                        <th className="py-2 text-right font-medium">昨日使用</th>
+                        <th className="py-2 text-right font-medium">昨日銷售</th>
+                        <th className="py-2 text-left font-medium pl-3">活躍期間</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activePromotions.map(p => (
+                        <tr key={p.code} className={`border-b border-border/20 transition-colors ${
+                          p.yesterdayUses > 0 ? 'bg-primary/5 hover:bg-primary/10' : 'hover:bg-accent/30'
+                        }`}>
+                          <td className="py-2 font-mono font-semibold text-primary">{p.code}</td>
+                          <td className="py-2 text-right tabular-nums">{p.uses}</td>
+                          <td className="py-2 text-right tabular-nums font-semibold">{formatCurrency(p.totalSales)}</td>
+                          <td className="py-2 text-right tabular-nums text-red-400">-{formatCurrency(p.totalDiscount)}</td>
+                          <td className="py-2 text-right tabular-nums">
+                            {p.yesterdayUses > 0
+                              ? <span className="font-bold text-primary">{p.yesterdayUses}</span>
+                              : <span className="text-muted-foreground/40">0</span>
+                            }
+                          </td>
+                          <td className="py-2 text-right tabular-nums">
+                            {p.yesterdaySales > 0
+                              ? <span className="font-semibold">{formatCurrency(p.yesterdaySales)}</span>
+                              : <span className="text-muted-foreground/40">—</span>
+                            }
+                          </td>
+                          <td className="py-2 pl-3 text-muted-foreground text-[10px]">
+                            {p.firstUse === p.lastUse ? p.firstUse : `${p.firstUse} ~ ${p.lastUse}`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* ── Brand Sales vs Previous Day ────────────────────────── */}
+          <Card className="border-border/40">
+            <CardHeader className="pb-2 pt-4 px-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Award className="h-3.5 w-3.5 text-primary shrink-0" />
+                品牌銷售對比
+                <span className="text-xs font-normal text-muted-foreground">Brand Sales — Yesterday vs Day Before</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pb-4">
+              {loading ? (
+                <Skeleton className="h-48 w-full" />
+              ) : brandComparison.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">無品牌銷售數據</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs" data-testid="table-brand-comparison">
+                    <thead>
+                      <tr className="border-b border-border/50 text-muted-foreground">
+                        <th className="py-2 text-left font-medium">品牌 Brand</th>
+                        <th className="py-2 text-right font-medium">昨日件數</th>
+                        <th className="py-2 text-right font-medium">昨日營收</th>
+                        <th className="py-2 text-right font-medium">前日件數</th>
+                        <th className="py-2 text-right font-medium">前日營收</th>
+                        <th className="py-2 text-right font-medium">件數變化</th>
+                        <th className="py-2 text-right font-medium">營收變化</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {brandComparison.filter(b => b.yQty > 0 || b.dbQty > 0).map(b => (
+                        <tr key={b.vendor} className="border-b border-border/20 hover:bg-accent/30 transition-colors">
+                          <td className="py-2 font-medium">{b.vendor}</td>
+                          <td className="py-2 text-right tabular-nums font-bold">{b.yQty}</td>
+                          <td className="py-2 text-right tabular-nums font-semibold">{formatCurrency(b.yRevenue)}</td>
+                          <td className="py-2 text-right tabular-nums text-muted-foreground">{b.dbQty}</td>
+                          <td className="py-2 text-right tabular-nums text-muted-foreground">{formatCurrency(b.dbRevenue)}</td>
+                          <td className={`py-2 text-right tabular-nums font-semibold ${
+                            b.qtyDelta > 0 ? 'text-green-400' : b.qtyDelta < 0 ? 'text-red-400' : 'text-muted-foreground/40'
+                          }`}>
+                            {b.qtyDelta > 0 ? <span className="inline-flex items-center gap-0.5"><ArrowUp className="h-3 w-3" />{b.qtyDelta}</span>
+                             : b.qtyDelta < 0 ? <span className="inline-flex items-center gap-0.5"><ArrowDown className="h-3 w-3" />{Math.abs(b.qtyDelta)}</span>
+                             : '—'}
+                          </td>
+                          <td className={`py-2 text-right tabular-nums font-semibold ${
+                            b.revDelta > 0 ? 'text-green-400' : b.revDelta < 0 ? 'text-red-400' : 'text-muted-foreground/40'
+                          }`}>
+                            {b.revDelta > 0 ? <span className="inline-flex items-center gap-0.5"><ArrowUp className="h-3 w-3" />{formatCurrency(b.revDelta)}</span>
+                             : b.revDelta < 0 ? <span className="inline-flex items-center gap-0.5"><ArrowDown className="h-3 w-3" />{formatCurrency(Math.abs(b.revDelta))}</span>
+                             : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </CardContent>
