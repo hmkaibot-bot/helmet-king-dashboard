@@ -3,12 +3,11 @@
  *
  * SETUP REQUIRED:
  * 1. Run /hk_dashboard/sql/garage_marsello_queue.sql in Supabase SQL Editor
- * 2. Get Marsello Store API Key from: app.marsello.com → Settings → Integrations → API Keys
  *
  * HOW IT WORKS:
  * - "掃描發票" scans BC Garage invoices and queues them for review (READ ONLY — nothing written to Marsello)
  * - You review each match and click "Approve" or "Reject"
- * - Approved items are synced to Marsello only after you approve them
+ * - Approved items are synced to Marsello via Supabase Edge Function (no API key needed)
  */
 import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
@@ -21,6 +20,23 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
+
+// ── Marsello Edge Function proxy ──────────────────────────────
+const SUPABASE_URL = 'https://myrangmxyjamsupbxbba.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15cmFuZ214eWphbXN1cGJ4YmJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MzA0NjQsImV4cCI6MjA5MTMwNjQ2NH0.RmMZyuLZrddw7kL4y2qFY8XaI6zGXPx5D9xCi58-iSY';
+
+async function marselloFetch(path: string, method: string = 'GET', body?: any): Promise<Response> {
+  return fetch(`${SUPABASE_URL}/functions/v1/marsello-proxy`, {
+    method: body ? 'POST' : 'GET',
+    headers: {
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+      'x-marsello-path': path,
+      'x-marsello-method': method,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}
 
 // ── Types ─────────────────────────────────────────────────────
 type QueueStatus = 'pending' | 'approved' | 'rejected' | 'synced' | 'error';
@@ -108,9 +124,6 @@ export default function MarselloApprovalPage() {
   const [searchText, setSearchText]       = useState('');
   const [tableExists, setTableExists]     = useState<boolean | null>(null);
   const [expandedId, setExpandedId]       = useState<number | null>(null);
-  const [marselloApiKey, setMarselloApiKey] = useState('');
-  const [showApiKeyInput, setShowApiKeyInput] = useState(false);
-
   const MARSELLO_STORE_ID = '60e83220c3e76f0fc4e32df2';
 
   // ── Load queue ──────────────────────────────────────────────
@@ -268,30 +281,18 @@ export default function MarselloApprovalPage() {
   // ── Approve action ─────────────────────────────────────────
   async function approveItem(item: QueueItem) {
     if (!item.marsello_customer_id) {
-      alert('此發票未找到對應的 Marsello 客戶，請先手動設定客戶匹配。\n(No Marsello customer matched — set manually first)');
+      alert('此發票未找到對應的 Marsello 客戶，請先手動設定客戶匹配。');
       return;
     }
     setActionLoading(item.id);
     try {
-      // Mark as approved in queue first
       await supabase.from('garage_marsello_queue').update({
         status: 'approved',
         approved_at: new Date().toISOString(),
       }).eq('id', item.id);
 
-      // If we have the Marsello Store API key, submit the order now
-      const apiKey = marselloApiKey || localStorage.getItem('marsello_store_api_key') || '';
-      if (apiKey) {
-        await syncToMarsello(item, apiKey);
-      } else {
-        // Approved but not yet synced — will sync when API key is configured
-        alert(
-          `✅ 已批准 Invoice ${item.bc_invoice_number}\n\n` +
-          `要自動加分到 Marsello，請在頁面上方輸入 Marsello Store API Key。\n` +
-          `API Key 位置：app.marsello.com → Settings → Integrations → API Keys\n\n` +
-          `(Approved! Configure Marsello Store API Key to auto-sync points)`
-        );
-      }
+      // Immediately sync to Marsello via Edge Function (no API key needed)
+      await syncToMarsello(item);
       await loadQueue();
     } finally {
       setActionLoading(null);
@@ -299,39 +300,31 @@ export default function MarselloApprovalPage() {
   }
 
   // ── Sync approved item to Marsello ────────────────────────
-  async function syncToMarsello(item: QueueItem, apiKey: string) {
+  async function syncToMarsello(item: QueueItem) {
     try {
-      const resp = await fetch(
-        `https://api.marsello.com/v1/stores/${MARSELLO_STORE_ID}/orders`,
+      // Use the activities endpoint to add points directly
+      const pointsToAdd = Math.round(item.invoice_amount);  // 1 point per $1
+      const resp = await marselloFetch(
+        `/v1/customers/${item.marsello_customer_id}/activities`,
+        'POST',
         {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            externalOrderId: `BC-GARAGE-${item.bc_invoice_number}`,
-            customerId:      item.marsello_customer_id,
-            totalPrice:      item.invoice_amount,
-            currency:        'HKD',
-            createdAt:       item.bc_invoice_date + 'T00:00:00Z',
-            source:          'BC-GARAGE',
-            lineItems:       [],
-          }),
+          points: pointsToAdd,
+          comment: `BC Garage Invoice ${item.bc_invoice_number} - HK$${item.invoice_amount}`,
+          sendEmail: false,
         }
       );
 
       const responseText = await resp.text();
       await supabase.from('garage_marsello_queue').update({
-        status:        resp.ok ? 'synced' : 'error',
-        synced_at:     resp.ok ? new Date().toISOString() : null,
+        status: resp.ok ? 'synced' : 'error',
+        synced_at: resp.ok ? new Date().toISOString() : null,
         sync_response: responseText.slice(0, 500),
       }).eq('id', item.id);
 
       if (resp.ok) {
-        alert(`✅ 積分已成功同步到 Marsello！\nInvoice: ${item.bc_invoice_number}\nCustomer: ${item.marsello_customer_name}`);
+        alert(`✅ 積分已同步！\nInvoice: ${item.bc_invoice_number}\nCustomer: ${item.marsello_customer_name}\nPoints: +${pointsToAdd}`);
       } else {
-        alert(`⚠️ Marsello 同步失敗 (HTTP ${resp.status})\n${responseText.slice(0, 200)}\n\n請檢查 Store API Key 是否正確。`);
+        alert(`⚠️ 同步失敗 (HTTP ${resp.status})\n${responseText.slice(0, 200)}`);
       }
     } catch (e: any) {
       await supabase.from('garage_marsello_queue').update({
@@ -343,12 +336,6 @@ export default function MarselloApprovalPage() {
 
   // ── Sync all approved (batch) ──────────────────────────────
   async function syncAllApproved() {
-    const apiKey = marselloApiKey || localStorage.getItem('marsello_store_api_key') || '';
-    if (!apiKey) {
-      setShowApiKeyInput(true);
-      alert('請先輸入 Marsello Store API Key 才能批量同步。\n(Please configure the API key first)');
-      return;
-    }
     const approvedItems = queue.filter(q => q.status === 'approved' && q.marsello_customer_id);
     if (approvedItems.length === 0) {
       alert('沒有已批准但待同步的項目。');
@@ -358,8 +345,8 @@ export default function MarselloApprovalPage() {
 
     setScanning(true);
     for (const item of approvedItems) {
-      await syncToMarsello(item, apiKey);
-      await new Promise(r => setTimeout(r, 500)); // rate limit
+      await syncToMarsello(item);
+      await new Promise(r => setTimeout(r, 500));
     }
     await loadQueue();
     setScanning(false);
@@ -531,12 +518,6 @@ export default function MarselloApprovalPage() {
           <p className="text-xs text-muted-foreground">Garage Invoice → Marsello Points Approval Queue</p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowApiKeyInput(v => !v)}
-            className="px-3 py-1.5 text-xs bg-accent/50 text-muted-foreground rounded border border-border/40 hover:bg-accent transition-colors flex items-center gap-1.5"
-          >
-            <Zap className="h-3 w-3" /> API Key 設定
-          </button>
           {counts.approved > 0 && (
             <button
               onClick={syncAllApproved}
@@ -566,45 +547,6 @@ export default function MarselloApprovalPage() {
           </button>
         </div>
       </div>
-
-      {/* API Key setup panel */}
-      {showApiKeyInput && (
-        <Card className="border-border/40">
-          <CardContent className="p-4">
-            <div className="flex items-start gap-2">
-              <Info className="h-4 w-4 text-blue-400 shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <p className="text-xs font-medium mb-1">Marsello Store API Key</p>
-                <p className="text-[11px] text-muted-foreground mb-2">
-                  前往 <span className="font-mono text-primary">app.marsello.com → Settings → Integrations → API Keys</span> 取得。
-                  輸入後系統可自動將批准的發票同步到 Marsello。
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    type="password"
-                    value={marselloApiKey}
-                    onChange={e => setMarselloApiKey(e.target.value)}
-                    placeholder="Paste Marsello Store API Key here..."
-                    className="flex-1 px-2 py-1.5 text-xs bg-muted border border-border rounded text-foreground placeholder-muted-foreground focus:outline-none focus:border-blue-500"
-                  />
-                  <button
-                    onClick={() => {
-                      if (marselloApiKey) {
-                        localStorage.setItem('marsello_store_api_key', marselloApiKey);
-                        alert('API Key 已儲存到本地。');
-                        setShowApiKeyInput(false);
-                      }
-                    }}
-                    className="px-3 py-1.5 text-xs bg-blue-500/20 text-blue-400 rounded border border-blue-500/30 hover:bg-blue-500/30 transition-colors"
-                  >
-                    儲存
-                  </button>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -760,11 +702,7 @@ export default function MarselloApprovalPage() {
                             {item.status === 'approved' && (
                               <div className="flex items-center justify-end gap-1" onClick={e => e.stopPropagation()}>
                                 <button
-                                  onClick={() => {
-                                    const key = marselloApiKey || localStorage.getItem('marsello_store_api_key') || '';
-                                    if (key) syncToMarsello(item, key);
-                                    else { setShowApiKeyInput(true); }
-                                  }}
+                                  onClick={() => syncToMarsello(item)}
                                   className="flex items-center gap-1 px-2 py-1 text-[11px] bg-blue-500/15 text-blue-400 border border-blue-500/30 rounded hover:bg-blue-500/25 transition-colors"
                                 >
                                   <RefreshCw className="h-3 w-3" /> 同步
@@ -841,9 +779,9 @@ export default function MarselloApprovalPage() {
             <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />
             <span>
               <strong className="text-foreground">操作說明：</strong>
-              每次點擊「掃描新發票」，系統會從 BC 讀取最近 90 天的 GARAGE 發票，自動嘗試匹配 Marsello 客戶（姓名匹配），加入審批隊列。
-              批准後如已設定 Marsello Store API Key，積分會自動同步；否則請在 app.marsello.com 手動添加。
-              API Key 位置：Settings → Integrations → API Keys。
+              點擊「掃描新發票」從 BC 讀取最近 90 天的 GARAGE 發票，自動匹配 Marsello 客戶，加入審批隊列。
+              批准後系統會透過 API 自動將積分同步到 Marsello（每 HK$1 = 1 積分）。
+              Token 由 Supabase Edge Function 自動管理，無需手動設定。
             </span>
           </p>
         </CardContent>
