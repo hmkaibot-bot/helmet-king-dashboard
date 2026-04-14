@@ -220,7 +220,7 @@ export default function DailyWeeklyPage() {
   const [lastYearOrders, setLastYearOrders] = useState<any[]>([]);
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
   const [productTypeMap, setProductTypeMap] = useState<Record<string, string>>({});
-  const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set());
+  const [expandedCats, setExpandedCats] = useState<Set<string> | 'all'>('all');
   const [foorirData, setFoorirData] = useState<FoorirKPI | null>(null);
   const [foorirConnected, setFoorirConnected] = useState(false);
   const [weather, setWeather] = useState<{
@@ -666,11 +666,19 @@ export default function DailyWeeklyPage() {
 
   const toggleCat = useCallback((type: string) => {
     setExpandedCats(prev => {
-      const n = new Set(prev);
-      n.has(type) ? n.delete(type) : n.add(type);
-      return n;
+      if (prev === 'all') {
+        // First click from 'all' state: collapse this one category
+        const allTypes = catBreakdown.map(c => c.type);
+        const next = new Set(allTypes);
+        next.delete(type);
+        return next;
+      }
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
     });
-  }, []);
+  }, [catBreakdown]);
 
   // ── Active Promotions (discount codes with ongoing usage) ──
   const activePromotions = useMemo(() => {
@@ -787,14 +795,6 @@ export default function DailyWeeklyPage() {
       {/* ═══════════════════════════ YESTERDAY VIEW ════════════════════════════ */}
       {viewMode === 'yesterday' && (
         <>
-          {/* KPI Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <KpiCard title="昨日營收" subtitle="Revenue"       value={formatCurrency(yRevenue)}       icon={DollarSign}  loading={loading} delta={calcDelta(yRevenue,      lwRevenue)}      testId="kpi-y-rev" />
-            <KpiCard title="昨日訂單" subtitle="Orders"        value={formatNumber(yOrders.length)}   icon={ShoppingCart} loading={loading} delta={calcDelta(yOrders.length, lwOrders.length)} testId="kpi-y-orders" />
-            <KpiCard title="昨日均價" subtitle="AOV"           value={formatCurrency(yAov)}           icon={TrendingUp}  loading={loading} delta={calcDelta(yAov,          lwAov)}           testId="kpi-y-aov" />
-            <KpiCard title="上週同日" subtitle="Same Day LW"   value={formatCurrency(lwRevenue)}      icon={Calendar}    loading={loading}                                                    testId="kpi-y-lw" />
-          </div>
-
           {/* ── Weather + Holiday Card ──────────────────────────── */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {/* Weather */}
@@ -802,7 +802,7 @@ export default function DailyWeeklyPage() {
               <CardHeader className="pb-1 pt-3 px-4">
                 <CardTitle className="text-sm font-medium flex items-center gap-2">
                   <Cloud className="h-3.5 w-3.5 text-blue-400" />
-                  今日天氣 <span className="text-xs font-normal text-muted-foreground">HK Weather (Observatory)</span>
+                  昨日天氣 <span className="text-xs font-normal text-muted-foreground">HK Weather (Observatory)</span>
                   {weather.warning && (
                     <span className="ml-auto text-[10px] font-semibold text-red-400 px-1.5 py-0.5 rounded bg-red-500/15 border border-red-500/30">
                       ⚠️ {weather.warning}
@@ -827,27 +827,6 @@ export default function DailyWeeklyPage() {
                         </div>
                       </div>
                     </div>
-                    {/* 7-day forecast strip */}
-                    {weather.forecast.length > 0 && (
-                      <div className="grid grid-cols-7 gap-1">
-                        {weather.forecast.map((f, i) => {
-                          const d = f.date; // YYYYMMDD
-                          const dayLabel = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`).getDay()];
-                          const isHoliday = !!HK_HOLIDAYS[`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`];
-                          return (
-                            <div key={i} className={`text-center p-1 rounded-md text-[10px] ${ isHoliday ? 'bg-red-500/15 border border-red-500/20' : 'bg-accent/30' }`}>
-                              <p className={`font-medium mb-0.5 ${isHoliday ? 'text-red-400' : 'text-muted-foreground'}`}>{dayLabel}</p>
-                              <p className="text-base leading-none">{weatherLabel(f.icon).emoji}</p>
-                              <p className="mt-0.5 tabular-nums">{f.maxTemp}°</p>
-                              <p className="text-muted-foreground/60 tabular-nums">{f.minTemp}°</p>
-                              {f.psr && f.psr !== 'Low' && (
-                                <p className={`text-[9px] mt-0.5 font-medium ${ f.psr === 'High' ? 'text-blue-400' : 'text-amber-400' }`}>{f.psr === 'High' ? '高' : '中'}雨</p>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
                   </>
                 )}
               </CardContent>
@@ -896,6 +875,63 @@ export default function DailyWeeklyPage() {
                 )}
               </CardContent>
             </Card>
+          </div>
+
+          {/* ── Sales Channel Breakdown ───────────────────────────── */}
+          <Card className="border-border/40">
+            <CardHeader className="pb-2 pt-3 px-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Store className="h-3.5 w-3.5 text-primary" />
+                銷售渠道分析
+                <span className="text-xs font-normal text-muted-foreground">Sales Channel Breakdown — {yesterday}</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pb-4">
+              {loading ? (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {[1,2,3,4].map(i => <Skeleton key={i} className="h-20" />)}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {/* Channel cards */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {[
+                      { key: 'pos',      label: '門市 POS',          icon: Store,   color: 'text-amber-400',  border: 'border-amber-500/20',  bg: 'bg-amber-500/5',   data: channelBreakdown.pos },
+                      { key: 'web',      label: '網店 Online',        icon: Monitor, color: 'text-blue-400',   border: 'border-blue-500/20',   bg: 'bg-blue-500/5',    data: channelBreakdown.web },
+                      { key: 'referral', label: '轉介 Referral',      icon: Bike,    color: 'text-green-400',  border: 'border-green-500/20',  bg: 'bg-green-500/5',   data: channelBreakdown.referral },
+                      { key: 'other',    label: '其他 Other',         icon: Zap,     color: 'text-muted-foreground',   border: 'border-gray-500/20',   bg: 'bg-gray-500/5',    data: channelBreakdown.other },
+                    ].map(ch => (
+                      <div key={ch.key} className={`rounded-lg border ${ch.border} ${ch.bg} p-3`}>
+                        <div className="flex items-center gap-1.5 mb-2">
+                          <ch.icon className={`h-3.5 w-3.5 ${ch.color}`} />
+                          <span className={`text-[11px] font-semibold ${ch.color}`}>{ch.label}</span>
+                        </div>
+                        <p className="text-lg font-bold tabular-nums">{formatCurrency(ch.data.revenue)}</p>
+                        <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted-foreground">
+                          <span>{ch.data.count} 單</span>
+                          {ch.data.count > 0 && <span>AOV {formatCurrency(ch.data.aov)}</span>}
+                        </div>
+                        {'domains' in ch.data && Object.keys(ch.data.domains).length > 0 && (
+                          <div className="mt-1.5">
+                            {Object.entries(ch.data.domains as Record<string,number>).slice(0,2).map(([d,n]) => (
+                              <p key={d} className="text-[10px] text-muted-foreground/70 truncate">{d} ×{n}</p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* KPI Cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <KpiCard title="昨日營收" subtitle="Revenue"       value={formatCurrency(yRevenue)}       icon={DollarSign}  loading={loading} delta={calcDelta(yRevenue,      lwRevenue)}      testId="kpi-y-rev" />
+            <KpiCard title="昨日訂單" subtitle="Orders"        value={formatNumber(yOrders.length)}   icon={ShoppingCart} loading={loading} delta={calcDelta(yOrders.length, lwOrders.length)} testId="kpi-y-orders" />
+            <KpiCard title="昨日均價" subtitle="AOV"           value={formatCurrency(yAov)}           icon={TrendingUp}  loading={loading} delta={calcDelta(yAov,          lwAov)}           testId="kpi-y-aov" />
+            <KpiCard title="上週同日" subtitle="Same Day LW"   value={formatCurrency(lwRevenue)}      icon={Calendar}    loading={loading}                                                    testId="kpi-y-lw" />
           </div>
 
           {/* ── Foot Traffic (Foorir) ────────────────────────── */}
@@ -961,322 +997,12 @@ export default function DailyWeeklyPage() {
             </Card>
           )}
 
-          {/* ── Sales Channel Breakdown ───────────────────────────── */}
-          <Card className="border-border/40">
-            <CardHeader className="pb-2 pt-3 px-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Store className="h-3.5 w-3.5 text-primary" />
-                銷售渠道分析
-                <span className="text-xs font-normal text-muted-foreground">Sales Channel Breakdown — {yesterday}</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              {loading ? (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  {[1,2,3,4].map(i => <Skeleton key={i} className="h-20" />)}
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {/* Channel cards */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {[
-                      { key: 'pos',      label: '門市 POS',          icon: Store,   color: 'text-amber-400',  border: 'border-amber-500/20',  bg: 'bg-amber-500/5',   data: channelBreakdown.pos },
-                      { key: 'web',      label: '網店 Online',        icon: Monitor, color: 'text-blue-400',   border: 'border-blue-500/20',   bg: 'bg-blue-500/5',    data: channelBreakdown.web },
-                      { key: 'referral', label: '轉介 Referral',      icon: Bike,    color: 'text-green-400',  border: 'border-green-500/20',  bg: 'bg-green-500/5',   data: channelBreakdown.referral },
-                      { key: 'other',    label: '其他 Other',         icon: Zap,     color: 'text-muted-foreground',   border: 'border-gray-500/20',   bg: 'bg-gray-500/5',    data: channelBreakdown.other },
-                    ].map(ch => (
-                      <div key={ch.key} className={`rounded-lg border ${ch.border} ${ch.bg} p-3`}>
-                        <div className="flex items-center gap-1.5 mb-2">
-                          <ch.icon className={`h-3.5 w-3.5 ${ch.color}`} />
-                          <span className={`text-[11px] font-semibold ${ch.color}`}>{ch.label}</span>
-                        </div>
-                        <p className="text-lg font-bold tabular-nums">{formatCurrency(ch.data.revenue)}</p>
-                        <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted-foreground">
-                          <span>{ch.data.count} 單</span>
-                          {ch.data.count > 0 && <span>AOV {formatCurrency(ch.data.aov)}</span>}
-                        </div>
-                        {'domains' in ch.data && Object.keys(ch.data.domains).length > 0 && (
-                          <div className="mt-1.5">
-                            {Object.entries(ch.data.domains as Record<string,number>).slice(0,2).map(([d,n]) => (
-                              <p key={d} className="text-[10px] text-muted-foreground/70 truncate">{d} ×{n}</p>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                  {/* Per-staff MTD link */}
-                  <p className="text-[11px] text-muted-foreground/60 flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-green-500/60 shrink-0 inline-block" />
-                    員工個人銷售詳情見下方「員工表現」。點擊姓名可設定專名。
-                  </p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* ── Staff Performance Table ─────────────────────────── */}
-          {staffPerformance.length > 0 && (() => {
-            const tabRev  = (r: typeof staffPerformance[0]) => staffTab === 'yesterday' ? r.dayRev : staffTab === 'this_week' ? r.wkRev : r.mtdRev;
-            const tabCnt  = (r: typeof staffPerformance[0]) => staffTab === 'yesterday' ? r.dayCnt : staffTab === 'this_week' ? r.wkCnt : r.mtdCnt;
-            const tabLabel = staffTab === 'yesterday' ? '昨日' : staffTab === 'this_week' ? '本週' : '本月MTD';
-            const totalRev = staffPerformance.reduce((s, r) => s + tabRev(r), 0);
-            const totalCnt = staffPerformance.reduce((s, r) => s + tabCnt(r), 0);
-            return (
-              <Card className="border-border/40">
-                <CardHeader className="pb-0 pt-3 px-4">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <CardTitle className="text-sm font-medium flex items-center gap-2">
-                      <Users className="h-3.5 w-3.5 text-primary" />
-                      員工表現
-                      <span className="text-xs font-normal text-muted-foreground">POS Staff Performance</span>
-                    </CardTitle>
-                    {/* Tab switcher */}
-                    <div className="flex items-center gap-1 bg-accent/30 rounded p-0.5 ml-auto">
-                      {([
-                        { key: 'yesterday',  label: '昨日' },
-                        { key: 'this_week',  label: '本週' },
-                        { key: 'this_month', label: '本月' },
-                      ] as const).map(t => (
-                        <button
-                          key={t.key}
-                          onClick={() => setStaffTab(t.key)}
-                          className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
-                            staffTab === t.key
-                              ? 'bg-primary text-primary-foreground'
-                              : 'text-muted-foreground hover:text-foreground'
-                          }`}
-                        >
-                          {t.label}
-                        </button>
-                      ))}
-                    </div>
-                    <span className="text-[10px] text-muted-foreground/60 hidden sm:block">點擊姓名可設定</span>
-                  </div>
-                </CardHeader>
-                <CardContent className="px-4 pb-4 pt-3">
-                  {loading ? (
-                    <Skeleton className="h-32 w-full" />
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="border-b border-border/50 text-muted-foreground">
-                            <th className="py-2 text-left font-medium">姓名 Staff</th>
-                            <th className="py-2 text-right font-medium">{tabLabel}訂單</th>
-                            <th className="py-2 text-right font-medium">{tabLabel}物餅</th>
-                            <th className="py-2 text-right font-medium">{tabLabel}均偕</th>
-                            <th className="py-2 text-right font-medium">占比</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {staffPerformance.map((s, i) => {
-                            const rev = tabRev(s);
-                            const cnt = tabCnt(s);
-                            const pct = totalRev > 0 ? (rev / totalRev) * 100 : 0;
-                            return (
-                              <tr key={s.uid} className={`border-b border-border/20 hover:bg-accent/30 transition-colors ${
-                                i === 0 && rev > 0 ? 'bg-amber-500/5' : ''
-                              }`}>
-                                <td className="py-2">
-                                  {editingUid === s.uid ? (
-                                    <div className="space-y-1">
-                                      <div className="flex flex-wrap gap-1">
-                                        {STAFF_ROSTER.map(name => (
-                                          <button
-                                            key={name}
-                                            onClick={() => saveStaffName(s.uid, name)}
-                                            className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary border border-primary/30 rounded hover:bg-primary/30 transition-colors"
-                                          >
-                                            {name}
-                                          </button>
-                                        ))}
-                                      </div>
-                                      <form className="flex items-center gap-1" onSubmit={e => { e.preventDefault(); saveStaffName(s.uid, editName); }}>
-                                        <input autoFocus value={editName} onChange={e => setEditName(e.target.value)} placeholder="自行輸入..."
-                                          className="w-24 px-1.5 py-0.5 text-xs bg-muted border border-border rounded text-foreground focus:outline-none focus:border-primary" />
-                                        <button type="submit" className="text-[10px] px-1.5 py-0.5 bg-primary/80 text-primary-foreground rounded">存</button>
-                                        <button type="button" onClick={() => setEditingUid(null)} className="text-[10px] px-1 text-muted-foreground">取</button>
-                                      </form>
-                                    </div>
-                                  ) : (
-                                    <button onClick={() => { setEditingUid(s.uid); setEditName(staffNames[s.uid] || ''); }}
-                                      className="flex items-center gap-1.5 group">
-                                      {i === 0 && rev > 0 && <span className="text-amber-400">🥇</span>}
-                                      {i === 1 && rev > 0 && <span className="text-foreground">🥈</span>}
-                                      {i === 2 && rev > 0 && <span className="text-amber-700">🥉</span>}
-                                      <span className={`font-medium ${staffNames[s.uid] ? '' : 'text-muted-foreground italic'}`}>
-                                        {getStaffName(s.uid)}
-                                      </span>
-                                      <span className="text-[10px] text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity">✏️</span>
-                                    </button>
-                                  )}
-                                </td>
-                                <td className="py-2 text-right tabular-nums text-muted-foreground">
-                                  {cnt > 0 ? cnt : <span className="opacity-30">—</span>}
-                                </td>
-                                <td className={`py-2 text-right tabular-nums font-semibold ${rev > 0 ? '' : 'text-muted-foreground/30'}`}>
-                                  {rev > 0 ? formatCurrency(rev) : '—'}
-                                </td>
-                                <td className="py-2 text-right tabular-nums text-muted-foreground">
-                                  {cnt > 0 ? formatCurrency(rev / cnt) : '—'}
-                                </td>
-                                <td className="py-2 text-right">
-                                  {pct > 0 ? (
-                                    <div className="flex items-center justify-end gap-1.5">
-                                      <div className="w-12 h-1.5 bg-border/40 rounded-full overflow-hidden">
-                                        <div className="h-full bg-primary/60 rounded-full" style={{ width: `${pct}%` }} />
-                                      </div>
-                                      <span className="text-[10px] tabular-nums text-muted-foreground w-6 text-right">{pct.toFixed(0)}%</span>
-                                    </div>
-                                  ) : <span className="opacity-30">—</span>}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                        <tfoot>
-                          <tr className="border-t border-border/40 bg-muted/10">
-                            <td className="py-2 text-xs font-semibold text-muted-foreground">小計</td>
-                            <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">{totalCnt}</td>
-                            <td className="py-2 text-right tabular-nums font-bold text-xs">{formatCurrency(totalRev)}</td>
-                            <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">
-                              {totalCnt > 0 ? formatCurrency(totalRev / totalCnt) : '—'}
-                            </td>
-                            <td className="py-2 text-right text-[10px] text-muted-foreground/60">100%</td>
-                          </tr>
-                        </tfoot>
-                      </table>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })()}
-
-
           {/* ── Brand Monthly Sales (MTD) ─────────────────────── */}
           <BrandMonthlySales
             allOrders={allOrders}
             allOrderLines={allOrderLines}
             loading={loading}
           />
-
-          {/* ── Category Breakdown ───────────────────────────────── */}
-          <Card className="border-border/40">
-            <CardHeader className="pb-2 pt-4 px-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2 flex-wrap">
-                <Tag className="h-3.5 w-3.5 text-primary shrink-0" />
-                按類別分析
-                <span className="text-xs font-normal text-muted-foreground">Category Breakdown — {yesterday}</span>
-                {catBreakdown.some(c => c.criticalCount > 0) && (
-                  <span className="ml-auto flex items-center gap-1 text-[10px] text-red-400 shrink-0">
-                    <AlertTriangle className="h-3 w-3" /> 有庫存緊張貨品
-                  </span>
-                )}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              {loading ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {[1, 2, 3].map(i => <Skeleton key={i} className="h-28" />)}
-                </div>
-              ) : catBreakdown.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-6 text-center">昨日無銷售數據</p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {catBreakdown.map(cat => {
-                    const style    = getCatStyle(cat.type);
-                    const expanded = expandedCats.has(cat.type);
-                    return (
-                      <div key={cat.type} className={`rounded-lg border ${style.border} overflow-hidden`}>
-                        {/* Card Header (always visible, clickable) */}
-                        <button
-                          className={`w-full px-3 py-2.5 text-left ${style.bg} hover:brightness-110 transition-all`}
-                          onClick={() => toggleCat(cat.type)}
-                        >
-                          <div className="flex items-center justify-between gap-1">
-                            <span className={`text-[11px] font-semibold ${style.color} truncate flex-1 text-left`}>
-                              {cat.type}
-                            </span>
-                            <div className="flex items-center gap-1 shrink-0">
-                              {cat.criticalCount > 0 && (
-                                <span className="text-[10px] bg-red-500/20 text-red-400 px-1 py-0.5 rounded">🔴{cat.criticalCount}</span>
-                              )}
-                              {cat.warningCount > 0 && (
-                                <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-1 py-0.5 rounded">🟡{cat.warningCount}</span>
-                              )}
-                              {expanded
-                                ? <ChevronDown  className="h-3.5 w-3.5 text-muted-foreground" />
-                                : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-                              }
-                            </div>
-                          </div>
-                          {/* Revenue + Qty */}
-                          <div className="flex items-baseline gap-2 mt-1">
-                            <span className="text-sm font-bold tabular-nums">{formatCurrency(cat.revenue)}</span>
-                            <span className="text-xs text-muted-foreground">{cat.qty}件</span>
-                          </div>
-                          {/* Brand tags */}
-                          <div className="flex flex-wrap gap-1 mt-1.5">
-                            {cat.brands.slice(0, 5).map(b => (
-                              <span key={b} className="text-[10px] bg-background/60 border border-border/30 text-muted-foreground px-1.5 py-0.5 rounded">
-                                {b}
-                              </span>
-                            ))}
-                            {cat.brands.length > 5 && (
-                              <span className="text-[10px] text-muted-foreground/50">+{cat.brands.length - 5}品牌</span>
-                            )}
-                          </div>
-                        </button>
-
-                        {/* Expanded: Product breakdown with stock + velocity */}
-                        {expanded && (
-                          <div className="border-t border-border/30 bg-background/40">
-                            {/* Column headers */}
-                            <div className="px-3 py-1.5 grid grid-cols-[1fr_28px_36px_48px_60px] gap-x-2 text-[10px] text-muted-foreground/60 border-b border-border/20">
-                              <span>產品</span>
-                              <span className="text-right">售</span>
-                              <span className="text-right">庫存</span>
-                              <span className="text-right">速率/日</span>
-                              <span className="text-right">預測</span>
-                            </div>
-                            {cat.products.map((p, idx) => (
-                              <div
-                                key={idx}
-                                className={`px-3 py-1.5 grid grid-cols-[1fr_28px_36px_48px_60px] gap-x-2 items-center text-[11px] border-b border-border/10 last:border-0 ${
-                                  p.risk === 'critical' ? 'bg-red-500/5' :
-                                  p.risk === 'warning'  ? 'bg-yellow-500/5' : ''
-                                }`}
-                              >
-                                <div className="min-w-0">
-                                  <div className="truncate font-medium leading-tight">{p.title}</div>
-                                  <div className="text-[10px] text-muted-foreground/50 truncate">{p.vendor}</div>
-                                </div>
-                                <span className="text-right tabular-nums font-semibold">{p.qty}</span>
-                                <span className={`text-right tabular-nums font-semibold ${
-                                  p.stock === 0          ? 'text-red-400' :
-                                  p.stock !== null && p.stock <= 5 ? 'text-yellow-400' : ''
-                                }`}>
-                                  {p.stock !== null ? p.stock : '—'}
-                                </span>
-                                <span className="text-right tabular-nums text-muted-foreground">
-                                  {p.velocity >= 0.01 ? p.velocity.toFixed(2) : p.velocity > 0 ? '<0.01' : '—'}
-                                </span>
-                                <span className="text-right">
-                                  <RiskBadge risk={p.risk} days={p.daysToStockout} />
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </CardContent>
-          </Card>
 
           {/* ── Active Promotions ─────────────────────────────── */}
           <Card className="border-border/40">
@@ -1449,6 +1175,261 @@ export default function DailyWeeklyPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* ── Category Breakdown ───────────────────────────────── */}
+          <Card className="border-border/40">
+            <CardHeader className="pb-2 pt-4 px-4">
+              <CardTitle className="text-sm font-medium flex items-center gap-2 flex-wrap">
+                <Tag className="h-3.5 w-3.5 text-primary shrink-0" />
+                按類別分析
+                <span className="text-xs font-normal text-muted-foreground">Category Breakdown — {yesterday}</span>
+                {catBreakdown.some(c => c.criticalCount > 0) && (
+                  <span className="ml-auto flex items-center gap-1 text-[10px] text-red-400 shrink-0">
+                    <AlertTriangle className="h-3 w-3" /> 有庫存緊張貨品
+                  </span>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pb-4">
+              {loading ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {[1, 2, 3].map(i => <Skeleton key={i} className="h-28" />)}
+                </div>
+              ) : catBreakdown.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-6 text-center">昨日無銷售數據</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {catBreakdown.map(cat => {
+                    const style    = getCatStyle(cat.type);
+                    const expanded = expandedCats === 'all' || expandedCats.has(cat.type);
+                    return (
+                      <div key={cat.type} className={`rounded-lg border ${style.border} overflow-hidden`}>
+                        {/* Card Header (always visible, clickable) */}
+                        <button
+                          className={`w-full px-3 py-2.5 text-left ${style.bg} hover:brightness-110 transition-all`}
+                          onClick={() => toggleCat(cat.type)}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className={`text-[11px] font-semibold ${style.color} truncate flex-1 text-left`}>
+                              {cat.type}
+                            </span>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {cat.criticalCount > 0 && (
+                                <span className="text-[10px] bg-red-500/20 text-red-400 px-1 py-0.5 rounded">🔴{cat.criticalCount}</span>
+                              )}
+                              {cat.warningCount > 0 && (
+                                <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-1 py-0.5 rounded">🟡{cat.warningCount}</span>
+                              )}
+                              {expanded
+                                ? <ChevronDown  className="h-3.5 w-3.5 text-muted-foreground" />
+                                : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                              }
+                            </div>
+                          </div>
+                          {/* Revenue + Qty */}
+                          <div className="flex items-baseline gap-2 mt-1">
+                            <span className="text-sm font-bold tabular-nums">{formatCurrency(cat.revenue)}</span>
+                            <span className="text-xs text-muted-foreground">{cat.qty}件</span>
+                          </div>
+                          {/* Brand tags */}
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {cat.brands.slice(0, 5).map(b => (
+                              <span key={b} className="text-[10px] bg-background/60 border border-border/30 text-muted-foreground px-1.5 py-0.5 rounded">
+                                {b}
+                              </span>
+                            ))}
+                            {cat.brands.length > 5 && (
+                              <span className="text-[10px] text-muted-foreground/50">+{cat.brands.length - 5}品牌</span>
+                            )}
+                          </div>
+                        </button>
+
+                        {/* Expanded: Product breakdown with stock + velocity */}
+                        {expanded && (
+                          <div className="border-t border-border/30 bg-background/40">
+                            {/* Column headers */}
+                            <div className="px-3 py-1.5 grid grid-cols-[1fr_28px_36px_48px_60px] gap-x-2 text-[10px] text-muted-foreground/60 border-b border-border/20">
+                              <span>產品</span>
+                              <span className="text-right">售</span>
+                              <span className="text-right">庫存</span>
+                              <span className="text-right">速率/日</span>
+                              <span className="text-right">預測</span>
+                            </div>
+                            {cat.products.map((p, idx) => (
+                              <div
+                                key={idx}
+                                className={`px-3 py-1.5 grid grid-cols-[1fr_28px_36px_48px_60px] gap-x-2 items-center text-[11px] border-b border-border/10 last:border-0 ${
+                                  p.risk === 'critical' ? 'bg-red-500/5' :
+                                  p.risk === 'warning'  ? 'bg-yellow-500/5' : ''
+                                }`}
+                              >
+                                <div className="min-w-0">
+                                  <div className="truncate font-medium leading-tight">{p.title}</div>
+                                  <div className="text-[10px] text-muted-foreground/50 truncate">{p.vendor}</div>
+                                </div>
+                                <span className="text-right tabular-nums font-semibold">{p.qty}</span>
+                                <span className={`text-right tabular-nums font-semibold ${
+                                  p.stock === 0          ? 'text-red-400' :
+                                  p.stock !== null && p.stock <= 5 ? 'text-yellow-400' : ''
+                                }`}>
+                                  {p.stock !== null ? p.stock : '—'}
+                                </span>
+                                <span className="text-right tabular-nums text-muted-foreground">
+                                  {p.velocity >= 0.01 ? p.velocity.toFixed(2) : p.velocity > 0 ? '<0.01' : '—'}
+                                </span>
+                                <span className="text-right">
+                                  <RiskBadge risk={p.risk} days={p.daysToStockout} />
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* ── Staff Performance Table ─────────────────────────── */}
+          {staffPerformance.length > 0 && (() => {
+            const tabRev  = (r: typeof staffPerformance[0]) => staffTab === 'yesterday' ? r.dayRev : staffTab === 'this_week' ? r.wkRev : r.mtdRev;
+            const tabCnt  = (r: typeof staffPerformance[0]) => staffTab === 'yesterday' ? r.dayCnt : staffTab === 'this_week' ? r.wkCnt : r.mtdCnt;
+            const tabLabel = staffTab === 'yesterday' ? '昨日' : staffTab === 'this_week' ? '本週' : '本月MTD';
+            const totalRev = staffPerformance.reduce((s, r) => s + tabRev(r), 0);
+            const totalCnt = staffPerformance.reduce((s, r) => s + tabCnt(r), 0);
+            return (
+              <Card className="border-border/40">
+                <CardHeader className="pb-0 pt-3 px-4">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <Users className="h-3.5 w-3.5 text-primary" />
+                      員工表現
+                      <span className="text-xs font-normal text-muted-foreground">POS Staff Performance</span>
+                    </CardTitle>
+                    {/* Tab switcher */}
+                    <div className="flex items-center gap-1 bg-accent/30 rounded p-0.5 ml-auto">
+                      {([
+                        { key: 'yesterday',  label: '昨日' },
+                        { key: 'this_week',  label: '本週' },
+                        { key: 'this_month', label: '本月' },
+                      ] as const).map(t => (
+                        <button
+                          key={t.key}
+                          onClick={() => setStaffTab(t.key)}
+                          className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                            staffTab === t.key
+                              ? 'bg-primary text-primary-foreground'
+                              : 'text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="text-[10px] text-muted-foreground/60 hidden sm:block">點擊姓名可設定</span>
+                  </div>
+                </CardHeader>
+                <CardContent className="px-4 pb-4 pt-3">
+                  {loading ? (
+                    <Skeleton className="h-32 w-full" />
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-border/50 text-muted-foreground">
+                            <th className="py-2 text-left font-medium">姓名 Staff</th>
+                            <th className="py-2 text-right font-medium">{tabLabel}訂單</th>
+                            <th className="py-2 text-right font-medium">{tabLabel}物餅</th>
+                            <th className="py-2 text-right font-medium">{tabLabel}均偕</th>
+                            <th className="py-2 text-right font-medium">占比</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {staffPerformance.map((s, i) => {
+                            const rev = tabRev(s);
+                            const cnt = tabCnt(s);
+                            const pct = totalRev > 0 ? (rev / totalRev) * 100 : 0;
+                            return (
+                              <tr key={s.uid} className={`border-b border-border/20 hover:bg-accent/30 transition-colors ${
+                                i === 0 && rev > 0 ? 'bg-amber-500/5' : ''
+                              }`}>
+                                <td className="py-2">
+                                  {editingUid === s.uid ? (
+                                    <div className="space-y-1">
+                                      <div className="flex flex-wrap gap-1">
+                                        {STAFF_ROSTER.map(name => (
+                                          <button
+                                            key={name}
+                                            onClick={() => saveStaffName(s.uid, name)}
+                                            className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary border border-primary/30 rounded hover:bg-primary/30 transition-colors"
+                                          >
+                                            {name}
+                                          </button>
+                                        ))}
+                                      </div>
+                                      <form className="flex items-center gap-1" onSubmit={e => { e.preventDefault(); saveStaffName(s.uid, editName); }}>
+                                        <input autoFocus value={editName} onChange={e => setEditName(e.target.value)} placeholder="自行輸入..."
+                                          className="w-24 px-1.5 py-0.5 text-xs bg-muted border border-border rounded text-foreground focus:outline-none focus:border-primary" />
+                                        <button type="submit" className="text-[10px] px-1.5 py-0.5 bg-primary/80 text-primary-foreground rounded">存</button>
+                                        <button type="button" onClick={() => setEditingUid(null)} className="text-[10px] px-1 text-muted-foreground">取</button>
+                                      </form>
+                                    </div>
+                                  ) : (
+                                    <button onClick={() => { setEditingUid(s.uid); setEditName(staffNames[s.uid] || ''); }}
+                                      className="flex items-center gap-1.5 group">
+                                      {i === 0 && rev > 0 && <span className="text-amber-400">🥇</span>}
+                                      {i === 1 && rev > 0 && <span className="text-foreground">🥈</span>}
+                                      {i === 2 && rev > 0 && <span className="text-amber-700">🥉</span>}
+                                      <span className={`font-medium ${staffNames[s.uid] ? '' : 'text-muted-foreground italic'}`}>
+                                        {getStaffName(s.uid)}
+                                      </span>
+                                      <span className="text-[10px] text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity">✏️</span>
+                                    </button>
+                                  )}
+                                </td>
+                                <td className="py-2 text-right tabular-nums text-muted-foreground">
+                                  {cnt > 0 ? cnt : <span className="opacity-30">—</span>}
+                                </td>
+                                <td className={`py-2 text-right tabular-nums font-semibold ${rev > 0 ? '' : 'text-muted-foreground/30'}`}>
+                                  {rev > 0 ? formatCurrency(rev) : '—'}
+                                </td>
+                                <td className="py-2 text-right tabular-nums text-muted-foreground">
+                                  {cnt > 0 ? formatCurrency(rev / cnt) : '—'}
+                                </td>
+                                <td className="py-2 text-right">
+                                  {pct > 0 ? (
+                                    <div className="flex items-center justify-end gap-1.5">
+                                      <div className="w-12 h-1.5 bg-border/40 rounded-full overflow-hidden">
+                                        <div className="h-full bg-primary/60 rounded-full" style={{ width: `${pct}%` }} />
+                                      </div>
+                                      <span className="text-[10px] tabular-nums text-muted-foreground w-6 text-right">{pct.toFixed(0)}%</span>
+                                    </div>
+                                  ) : <span className="opacity-30">—</span>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                        <tfoot>
+                          <tr className="border-t border-border/40 bg-muted/10">
+                            <td className="py-2 text-xs font-semibold text-muted-foreground">小計</td>
+                            <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">{totalCnt}</td>
+                            <td className="py-2 text-right tabular-nums font-bold text-xs">{formatCurrency(totalRev)}</td>
+                            <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">
+                              {totalCnt > 0 ? formatCurrency(totalRev / totalCnt) : '—'}
+                            </td>
+                            <td className="py-2 text-right text-[10px] text-muted-foreground/60">100%</td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })()}
 
           {/* ── Products Table (enhanced with stock + velocity) ── */}
           <Card className="border-border/40">
