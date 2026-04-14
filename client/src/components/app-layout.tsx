@@ -32,6 +32,7 @@ import {
   Award,
   Sun,
   Moon,
+  LineChart,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useTheme } from '@/lib/theme';
@@ -97,6 +98,7 @@ const NAV_ITEMS: NavItem[] = [
       { path: '/performance/velocity',       label: '銷售速率',    sublabel: 'Sales Velocity',    icon: TrendingUp },
       { path: '/performance/new-products',   label: '新品表現',    sublabel: 'New Products',      icon: Sparkles },
       { path: '/performance/product-analytics', label: '商品分析', sublabel: 'Product Analytics',  icon: BarChart3 },
+      { path: '/performance/forecast',          label: '需求預測',   sublabel: 'Demand Forecast',    icon: LineChart },
     ],
   },
   {
