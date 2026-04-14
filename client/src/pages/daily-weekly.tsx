@@ -19,6 +19,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { FoorirLogin } from '@/components/foorir-login';
 import { getFoorirToken, getKPI, type FoorirKPI, type FoorirPeriod } from '@/lib/foorir';
 import { PromoPerformance } from '@/components/promo-performance';
+import { BrandMonthlySales } from '@/components/brand-monthly-sales';
 
 // ── Types ─────────────────────────────────────────────────────
 type ViewMode = 'yesterday' | 'this_week' | 'last_week';
@@ -1149,6 +1150,13 @@ export default function DailyWeeklyPage() {
             );
           })()}
 
+
+          {/* ── Brand Monthly Sales (MTD) ─────────────────────── */}
+          <BrandMonthlySales
+            allOrders={allOrders}
+            allOrderLines={allOrderLines}
+            loading={loading}
+          />
 
           {/* ── Category Breakdown ───────────────────────────────── */}
           <Card className="border-border/40">
