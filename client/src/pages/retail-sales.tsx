@@ -1,10 +1,12 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
+import { queryWithDateRange, queryAll, queryAllPages } from '@/lib/query-helpers';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
 import { DollarSign, ShoppingCart, TrendingUp, Package, Percent, Target, ChevronRight } from 'lucide-react';
+import { BrandRanking } from '@/components/brand-ranking';
+import { BasketAnalysis } from '@/components/basket-analysis';
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
   PieChart, Pie, Cell,
@@ -87,6 +89,11 @@ export default function RetailSalesPage() {
   const [recentOrders, setRecentOrders] = useState<any[]>([]);
   const [categoryData, setCategoryData] = useState<any[]>([]);
   const [marginData, setMarginData] = useState<any[]>([]);
+  // Brand ranking + basket analysis data
+  const [mtdOrders2, setMtdOrders2] = useState<any[]>([]);
+  const [mtdOrderLines2, setMtdOrderLines2] = useState<any[]>([]);
+  const [allOrdersForBasket, setAllOrdersForBasket] = useState<any[]>([]);
+  const [allLinesForBasket, setAllLinesForBasket] = useState<any[]>([]);
 
   // MTD data for targets
   const [mtdRevenue, setMtdRevenue] = useState(0);
@@ -249,6 +256,37 @@ export default function RetailSalesPage() {
             return { ...p, avgSalePrice, marginPct, totalGM };
           });
         setMarginData(marginArr);
+
+        // ── Brand Ranking: MTD orders & lines ──
+        const mtdOrd = await queryWithDateRange(
+          'shopify_orders',
+          'id,order_number,created_at,total_price,financial_status,cancelled_at,customer_name,source_name',
+          'created_at',
+          { from: ranges.mtd.start, to: ranges.mtd.end }
+        );
+        const mtdOrdIds = new Set(mtdOrd.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => o.id));
+        const mtdLines = fullLines.filter((l: any) => mtdOrdIds.has(l.order_id));
+        if (!cancelled) {
+          setMtdOrders2(mtdOrd);
+          setMtdOrderLines2(mtdLines);
+        }
+
+        // ── Basket Analysis: use all available data for stronger signals ──
+        // Use recent 90 days for basket analysis (balance between signal and relevance)
+        const ninetyDaysAgo = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+        const basketOrders = await queryAllPages(
+          'shopify_orders',
+          'id,financial_status,cancelled_at',
+          [{ column: 'created_at', op: 'gte', value: ninetyDaysAgo }]
+        );
+        const basketOrderIds = new Set(
+          basketOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => o.id)
+        );
+        const basketLines = fullLines.filter((l: any) => basketOrderIds.has(l.order_id));
+        if (!cancelled) {
+          setAllOrdersForBasket(basketOrders);
+          setAllLinesForBasket(basketLines);
+        }
       } catch (e) {
         console.error('RetailSales error:', e);
       } finally {
@@ -524,6 +562,12 @@ export default function RetailSalesPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Brand Ranking ── */}
+      <BrandRanking orderLines={mtdOrderLines2} orders={mtdOrders2} loading={loading} />
+
+      {/* ── Basket Analysis ── */}
+      <BasketAnalysis orderLines={allLinesForBasket} orders={allOrdersForBasket} loading={loading} />
 
       <Card className="border-border/40">
         <CardHeader className="pb-2 pt-4 px-4">

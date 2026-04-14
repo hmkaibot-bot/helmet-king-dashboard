@@ -17,6 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { FoorirLogin } from '@/components/foorir-login';
 import { getFoorirToken, getKPI, type FoorirKPI, type FoorirPeriod } from '@/lib/foorir';
+import { PromoPerformance } from '@/components/promo-performance';
 
 // ── Types ─────────────────────────────────────────────────────
 type ViewMode = 'yesterday' | 'this_week' | 'last_week';
@@ -1258,6 +1259,15 @@ export default function DailyWeeklyPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* ── Promo Code Performance (Yesterday) ─────────── */}
+          <PromoPerformance
+            allOrders={allOrders}
+            allOrderLines={allOrderLines}
+            dateStr={yesterday}
+            dateLabel="昨日"
+            loading={loading}
+          />
 
           {/* ── Brand Sales vs Previous Day ────────────────────────── */}
           <Card className="border-border/40">
