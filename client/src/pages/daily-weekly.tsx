@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { queryAll, queryAllPages } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
@@ -538,17 +538,7 @@ export default function DailyWeeklyPage() {
     return Object.values(catMap).sort((a, b) => b.revenue - a.revenue);
   }, [yProducts]);
 
-  // ── Yesterday order list ──────────────────────────────────
-  const yOrderList = useMemo(() =>
-    [...yOrders]
-      .sort((a: any, b: any) => b.created_at.localeCompare(a.created_at))
-      .slice(0, 20)
-      .map((o: any) => {
-        const lines = allOrderLines.filter((l: any) => l.order_id === o.id);
-        return { ...o, itemCount: lines.reduce((s: number, l: any) => s + (l.quantity || 0), 0), time: toHKTimeString(o.created_at) };
-      }),
-    [yOrders, allOrderLines]
-  );
+
 
   // ── Week data ─────────────────────────────────────────────
   const isWeekView = viewMode !== 'yesterday';
@@ -645,23 +635,29 @@ export default function DailyWeeklyPage() {
     return Object.values(pm).sort((a, b) => b.qty - a.qty).slice(0, 10);
   }, [weekOrders, allOrderLines]);
 
-  // Week category breakdown (for table)
+  // Week category breakdown (for table) — with per-product items for expand
   const weekCatBreakdown = useMemo(() => {
     const ids = new Set(weekOrders.map((o: any) => o.id));
     const lines = allOrderLines.filter((l: any) => ids.has(l.order_id));
-    const cm: Record<string, { type: string; qty: number; revenue: number; brands: Set<string>; skus: number }> = {};
+    const cm: Record<string, { type: string; qty: number; revenue: number; brands: Set<string>; skus: number; items: Record<string, { title: string; vendor: string; qty: number; revenue: number }> }> = {};
     lines.forEach((l: any) => {
       const type = l.product_type || productTypeMap[String(l.product_id)] || 'Other';
-      if (!cm[type]) cm[type] = { type, qty: 0, revenue: 0, brands: new Set(), skus: 0 };
+      if (!cm[type]) cm[type] = { type, qty: 0, revenue: 0, brands: new Set(), skus: 0, items: {} };
       cm[type].qty     += l.quantity || 0;
       cm[type].revenue += (parseFloat(l.price) || 0) * (l.quantity || 0);
       if (l.vendor) cm[type].brands.add(l.vendor);
       cm[type].skus++;
+      // Track per-product items
+      const itemKey = l.title || String(l.product_id) || 'unknown';
+      if (!cm[type].items[itemKey]) cm[type].items[itemKey] = { title: l.title || itemKey, vendor: l.vendor || '', qty: 0, revenue: 0 };
+      cm[type].items[itemKey].qty += l.quantity || 0;
+      cm[type].items[itemKey].revenue += (parseFloat(l.price) || 0) * (l.quantity || 0);
     });
     return Object.values(cm)
-      .map(c => ({ ...c, brands: [...c.brands] }))
+      .map(c => ({ ...c, brands: [...c.brands], itemList: Object.values(c.items).sort((a, b) => b.revenue - a.revenue) }))
       .sort((a, b) => b.revenue - a.revenue);
   }, [weekOrders, allOrderLines, productTypeMap]);
+  const [expandedWeekCats, setExpandedWeekCats] = useState<Set<string>>(new Set());
 
   const toggleCat = useCallback((type: string) => {
     setExpandedCats(prev => {
@@ -711,28 +707,37 @@ export default function DailyWeeklyPage() {
   }, [allOrders, yesterday]);
 
   // ── Brand Sales: Yesterday vs Day Before ──────────────────
+  const [expandedBrands, setExpandedBrands] = useState<Set<string>>(new Set());
   const brandComparison = useMemo(() => {
     const dayBefore = (() => { const d = new Date(yesterday + 'T00:00:00'); d.setDate(d.getDate() - 1); return toDateStr(d); })();
     const yOrderIds = new Set(yOrders.map((o: any) => o.id));
     const dbOrders = filterOrders(allOrders, dayBefore, dayBefore);
     const dbOrderIds = new Set(dbOrders.map((o: any) => o.id));
 
-    const yBrands: Record<string, { qty: number; revenue: number }> = {};
-    const dbBrands: Record<string, { qty: number; revenue: number }> = {};
+    type ItemDetail = { title: string; qty: number; revenue: number };
+    const yBrands: Record<string, { qty: number; revenue: number; items: Record<string, ItemDetail> }> = {};
+    const dbBrands: Record<string, { qty: number; revenue: number; items: Record<string, ItemDetail> }> = {};
 
     allOrderLines.forEach((l: any) => {
       const vendor = l.vendor || 'Other';
       const qty = l.quantity || 0;
       const rev = (parseFloat(l.price) || 0) * qty;
+      const title = l.title || 'unknown';
       if (yOrderIds.has(l.order_id)) {
-        if (!yBrands[vendor]) yBrands[vendor] = { qty: 0, revenue: 0 };
+        if (!yBrands[vendor]) yBrands[vendor] = { qty: 0, revenue: 0, items: {} };
         yBrands[vendor].qty += qty;
         yBrands[vendor].revenue += rev;
+        if (!yBrands[vendor].items[title]) yBrands[vendor].items[title] = { title, qty: 0, revenue: 0 };
+        yBrands[vendor].items[title].qty += qty;
+        yBrands[vendor].items[title].revenue += rev;
       }
       if (dbOrderIds.has(l.order_id)) {
-        if (!dbBrands[vendor]) dbBrands[vendor] = { qty: 0, revenue: 0 };
+        if (!dbBrands[vendor]) dbBrands[vendor] = { qty: 0, revenue: 0, items: {} };
         dbBrands[vendor].qty += qty;
         dbBrands[vendor].revenue += rev;
+        if (!dbBrands[vendor].items[title]) dbBrands[vendor].items[title] = { title, qty: 0, revenue: 0 };
+        dbBrands[vendor].items[title].qty += qty;
+        dbBrands[vendor].items[title].revenue += rev;
       }
     });
 
@@ -745,6 +750,8 @@ export default function DailyWeeklyPage() {
       dbRevenue: dbBrands[v]?.revenue || 0,
       qtyDelta: (yBrands[v]?.qty || 0) - (dbBrands[v]?.qty || 0),
       revDelta: (yBrands[v]?.revenue || 0) - (dbBrands[v]?.revenue || 0),
+      yItems: Object.values(yBrands[v]?.items || {}).sort((a, b) => b.revenue - a.revenue),
+      dbItems: Object.values(dbBrands[v]?.items || {}).sort((a, b) => b.revenue - a.revenue),
     })).sort((a, b) => b.yRevenue - a.yRevenue);
   }, [yOrders, allOrders, allOrderLines, yesterday, filterOrders]);
 
@@ -1335,7 +1342,7 @@ export default function DailyWeeklyPage() {
               <CardTitle className="text-sm font-medium flex items-center gap-2">
                 <Award className="h-3.5 w-3.5 text-primary shrink-0" />
                 品牌銷售對比
-                <span className="text-xs font-normal text-muted-foreground">Brand Sales — Yesterday vs Day Before</span>
+                <span className="text-xs font-normal text-muted-foreground">Brand Sales — Yesterday vs Day Before　點擊展開明細</span>
               </CardTitle>
             </CardHeader>
             <CardContent className="px-4 pb-4">
@@ -1358,29 +1365,72 @@ export default function DailyWeeklyPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {brandComparison.filter(b => b.yQty > 0 || b.dbQty > 0).map(b => (
-                        <tr key={b.vendor} className="border-b border-border/20 hover:bg-accent/30 transition-colors">
-                          <td className="py-2 font-medium">{b.vendor}</td>
-                          <td className="py-2 text-right tabular-nums font-bold">{b.yQty}</td>
-                          <td className="py-2 text-right tabular-nums font-semibold">{formatCurrency(b.yRevenue)}</td>
-                          <td className="py-2 text-right tabular-nums text-muted-foreground">{b.dbQty}</td>
-                          <td className="py-2 text-right tabular-nums text-muted-foreground">{formatCurrency(b.dbRevenue)}</td>
-                          <td className={`py-2 text-right tabular-nums font-semibold ${
-                            b.qtyDelta > 0 ? 'text-green-400' : b.qtyDelta < 0 ? 'text-red-400' : 'text-muted-foreground/40'
-                          }`}>
-                            {b.qtyDelta > 0 ? <span className="inline-flex items-center gap-0.5"><ArrowUp className="h-3 w-3" />{b.qtyDelta}</span>
-                             : b.qtyDelta < 0 ? <span className="inline-flex items-center gap-0.5"><ArrowDown className="h-3 w-3" />{Math.abs(b.qtyDelta)}</span>
-                             : '—'}
-                          </td>
-                          <td className={`py-2 text-right tabular-nums font-semibold ${
-                            b.revDelta > 0 ? 'text-green-400' : b.revDelta < 0 ? 'text-red-400' : 'text-muted-foreground/40'
-                          }`}>
-                            {b.revDelta > 0 ? <span className="inline-flex items-center gap-0.5"><ArrowUp className="h-3 w-3" />{formatCurrency(b.revDelta)}</span>
-                             : b.revDelta < 0 ? <span className="inline-flex items-center gap-0.5"><ArrowDown className="h-3 w-3" />{formatCurrency(Math.abs(b.revDelta))}</span>
-                             : '—'}
-                          </td>
-                        </tr>
-                      ))}
+                      {brandComparison.filter(b => b.yQty > 0 || b.dbQty > 0).map(b => {
+                        const bExp = expandedBrands.has(b.vendor);
+                        return (
+                          <React.Fragment key={b.vendor}>
+                            <tr
+                              className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer"
+                              onClick={() => setExpandedBrands(prev => { const n = new Set(prev); n.has(b.vendor) ? n.delete(b.vendor) : n.add(b.vendor); return n; })}
+                            >
+                              <td className="py-2 font-medium">
+                                <span className="inline-flex items-center gap-1">
+                                  {bExp ? <ChevronDown className="h-3 w-3 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 text-muted-foreground" />}
+                                  {b.vendor}
+                                </span>
+                              </td>
+                              <td className="py-2 text-right tabular-nums font-bold">{b.yQty}</td>
+                              <td className="py-2 text-right tabular-nums font-semibold">{formatCurrency(b.yRevenue)}</td>
+                              <td className="py-2 text-right tabular-nums text-muted-foreground">{b.dbQty}</td>
+                              <td className="py-2 text-right tabular-nums text-muted-foreground">{formatCurrency(b.dbRevenue)}</td>
+                              <td className={`py-2 text-right tabular-nums font-semibold ${
+                                b.qtyDelta > 0 ? 'text-green-400' : b.qtyDelta < 0 ? 'text-red-400' : 'text-muted-foreground/40'
+                              }`}>
+                                {b.qtyDelta > 0 ? <span className="inline-flex items-center gap-0.5"><ArrowUp className="h-3 w-3" />{b.qtyDelta}</span>
+                                 : b.qtyDelta < 0 ? <span className="inline-flex items-center gap-0.5"><ArrowDown className="h-3 w-3" />{Math.abs(b.qtyDelta)}</span>
+                                 : '—'}
+                              </td>
+                              <td className={`py-2 text-right tabular-nums font-semibold ${
+                                b.revDelta > 0 ? 'text-green-400' : b.revDelta < 0 ? 'text-red-400' : 'text-muted-foreground/40'
+                              }`}>
+                                {b.revDelta > 0 ? <span className="inline-flex items-center gap-0.5"><ArrowUp className="h-3 w-3" />{formatCurrency(b.revDelta)}</span>
+                                 : b.revDelta < 0 ? <span className="inline-flex items-center gap-0.5"><ArrowDown className="h-3 w-3" />{formatCurrency(Math.abs(b.revDelta))}</span>
+                                 : '—'}
+                              </td>
+                            </tr>
+                            {bExp && (
+                              <tr>
+                                <td colSpan={7} className="p-0">
+                                  <div className="grid grid-cols-2 gap-3 bg-accent/10 px-4 py-3 border-b border-border/20">
+                                    <div>
+                                      <p className="text-[10px] font-semibold text-muted-foreground mb-1.5">昨日售出 Yesterday</p>
+                                      {b.yItems.length === 0 ? (
+                                        <p className="text-[10px] text-muted-foreground/50">無銷售</p>
+                                      ) : b.yItems.map((item, ii) => (
+                                        <div key={ii} className="flex items-center justify-between text-[11px] py-0.5 border-b border-border/10 last:border-0">
+                                          <span className="truncate max-w-[220px]">{item.title}</span>
+                                          <span className="tabular-nums text-muted-foreground ml-2 shrink-0">×{item.qty} {formatCurrency(item.revenue)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <div>
+                                      <p className="text-[10px] font-semibold text-muted-foreground mb-1.5">前日售出 Day Before</p>
+                                      {b.dbItems.length === 0 ? (
+                                        <p className="text-[10px] text-muted-foreground/50">無銷售</p>
+                                      ) : b.dbItems.map((item, ii) => (
+                                        <div key={ii} className="flex items-center justify-between text-[11px] py-0.5 border-b border-border/10 last:border-0">
+                                          <span className="truncate max-w-[220px]">{item.title}</span>
+                                          <span className="tabular-nums text-muted-foreground ml-2 shrink-0">×{item.qty} {formatCurrency(item.revenue)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1472,46 +1522,7 @@ export default function DailyWeeklyPage() {
             </CardContent>
           </Card>
 
-          {/* ── Yesterday Orders ─────────────────────────────────── */}
-          <Card className="border-border/40">
-            <CardHeader className="pb-2 pt-4 px-4">
-              <CardTitle className="text-sm font-medium">
-                昨日訂單 <span className="text-xs font-normal text-muted-foreground">Yesterday's Orders (last 20)</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              {loading ? (
-                <Skeleton className="h-[300px] w-full" />
-              ) : yOrderList.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-8 text-center">昨日無訂單</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs" data-testid="table-yesterday-orders">
-                    <thead>
-                      <tr className="border-b border-border/50 text-muted-foreground">
-                        <th className="py-2 text-left font-medium">訂單 Order#</th>
-                        <th className="py-2 text-left font-medium">時間 Time</th>
-                        <th className="py-2 text-left font-medium">客戶 Customer</th>
-                        <th className="py-2 text-right font-medium">件數</th>
-                        <th className="py-2 text-right font-medium">金額</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {yOrderList.map((o: any) => (
-                        <tr key={o.id} className="border-b border-border/20 hover:bg-accent/30 transition-colors">
-                          <td className="py-2 tabular-nums">#{o.order_number}</td>
-                          <td className="py-2 text-muted-foreground">{o.time}</td>
-                          <td className="py-2">{o.customer_name || '—'}</td>
-                          <td className="py-2 text-right tabular-nums">{o.itemCount}</td>
-                          <td className="py-2 text-right tabular-nums font-medium">{formatCurrency(parseFloat(o.total_price))}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+
         </>
       )}
 
@@ -1605,7 +1616,7 @@ export default function DailyWeeklyPage() {
               <CardTitle className="text-sm font-medium flex items-center gap-2">
                 <Tag className="h-3.5 w-3.5 text-primary" />
                 本週類別表現
-                <span className="text-xs font-normal text-muted-foreground">Weekly Category Breakdown</span>
+                <span className="text-xs font-normal text-muted-foreground">Weekly Category Breakdown　點擊展開明細</span>
               </CardTitle>
             </CardHeader>
             <CardContent className="px-4 pb-4">
@@ -1628,25 +1639,56 @@ export default function DailyWeeklyPage() {
                     <tbody>
                       {weekCatBreakdown.map((cat, i) => {
                         const style = getCatStyle(cat.type);
+                        const wcExp = expandedWeekCats.has(cat.type);
                         return (
-                          <tr key={i} className="border-b border-border/20 hover:bg-accent/30 transition-colors">
-                            <td className={`py-2 font-medium ${style.color}`}>{cat.type}</td>
-                            <td className="py-2 text-right tabular-nums">{cat.qty}</td>
-                            <td className="py-2 text-right tabular-nums font-semibold">{formatCurrency(cat.revenue)}</td>
-                            <td className="py-2 text-right tabular-nums text-muted-foreground">
-                              {formatCurrency(cat.qty > 0 ? cat.revenue / cat.qty : 0)}
-                            </td>
-                            <td className="py-2 pl-3">
-                              <div className="flex flex-wrap gap-1">
-                                {cat.brands.slice(0, 5).map(b => (
-                                  <span key={b} className="text-[10px] bg-accent/60 text-muted-foreground px-1.5 py-0.5 rounded">{b}</span>
-                                ))}
-                                {cat.brands.length > 5 && (
-                                  <span className="text-[10px] text-muted-foreground/50">+{cat.brands.length - 5}</span>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
+                          <React.Fragment key={i}>
+                            <tr
+                              className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer"
+                              onClick={() => setExpandedWeekCats(prev => { const n = new Set(prev); n.has(cat.type) ? n.delete(cat.type) : n.add(cat.type); return n; })}
+                            >
+                              <td className={`py-2 font-medium ${style.color}`}>
+                                <span className="inline-flex items-center gap-1">
+                                  {wcExp ? <ChevronDown className="h-3 w-3 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 text-muted-foreground" />}
+                                  {cat.type}
+                                </span>
+                              </td>
+                              <td className="py-2 text-right tabular-nums">{cat.qty}</td>
+                              <td className="py-2 text-right tabular-nums font-semibold">{formatCurrency(cat.revenue)}</td>
+                              <td className="py-2 text-right tabular-nums text-muted-foreground">
+                                {formatCurrency(cat.qty > 0 ? cat.revenue / cat.qty : 0)}
+                              </td>
+                              <td className="py-2 pl-3">
+                                <div className="flex flex-wrap gap-1">
+                                  {cat.brands.slice(0, 5).map(b => (
+                                    <span key={b} className="text-[10px] bg-accent/60 text-muted-foreground px-1.5 py-0.5 rounded">{b}</span>
+                                  ))}
+                                  {cat.brands.length > 5 && (
+                                    <span className="text-[10px] text-muted-foreground/50">+{cat.brands.length - 5}</span>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                            {wcExp && (
+                              <tr>
+                                <td colSpan={5} className="p-0">
+                                  <div className="bg-accent/10 px-4 py-2 border-b border-border/20">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+                                      {cat.itemList.map((item, ii) => (
+                                        <div key={ii} className="flex items-center justify-between text-[11px] py-1 border-b border-border/10 last:border-0">
+                                          <div className="flex items-center gap-2 min-w-0">
+                                            <span className="text-muted-foreground/50 tabular-nums w-4 text-right shrink-0">{ii + 1}</span>
+                                            <span className="truncate">{item.title}</span>
+                                            {item.vendor && <span className="text-[9px] text-muted-foreground/50 shrink-0">{item.vendor}</span>}
+                                          </div>
+                                          <span className="tabular-nums text-muted-foreground ml-2 shrink-0">×{item.qty} {formatCurrency(item.revenue)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
                         );
                       })}
                     </tbody>
