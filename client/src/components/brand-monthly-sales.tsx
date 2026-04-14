@@ -32,11 +32,15 @@ function getHKNow(): Date {
   return new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
 }
 function toDateStr(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 function toHKDateStr(isoStr: string): string {
   const d = new Date(isoStr);
-  return new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000).toISOString().slice(0, 10);
+  const hk = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
+  return toDateStr(hk);
 }
 
 type SortField = 'revenue' | 'qty';

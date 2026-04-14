@@ -27,9 +27,16 @@ export interface DateBounds {
   to: string;   // ISO date string YYYY-MM-DD
 }
 
+function fmtDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export function getDateBounds(range: DateRange, customFrom?: string, customTo?: string): DateBounds {
   const now = new Date();
-  const todayStr = now.toISOString().slice(0, 10);
+  const todayStr = fmtDate(now);
   
   switch (range) {
     case 'today': {
@@ -40,26 +47,26 @@ export function getDateBounds(range: DateRange, customFrom?: string, customTo?: 
       const day = d.getDay();
       const diff = d.getDate() - day + (day === 0 ? -6 : 1);
       d.setDate(diff);
-      return { from: d.toISOString().slice(0, 10), to: todayStr };
+      return { from: fmtDate(d), to: todayStr };
     }
     case 'this_month': {
       const d = new Date(now.getFullYear(), now.getMonth(), 1);
-      return { from: d.toISOString().slice(0, 10), to: todayStr };
+      return { from: fmtDate(d), to: todayStr };
     }
     case '7d': {
       const d = new Date(now);
       d.setDate(d.getDate() - 7);
-      return { from: d.toISOString().slice(0, 10), to: todayStr };
+      return { from: fmtDate(d), to: todayStr };
     }
     case '30d': {
       const d = new Date(now);
       d.setDate(d.getDate() - 30);
-      return { from: d.toISOString().slice(0, 10), to: todayStr };
+      return { from: fmtDate(d), to: todayStr };
     }
     case '90d': {
       const d = new Date(now);
       d.setDate(d.getDate() - 90);
-      return { from: d.toISOString().slice(0, 10), to: todayStr };
+      return { from: fmtDate(d), to: todayStr };
     }
     case 'custom': {
       return {
@@ -78,8 +85,8 @@ export function getPreviousPeriodBounds(bounds: DateBounds): DateBounds {
   const prevTo = new Date(fromDate.getTime() - 86400000); // day before
   const prevFrom = new Date(prevTo.getTime() - durationMs);
   return {
-    from: prevFrom.toISOString().slice(0, 10),
-    to: prevTo.toISOString().slice(0, 10),
+    from: fmtDate(prevFrom),
+    to: fmtDate(prevTo),
   };
 }
 
