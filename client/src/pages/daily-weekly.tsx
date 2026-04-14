@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  LineChart, Line, Legend,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -211,6 +212,7 @@ export default function DailyWeeklyPage() {
   const [loading, setLoading] = useState(true);
   const [allOrders, setAllOrders] = useState<any[]>([]);
   const [allOrderLines, setAllOrderLines] = useState<any[]>([]);
+  const [lastYearOrders, setLastYearOrders] = useState<any[]>([]);
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
   const [productTypeMap, setProductTypeMap] = useState<Record<string, string>>({});
   const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set());
@@ -331,6 +333,31 @@ export default function DailyWeeklyPage() {
           });
         }
         if (!cancelled) setInventoryMap(invMap);
+
+        // Phase 3: fetch last year same-period orders for weekly comparison chart
+        // Get this week Mon & last week Mon, then compute the same dates last year
+        const twBounds = getThisWeekBounds();
+        const lwBounds = getLastWeekBounds();
+        const lyThisMonday = new Date(twBounds.from + 'T00:00:00');
+        lyThisMonday.setFullYear(lyThisMonday.getFullYear() - 1);
+        const lyLastMonday = new Date(lwBounds.from + 'T00:00:00');
+        lyLastMonday.setFullYear(lyLastMonday.getFullYear() - 1);
+        const lyFrom = toDateStr(lyLastMonday < lyThisMonday ? lyLastMonday : lyThisMonday);
+        const lySunday = new Date(lyThisMonday);
+        lySunday.setDate(lyThisMonday.getDate() + 6);
+        const lyTo = toDateStr(lySunday);
+
+        const { data: lyData } = await supabase
+          .from('shopify_orders')
+          .select('id,order_number,created_at,total_price,financial_status,cancelled_at')
+          .gte('created_at', lyFrom)
+          .lte('created_at', lyTo + 'T23:59:59')
+          .limit(5000);
+        if (!cancelled) {
+          setLastYearOrders(
+            (lyData || []).filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at)
+          );
+        }
       } catch (e) {
         console.error('Daily/Weekly load error:', e);
       } finally {
@@ -571,6 +598,39 @@ export default function DailyWeeklyPage() {
       return { day: DAY_NAMES[i], revenue: rev };
     });
   }, [allOrders, wkBounds, filterOrders]);
+
+  // ── Weekly comparison: this week vs last week vs last year same week ──
+  const weekComparisonData = useMemo(() => {
+    // Current week Mon-Sun
+    const twStart = new Date(wkBounds.from + 'T00:00:00');
+    // Previous week bounds
+    const pwStart = new Date(prevWkBounds.from + 'T00:00:00');
+    // Last year same week (aligned by day of week, not exact date)
+    const lyStart = new Date(twStart);
+    lyStart.setFullYear(lyStart.getFullYear() - 1);
+
+    // Helper: sum revenue for orders on a given HK date string
+    const revForDate = (orders: any[], dateStr: string) =>
+      orders.filter((o: any) => toHKDateStr(o.created_at) === dateStr)
+        .reduce((s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0);
+
+    return Array.from({ length: 7 }, (_, i) => {
+      const twDate = new Date(twStart); twDate.setDate(twStart.getDate() + i);
+      const pwDate = new Date(pwStart); pwDate.setDate(pwStart.getDate() + i);
+      const lyDate = new Date(lyStart); lyDate.setDate(lyStart.getDate() + i);
+
+      const twStr = toDateStr(twDate);
+      const pwStr = toDateStr(pwDate);
+      const lyStr = toDateStr(lyDate);
+
+      return {
+        day: DAY_NAMES[i],
+        thisWeek: revForDate(allOrders, twStr),
+        lastWeek: revForDate(allOrders, pwStr),
+        lastYear: revForDate(lastYearOrders, lyStr),
+      };
+    });
+  }, [allOrders, lastYearOrders, wkBounds, prevWkBounds]);
 
   const weekTopProducts = useMemo(() => {
     const ids = new Set(weekOrders.map((o: any) => o.id));
@@ -1476,6 +1536,66 @@ export default function DailyWeeklyPage() {
                 <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => formatCurrency(v)} />
                 <Bar dataKey="revenue" fill={CHART_COLORS.primary} radius={[3, 3, 0, 0]} />
               </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+
+          {/* ── Weekly Comparison Line Chart ──────────────────────── */}
+          <ChartCard
+            title="每週銷售對比"
+            subtitle={`本週 vs 上週 vs 去年同期 Weekly Comparison`}
+            note={(() => {
+              const twStart = new Date(wkBounds.from + 'T00:00:00');
+              const lyStart = new Date(twStart); lyStart.setFullYear(lyStart.getFullYear() - 1);
+              const lyEnd = new Date(lyStart); lyEnd.setDate(lyStart.getDate() + 6);
+              return `去年同期: ${toDateStr(lyStart)} → ${toDateStr(lyEnd)}`;
+            })()}
+            loading={loading}
+          >
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={weekComparisonData}>
+                <CartesianGrid {...GRID_STYLE} />
+                <XAxis dataKey="day" tick={AXIS_STYLE} />
+                <YAxis tick={AXIS_STYLE} tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}K`} />
+                <Tooltip
+                  {...TOOLTIP_STYLE}
+                  formatter={(v: number, name: string) => {
+                    const label = name === 'thisWeek' ? '本週' : name === 'lastWeek' ? '上週' : '去年同期';
+                    return [formatCurrency(v), label];
+                  }}
+                />
+                <Legend
+                  formatter={(value: string) => {
+                    if (value === 'thisWeek') return '本週 This Week';
+                    if (value === 'lastWeek') return '上週 Last Week';
+                    return '去年同期 Last Year';
+                  }}
+                  wrapperStyle={{ fontSize: '11px' }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="thisWeek"
+                  stroke={CHART_COLORS.primary}
+                  strokeWidth={2.5}
+                  dot={{ r: 4, fill: CHART_COLORS.primary }}
+                  activeDot={{ r: 6 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="lastWeek"
+                  stroke={CHART_COLORS.secondary}
+                  strokeWidth={2}
+                  strokeDasharray="6 3"
+                  dot={{ r: 3, fill: CHART_COLORS.secondary }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="lastYear"
+                  stroke={CHART_COLORS.quaternary}
+                  strokeWidth={2}
+                  strokeDasharray="3 3"
+                  dot={{ r: 3, fill: CHART_COLORS.quaternary }}
+                />
+              </LineChart>
             </ResponsiveContainer>
           </ChartCard>
 
