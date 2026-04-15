@@ -58,6 +58,7 @@ interface DeadStockReview {
   last_review_date: string | null;
   next_review_date: string | null;
   revived: boolean | null;
+  system_status_override: string | null;
 }
 
 interface AuditLogRow {
@@ -219,7 +220,7 @@ const DEFAULT_FILTERS: FilterState = {
   cost_max: '',
 };
 
-type SortKey = 'stock_cost' | 'inventory_quantity' | 'days_since_last_sale' | 'sold_90d';
+type SortKey = 'stock_cost' | 'inventory_quantity' | 'days_since_last_sale' | 'sold_90d' | 'system_status';
 type SortDir = 'asc' | 'desc';
 
 // ── Main Component ────────────────────────────────────────────────────────────
@@ -248,6 +249,12 @@ export default function DeadStockPage() {
   const [formOriginal, setFormOriginal] = useState<Partial<DeadStockReview>>({});
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Batch selection state
+  const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
+  const [batchSaving, setBatchSaving] = useState(false);
+  const [batchField, setBatchField] = useState<'system_status' | 'manual_status' | 'priority' | 'action'>('manual_status');
+  const [batchValue, setBatchValue] = useState('');
 
   // ── Data Loading ────────────────────────────────────────────────────────────
 
@@ -355,6 +362,12 @@ export default function DeadStockPage() {
 
       const rev = reviewMap.get(inv.sku);
 
+      // Apply system_status_override from review if present
+      const VALID_SYSTEM_STATUSES: SystemStatus[] = ['正常', '慢移貨', '高風險死貨', '真正死貨'];
+      if (rev?.system_status_override && VALID_SYSTEM_STATUSES.includes(rev.system_status_override as SystemStatus)) {
+        system_status = rev.system_status_override as SystemStatus;
+      }
+
       result.push({
         sku: inv.sku,
         product_title: inv.product_title,
@@ -455,8 +468,12 @@ export default function DeadStockPage() {
     if (filters.cost_max) items = items.filter(i => i.stock_cost <= Number(filters.cost_max));
 
     // Sort
+    const STATUS_ORDER: Record<string, number> = { '正常': 0, '慢移貨': 1, '高風險死貨': 2, '真正死貨': 3 };
     items = [...items].sort((a, b) => {
       const mul = sortDir === 'asc' ? 1 : -1;
+      if (sortKey === 'system_status') {
+        return ((STATUS_ORDER[a.system_status] ?? 0) - (STATUS_ORDER[b.system_status] ?? 0)) * mul;
+      }
       return (a[sortKey] - b[sortKey]) * mul;
     });
 
@@ -589,6 +606,139 @@ export default function DeadStockPage() {
     return sortDir === 'asc'
       ? <ChevronUp className="h-3 w-3 text-primary inline ml-0.5" />
       : <ChevronDown className="h-3 w-3 text-primary inline ml-0.5" />;
+  };
+
+  // ── Inline field update helper ──────────────────────────────────────────────
+
+  const handleInlineUpdate = async (
+    sku: string,
+    fieldName: 'system_status_override' | 'manual_status' | 'priority' | 'action',
+    newValue: string,
+    oldValue: string | null,
+  ) => {
+    const dbField = fieldName === 'system_status_override' ? 'system_status_override' : fieldName;
+    const auditField = fieldName === 'system_status_override' ? 'system_status' : fieldName;
+
+    // Upsert review
+    await supabase.from('dead_stock_reviews').upsert({
+      sku,
+      [dbField]: newValue || null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'sku' });
+
+    // Audit log
+    await supabase.from('dead_stock_audit_log').insert({
+      sku,
+      field_name: auditField,
+      old_value: oldValue || null,
+      new_value: newValue || null,
+      changed_by: 'user',
+      changed_at: new Date().toISOString(),
+    });
+
+    // Refresh local state
+    const [newReviews, newAudit] = await Promise.all([
+      supabase.from('dead_stock_reviews').select('*'),
+      supabase.from('dead_stock_audit_log').select('*').order('changed_at', { ascending: false }),
+    ]);
+    if (newReviews.data) setReviews(newReviews.data as DeadStockReview[]);
+    if (newAudit.data) setAuditLog(newAudit.data as AuditLogRow[]);
+  };
+
+  // ── Checkbox toggle helpers ─────────────────────────────────────────────────
+
+  const toggleSelect = (sku: string) => {
+    setSelectedSkus(prev => {
+      const next = new Set(prev);
+      if (next.has(sku)) next.delete(sku);
+      else next.add(sku);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedSkus.size === filteredItems.length) {
+      setSelectedSkus(new Set());
+    } else {
+      setSelectedSkus(new Set(filteredItems.map(i => i.sku)));
+    }
+  };
+
+  // ── Batch update handler ───────────────────────────────────────────────────
+
+  const handleBatchUpdate = async () => {
+    if (selectedSkus.size === 0 || !batchValue) return;
+    setBatchSaving(true);
+    try {
+      const skus = Array.from(selectedSkus);
+      const now = new Date().toISOString();
+      const dbField = batchField === 'system_status' ? 'system_status_override' : batchField;
+      const auditFieldName = batchField;
+
+      // Upsert each SKU
+      for (const sku of skus) {
+        const item = filteredItems.find(i => i.sku === sku);
+        const oldVal = batchField === 'system_status'
+          ? item?.system_status ?? null
+          : (item as any)?.[batchField] ?? null;
+
+        await supabase.from('dead_stock_reviews').upsert({
+          sku,
+          [dbField]: batchValue || null,
+          updated_at: now,
+        }, { onConflict: 'sku' });
+
+        await supabase.from('dead_stock_audit_log').insert({
+          sku,
+          field_name: auditFieldName,
+          old_value: String(oldVal ?? ''),
+          new_value: batchValue,
+          changed_by: 'batch',
+          changed_at: now,
+        });
+      }
+
+      // Refresh
+      const [newReviews, newAudit] = await Promise.all([
+        supabase.from('dead_stock_reviews').select('*'),
+        supabase.from('dead_stock_audit_log').select('*').order('changed_at', { ascending: false }),
+      ]);
+      if (newReviews.data) setReviews(newReviews.data as DeadStockReview[]);
+      if (newAudit.data) setAuditLog(newAudit.data as AuditLogRow[]);
+
+      setSelectedSkus(new Set());
+      setBatchValue('');
+    } catch (e: any) {
+      alert('批量更新失敗: ' + (e?.message ?? String(e)));
+    } finally {
+      setBatchSaving(false);
+    }
+  };
+
+  // ── Batch field options helper ─────────────────────────────────────────────
+
+  const BATCH_FIELD_OPTIONS: Record<string, { label: string; options: { value: string; label: string }[] }> = {
+    system_status: {
+      label: '系統狀態',
+      options: [
+        { value: '正常', label: '正常' },
+        { value: '慢移貨', label: '慢移貨' },
+        { value: '高風險死貨', label: '高風險死貨' },
+        { value: '真正死貨', label: '真正死貨' },
+      ],
+    },
+    manual_status: {
+      label: '人手狀態',
+      options: MANUAL_STATUS_OPTIONS.map(k => ({ value: k, label: MANUAL_STATUS_LABELS[k] })),
+    },
+    priority: {
+      label: '優先級',
+      options: PRIORITY_OPTIONS.map(k => ({ value: k, label: PRIORITY_LABELS[k] })),
+    },
+    action: {
+      label: '動作',
+      options: ACTION_OPTIONS.map(k => ({ value: k, label: ACTION_LABELS[k] })),
+    },
   };
 
   // ── Multi-select helper ─────────────────────────────────────────────────────
@@ -985,10 +1135,61 @@ export default function DeadStockPage() {
           )}
         </div>
 
+        {/* Batch toolbar */}
+        {selectedSkus.size > 0 && (
+          <div className="flex items-center gap-3 px-3 py-2 bg-primary/10 border border-primary/30 rounded-md">
+            <span className="text-xs font-medium text-primary">已選 {selectedSkus.size} 個 SKU</span>
+            <select
+              value={batchField}
+              onChange={e => { setBatchField(e.target.value as any); setBatchValue(''); }}
+              className="px-2 py-1 rounded border border-border bg-background text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+            >
+              <option value="system_status">系統狀態</option>
+              <option value="manual_status">人手狀態</option>
+              <option value="priority">優先級</option>
+              <option value="action">動作</option>
+            </select>
+            <select
+              value={batchValue}
+              onChange={e => setBatchValue(e.target.value)}
+              className="px-2 py-1 rounded border border-border bg-background text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+            >
+              <option value="">— 選擇值 —</option>
+              {BATCH_FIELD_OPTIONS[batchField]?.options.map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={handleBatchUpdate}
+              disabled={batchSaving || !batchValue}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-md text-xs bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              <Save className="h-3 w-3" />
+              {batchSaving ? '更新中...' : '批量更新'}
+            </button>
+            <button
+              onClick={() => setSelectedSkus(new Set())}
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground border border-border hover:bg-muted/50 transition-colors"
+            >
+              <X className="h-3 w-3" />
+              取消選擇
+            </button>
+          </div>
+        )}
+
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="bg-muted/30 border-b border-border/50">
               <tr>
+                <th className="px-2 py-2 w-8">
+                  <input
+                    type="checkbox"
+                    checked={filteredItems.length > 0 && selectedSkus.size === filteredItems.length}
+                    onChange={toggleSelectAll}
+                    className="h-3.5 w-3.5 rounded cursor-pointer"
+                    title="全選 / 取消全選"
+                  />
+                </th>
                 <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground w-8"></th>
                 <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground">SKU</th>
                 <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground max-w-[180px]">產品名稱</th>
@@ -1020,7 +1221,12 @@ export default function DeadStockPage() {
                 >
                   近90日銷 <SortIcon col="sold_90d" />
                 </th>
-                <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground">系統狀態</th>
+                <th
+                  className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground cursor-pointer hover:text-foreground select-none"
+                  onClick={() => handleSort('system_status')}
+                >
+                  系統狀態 <SortIcon col="system_status" />
+                </th>
                 <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground">人手狀態</th>
                 <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground">優先級</th>
                 <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground">動作</th>
@@ -1029,7 +1235,7 @@ export default function DeadStockPage() {
             <tbody className="divide-y divide-border/30">
               {filteredItems.length === 0 && (
                 <tr>
-                  <td colSpan={15} className="text-center py-8 text-sm text-muted-foreground">
+                  <td colSpan={16} className="text-center py-8 text-sm text-muted-foreground">
                     <Package className="h-8 w-8 mx-auto mb-2 opacity-30" />
                     無符合條件的死貨 / 老化庫存
                   </td>
@@ -1045,9 +1251,19 @@ export default function DeadStockPage() {
                       className={`cursor-pointer transition-colors ${
                         isExpanded
                           ? 'bg-primary/5 border-l-2 border-l-primary'
+                          : selectedSkus.has(item.sku)
+                          ? 'bg-primary/5'
                           : 'hover:bg-muted/30'
                       }`}
                     >
+                      <td className="px-2 py-1.5" onClick={e => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selectedSkus.has(item.sku)}
+                          onChange={() => toggleSelect(item.sku)}
+                          className="h-3.5 w-3.5 rounded cursor-pointer"
+                        />
+                      </td>
                       <td className="px-2 py-1.5 text-muted-foreground">
                         {isExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                       </td>
@@ -1071,18 +1287,97 @@ export default function DeadStockPage() {
                         </span>
                       </td>
                       <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{item.sold_90d}</td>
-                      <td className="px-2 py-1.5">{systemStatusBadge(item.system_status)}</td>
-                      <td className="px-2 py-1.5">{manualStatusBadge(item.manual_status)}</td>
-                      <td className="px-2 py-1.5">{priorityBadge(item.priority)}</td>
-                      <td className="px-2 py-1.5 text-muted-foreground text-[10px]">
-                        {item.action ? (ACTION_LABELS[item.action] ?? item.action) : '—'}
+                      <td className="px-2 py-1.5" onClick={e => e.stopPropagation()}>
+                        <select
+                          value={item.system_status}
+                          onChange={async (e) => {
+                            const newVal = e.target.value as SystemStatus;
+                            const oldVal = item.system_status;
+                            if (newVal === oldVal) return;
+                            await handleInlineUpdate(item.sku, 'system_status_override', newVal, oldVal);
+                          }}
+                          className={`text-[10px] font-medium rounded border px-1.5 py-0.5 cursor-pointer bg-transparent ${
+                            item.system_status === '真正死貨' ? 'text-red-400 border-red-500/30' :
+                            item.system_status === '高風險死貨' ? 'text-orange-400 border-orange-500/30' :
+                            item.system_status === '慢移貨' ? 'text-amber-400 border-amber-500/30' :
+                            'text-green-400 border-green-500/30'
+                          }`}
+                        >
+                          <option value="正常">正常</option>
+                          <option value="慢移貨">慢移貨</option>
+                          <option value="高風險死貨">高風險死貨</option>
+                          <option value="真正死貨">真正死貨</option>
+                        </select>
+                      </td>
+                      <td className="px-2 py-1.5" onClick={e => e.stopPropagation()}>
+                        <select
+                          value={item.manual_status ?? ''}
+                          onChange={async (e) => {
+                            const newVal = e.target.value;
+                            if (newVal === (item.manual_status ?? '')) return;
+                            await handleInlineUpdate(item.sku, 'manual_status', newVal, item.manual_status);
+                          }}
+                          className={`text-[10px] font-medium rounded border px-1.5 py-0.5 cursor-pointer bg-transparent ${
+                            !item.manual_status ? 'text-muted-foreground border-border/30' :
+                            item.manual_status === 'confirmed_dead' ? 'text-red-400 border-red-500/30' :
+                            item.manual_status === 'revived' ? 'text-green-400 border-green-500/30' :
+                            item.manual_status === 'promoting' ? 'text-purple-400 border-purple-500/30' :
+                            item.manual_status === 'pending_review' ? 'text-yellow-400 border-yellow-500/30' :
+                            item.manual_status === 'observing' ? 'text-blue-400 border-blue-500/30' :
+                            item.manual_status === 'cleared' ? 'text-gray-400 border-gray-500/30' :
+                            item.manual_status === 'keep' ? 'text-teal-400 border-teal-500/30' :
+                            'text-muted-foreground border-border/30'
+                          }`}
+                        >
+                          <option value="">—</option>
+                          {MANUAL_STATUS_OPTIONS.map(s => (
+                            <option key={s} value={s}>{MANUAL_STATUS_LABELS[s]}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-2 py-1.5" onClick={e => e.stopPropagation()}>
+                        <select
+                          value={item.priority ?? ''}
+                          onChange={async (e) => {
+                            const newVal = e.target.value;
+                            if (newVal === (item.priority ?? '')) return;
+                            await handleInlineUpdate(item.sku, 'priority', newVal, item.priority);
+                          }}
+                          className={`text-[10px] font-medium rounded border px-1.5 py-0.5 cursor-pointer bg-transparent ${
+                            !item.priority ? 'text-muted-foreground border-border/30' :
+                            item.priority === 'high' ? 'text-red-400 border-red-500/30' :
+                            item.priority === 'medium' ? 'text-amber-400 border-amber-500/30' :
+                            'text-gray-400 border-gray-500/30'
+                          }`}
+                        >
+                          <option value="">—</option>
+                          {PRIORITY_OPTIONS.map(p => (
+                            <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-2 py-1.5" onClick={e => e.stopPropagation()}>
+                        <select
+                          value={item.action ?? ''}
+                          onChange={async (e) => {
+                            const newVal = e.target.value;
+                            if (newVal === (item.action ?? '')) return;
+                            await handleInlineUpdate(item.sku, 'action', newVal, item.action);
+                          }}
+                          className="text-[10px] font-medium rounded border px-1.5 py-0.5 cursor-pointer bg-transparent text-muted-foreground border-border/30"
+                        >
+                          <option value="">—</option>
+                          {ACTION_OPTIONS.map(a => (
+                            <option key={a} value={a}>{ACTION_LABELS[a]}</option>
+                          ))}
+                        </select>
                       </td>
                     </tr>
 
                     {/* Expanded detail row */}
                     {isExpanded && (
                       <tr key={`${item.sku}-detail`} className="bg-muted/10">
-                        <td colSpan={15} className="px-4 py-4">
+                        <td colSpan={16} className="px-4 py-4">
                           <div className="grid grid-cols-3 gap-6">
 
                             {/* Product info + sales history */}
