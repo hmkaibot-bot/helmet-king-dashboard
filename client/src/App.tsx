@@ -19,6 +19,7 @@ import GarageServicesPage from "@/pages/garage-services";
 import MarketingPage from "@/pages/marketing";
 import FinancePage from "@/pages/finance";
 import RestockPage from "@/pages/restock";
+import DeadStockPage from "@/pages/dead-stock";
 import VendorsPage from "@/pages/vendors";
 import ReturnsPage from "@/pages/returns";
 import DailyWeeklyPage from "@/pages/daily-weekly";
@@ -44,6 +45,7 @@ function AppRouter() {
         <Route path="/marketing" component={MarketingPage} />
         <Route path="/finance" component={FinancePage} />
         <Route path="/retail/restock" component={RestockPage} />
+        <Route path="/retail/dead-stock" component={DeadStockPage} />
         <Route path="/retail/returns" component={ReturnsPage} />
         <Route path="/procurement/vendors" component={VendorsPage} />
         <Route path="/performance/daily" component={DailyWeeklyPage} />
