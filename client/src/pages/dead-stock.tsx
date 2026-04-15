@@ -27,6 +27,7 @@ import {
 interface ShopifyInventoryRow {
   sku: string;
   product_title: string;
+  variant_title: string | null;
   vendor: string;
   product_type: string;
   inventory_quantity: number;
@@ -78,6 +79,7 @@ type SystemStatus = '正常' | '慢移貨' | '高風險死貨' | '真正死貨';
 interface DeadStockItem {
   sku: string;
   product_title: string;
+  variant_title: string | null;
   vendor: string;
   product_type: string;
   inventory_quantity: number;
@@ -278,7 +280,7 @@ export default function DeadStockPage() {
     setError(null);
     try {
       const [invRows, bcRows, linesRows, ordersRows, reviewsResult, auditResult] = await Promise.all([
-        queryAllPages('shopify_inventory', 'sku,product_title,vendor,product_type,inventory_quantity,price', [
+        queryAllPages('shopify_inventory', 'sku,product_title,variant_title,vendor,product_type,inventory_quantity,price', [
           { column: 'inventory_quantity', op: 'gte', value: '1' },
         ]),
         queryAllPages('bc_inventory', 'number,unit_cost,unit_price'),
@@ -382,6 +384,7 @@ export default function DeadStockPage() {
       result.push({
         sku: inv.sku,
         product_title: inv.product_title,
+        variant_title: inv.variant_title ?? null,
         vendor: inv.vendor,
         product_type: inv.product_type,
         inventory_quantity: inv.inventory_quantity,
@@ -1163,7 +1166,12 @@ export default function DeadStockPage() {
                                 : <ChevronRight className="h-3 w-3" />}
                             </td>
                             <td className="px-2 py-1.5 pl-4">
-                              <span className="font-mono text-[10px] text-muted-foreground">{item.sku}</span>
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-mono text-[10px] text-muted-foreground">{item.sku}</span>
+                                {item.variant_title && (
+                                  <span className="text-[10px] text-foreground/70">{item.variant_title}</span>
+                                )}
+                              </div>
                             </td>
                             <td className="px-2 py-1.5 text-muted-foreground text-[10px]">{item.vendor}</td>
                             <td className="px-2 py-1.5 text-muted-foreground text-[10px]">{item.product_type}</td>
