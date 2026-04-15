@@ -304,6 +304,7 @@ export default function DeadStockPage() {
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
+  const [zeroStockVariants, setZeroStockVariants] = useState<Map<string, DeadStockItem[]>>(new Map());
 
   // form state for expanded SKU detail
   const [formState, setFormState] = useState<Partial<DeadStockReview>>({});
@@ -467,7 +468,9 @@ export default function DeadStockPage() {
     setError(null);
     try {
       const [invRows, bcRows, linesRows, ordersRows, reviewsResult, auditResult] = await Promise.all([
-        queryAllPages('shopify_inventory', 'sku,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price'),
+        queryAllPages('shopify_inventory', 'sku,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price', [
+          { column: 'inventory_quantity', op: 'gte', value: '1' },
+        ]),
         queryAllPages('bc_inventory', 'number,unit_cost,unit_price'),
         queryAllPages('shopify_order_lines', 'sku,quantity,order_id'),
         queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
@@ -554,8 +557,7 @@ export default function DeadStockPage() {
         : null;
 
       let system_status: SystemStatus;
-      if (inv.inventory_quantity <= 0) system_status = '正常'; // 0 庫存不算死貨風險
-      else if (daysSince >= 270 && inv.inventory_quantity >= 3) system_status = '真正死貨';
+      if (daysSince >= 270 && inv.inventory_quantity >= 3) system_status = '真正死貨';
       else if (daysSince >= 180) system_status = '高風險死貨';
       else if (daysSince >= 90) system_status = '慢移貨';
       else system_status = '正常';
@@ -634,10 +636,10 @@ export default function DeadStockPage() {
   const productGroups = useMemo<ProductGroup[]>(() => {
     let items = computedItems;
 
-    // Default: hide normal (but keep 0-stock variants for grouping — they'll be visible inside groups that have stocked variants)
+    // Default: hide normal
     const hasStatusFilter = filters.system_statuses.length > 0;
     if (!hasStatusFilter) {
-      items = items.filter(i => i.system_status !== '正常' || i.inventory_quantity <= 0);
+      items = items.filter(i => i.system_status !== '正常');
     }
 
     if (filters.search) {
@@ -704,13 +706,8 @@ export default function DeadStockPage() {
       });
     }
 
-    // Hide product groups where ALL variants have 0 stock (unless user explicitly filters for them)
-    const visibleGroups = hasStatusFilter
-      ? groups
-      : groups.filter(g => g.skus.some(s => s.inventory_quantity > 0));
-
     // Sort groups
-    visibleGroups.sort((a, b) => {
+    groups.sort((a, b) => {
       const mul = sortDir === 'asc' ? 1 : -1;
       if (sortKey === 'worst_system_status') {
         return ((STATUS_ORDER[a.worst_system_status] ?? 0) - (STATUS_ORDER[b.worst_system_status] ?? 0)) * mul;
@@ -718,7 +715,7 @@ export default function DeadStockPage() {
       return ((a as any)[sortKey] - (b as any)[sortKey]) * mul;
     });
 
-    return visibleGroups;
+    return groups;
   }, [computedItems, filters, sortKey, sortDir]);
 
   const totalFilteredSkus = useMemo(() => productGroups.reduce((s, g) => s + g.skus.length, 0), [productGroups]);
@@ -732,8 +729,56 @@ export default function DeadStockPage() {
 
   // ── Product group expand ───────────────────────────────────────────────────
 
-  const toggleProduct = (title: string) => {
-    setExpandedProduct(prev => prev === title ? null : title);
+  const toggleProduct = async (title: string) => {
+    if (expandedProduct === title) {
+      setExpandedProduct(null);
+    } else {
+      setExpandedProduct(title);
+      // Fetch 0-stock variants on demand if not already cached
+      if (!zeroStockVariants.has(title)) {
+        const { data } = await supabase
+          .from('shopify_inventory')
+          .select('sku,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price')
+          .eq('product_title', title)
+          .eq('inventory_quantity', 0);
+        if (data && data.length > 0) {
+          const bcMap = new Map<string, BcInventoryRow>();
+          for (const b of bcInv) bcMap.set(b.number, b);
+          const zeroItems: DeadStockItem[] = data.map((inv: any) => {
+            const bc = bcMap.get(inv.sku);
+            const unitCost = bc?.unit_cost ?? 0;
+            return {
+              sku: inv.sku,
+              product_title: inv.product_title,
+              variant_title: inv.variant_title ?? null,
+              vendor: inv.vendor,
+              product_type: inv.product_type,
+              inventory_quantity: 0,
+              price: inv.price ?? 0,
+              compare_at_price: inv.compare_at_price ?? null,
+              unit_cost: unitCost,
+              stock_cost: 0,
+              last_sold_date: null,
+              first_sold_date: null,
+              sold_30d: 0,
+              sold_90d: 0,
+              days_since_last_sale: 9999,
+              system_status: '正常' as SystemStatus,
+              manual_status: null,
+              action: null,
+              notes: null,
+              reviewer: null,
+              last_review_date: null,
+              next_review_date: null,
+              revived: false,
+            };
+          });
+          setZeroStockVariants(prev => new Map(prev).set(title, zeroItems));
+        } else {
+          setZeroStockVariants(prev => new Map(prev).set(title, []));
+        }
+      }
+    }
     setExpandedSku(null);
     setSaveSuccess(false);
   };
@@ -1355,15 +1400,29 @@ export default function DeadStockPage() {
   };
 
   /** Render a data cell for a group row */
-  const renderGroupCell = (col: ColumnDef, group: ProductGroup) => {
+  const renderGroupCell = (col: ColumnDef, group: ProductGroup, mergedSkuCount?: number) => {
     const width = columnWidths[col.id] ?? col.defaultWidth;
+    // For product_title column, override SKU count badge with merged count
+    let content = col.renderGroup(group);
+    if (col.id === 'product_title' && mergedSkuCount != null) {
+      content = (
+        <div className="flex items-center gap-1.5">
+          <span className="truncate font-medium" title={group.product_title}>
+            {group.product_title?.slice(0, 40)}{(group.product_title?.length ?? 0) > 40 ? '…' : ''}
+          </span>
+          <span className="shrink-0 px-1.5 py-0 rounded bg-muted text-muted-foreground text-[9px] border border-border/40">
+            {mergedSkuCount} SKU
+          </span>
+        </div>
+      );
+    }
     return (
       <td
         key={col.id}
         className={`px-2 py-2 ${col.align === 'right' ? 'text-right' : 'text-left'}`}
         style={{ width: width, minWidth: width }}
       >
-        {col.renderGroup(group)}
+        {content}
       </td>
     );
   };
@@ -1618,8 +1677,11 @@ export default function DeadStockPage() {
               )}
               {productGroups.map(group => {
                 const isProductExpanded = expandedProduct === group.product_title;
-                const skuCount = group.skus.length;
-                const allGroupSkus = group.skus.map(s => s.sku);
+                const extraZero = zeroStockVariants.get(group.product_title) ?? [];
+                const existingSkuSet = new Set(group.skus.map(s => s.sku));
+                const mergedSkus = [...group.skus, ...extraZero.filter(z => !existingSkuSet.has(z.sku))];
+                const skuCount = mergedSkus.length;
+                const allGroupSkus = mergedSkus.map(s => s.sku);
                 const allGroupSelected = allGroupSkus.every(s => selectedSkus.has(s));
                 const someGroupSelected = allGroupSkus.some(s => selectedSkus.has(s));
 
@@ -1658,18 +1720,19 @@ export default function DeadStockPage() {
                           ? <ChevronDown className="h-3.5 w-3.5" />
                           : <ChevronRight className="h-3.5 w-3.5" />}
                       </td>
-                      {orderedColumns.map(col => renderGroupCell(col, group))}
+                      {orderedColumns.map(col => renderGroupCell(col, group, skuCount))}
                     </tr>
 
-                    {/* ── Expanded variant SKU rows ── */}
-                    {isProductExpanded && group.skus.map(item => {
+                    {/* ── Expanded variant SKU rows (incl. 0-stock) ── */}
+                    {isProductExpanded && mergedSkus.map(item => {
                       const isSkuExpanded = expandedSku === item.sku;
+                      const isZeroStock = item.inventory_quantity <= 0;
                       return (
                         <React.Fragment key={item.sku}>
                           <tr
                             className={`bg-muted/5 transition-colors ${
                               isSkuExpanded ? 'bg-primary/5' : 'hover:bg-muted/20'
-                            }`}
+                            } ${isZeroStock ? 'opacity-50' : ''}`}
                           >
                             <td className="px-2 py-1.5 pl-6" style={{ width: 32, minWidth: 32 }} onClick={e => e.stopPropagation()}>
                               <input
