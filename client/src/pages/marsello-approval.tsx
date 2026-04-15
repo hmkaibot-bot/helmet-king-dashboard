@@ -124,6 +124,7 @@ export default function MarselloApprovalPage() {
   const [searchText, setSearchText]       = useState('');
   const [tableExists, setTableExists]     = useState<boolean | null>(null);
   const [expandedId, setExpandedId]       = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const MARSELLO_STORE_ID = '60e83220c3e76f0fc4e32df2';
 
   // ── Load queue ──────────────────────────────────────────────
@@ -192,6 +193,27 @@ export default function MarselloApprovalPage() {
         return;
       }
 
+      // Fetch invoice lines for auto-reject checks (Receipt in advance + discount)
+      const invoiceNumbers = newInvoices.map((inv: any) => inv.number).filter(Boolean);
+      let invoiceLinesByNumber: Record<string, any[]> = {};
+      if (invoiceNumbers.length > 0) {
+        // Fetch in batches of 50 invoice numbers
+        const allLines: any[] = [];
+        for (let i = 0; i < invoiceNumbers.length; i += 50) {
+          const batch = invoiceNumbers.slice(i, i + 50);
+          const { data } = await supabase
+            .from('bc_invoice_lines')
+            .select('invoice_number,description,item_number,discount_amount')
+            .in('invoice_number', batch);
+          if (data) allLines.push(...data);
+        }
+        // Group by invoice number
+        for (const line of allLines) {
+          if (!invoiceLinesByNumber[line.invoice_number]) invoiceLinesByNumber[line.invoice_number] = [];
+          invoiceLinesByNumber[line.invoice_number].push(line);
+        }
+      }
+
       // 3. Build lookup maps
       // BC customer_number → phone
       const bcPhoneMap: Record<string, string> = {};
@@ -242,6 +264,27 @@ export default function MarselloApprovalPage() {
 
         // No name matching — too many false positives
 
+        // Auto-reject checks
+        let autoRejectReason: string | null = null;
+        const lines = invoiceLinesByNumber[inv.number] || [];
+
+        // Rule 1: Contains "Receipt in advance - 26Pack" item
+        const has26Pack = lines.some((l: any) => {
+          const desc = (l.description || '').toLowerCase();
+          return desc.includes('receipt in advance') && desc.includes('26pack');
+        });
+        if (has26Pack) {
+          autoRejectReason = '含有 Receipt in advance - 26Pack 項目';
+        }
+
+        // Rule 2: Has invoice discount (any line with discount_amount > 0)
+        if (!autoRejectReason) {
+          const totalDiscount = lines.reduce((sum: number, l: any) => sum + (parseFloat(l.discount_amount) || 0), 0);
+          if (totalDiscount > 0) {
+            autoRejectReason = `發票含折扣 (Invoice Discount: HK$${totalDiscount.toFixed(0)})`;
+          }
+        }
+
         toInsert.push({
           bc_invoice_id:         inv.id,
           bc_invoice_number:     inv.number || '',
@@ -255,7 +298,8 @@ export default function MarselloApprovalPage() {
           marsello_customer_email: matched?.email || null,
           marsello_current_points: matched?.loyalty_points || null,
           match_type: matchType,
-          status: 'pending',
+          status: autoRejectReason ? 'rejected' : 'pending',
+          notes: autoRejectReason ? `[自動拒絕] ${autoRejectReason}` : null,
         });
       }
 
@@ -269,7 +313,8 @@ export default function MarselloApprovalPage() {
       }
 
       await loadQueue();
-      alert(`已掃描 ${newInvoices.length} 張新發票，加入待審批隊列。\n(${newInvoices.length} new invoices queued for review)`);
+      const autoRejectedCount = toInsert.filter((r: any) => r.status === 'rejected').length;
+      alert(`已掃描 ${newInvoices.length} 張新發票。\n待審批: ${newInvoices.length - autoRejectedCount} 張\n自動拒絕: ${autoRejectedCount} 張\n(${newInvoices.length} invoices scanned, ${autoRejectedCount} auto-rejected)`);
     } catch (e) {
       console.error('Scan error:', e);
       alert('掃描失敗，請檢查控制台錯誤');
@@ -454,6 +499,79 @@ export default function MarselloApprovalPage() {
     }
   }
 
+  // ── Toggle selection ──────────────────────────────────────────
+  function toggleSelect(id: number) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    const pendingIds = filtered.filter(q => q.status === 'pending').map(q => q.id);
+    if (pendingIds.length === 0) return;
+    const allSelected = pendingIds.every(id => selectedIds.has(id));
+    if (allSelected) {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        pendingIds.forEach(id => next.delete(id));
+        return next;
+      });
+    } else {
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        pendingIds.forEach(id => next.add(id));
+        return next;
+      });
+    }
+  }
+
+  // ── Batch approve ───────────────────────────────────────────
+  async function batchApprove() {
+    const items = queue.filter(q => selectedIds.has(q.id) && q.status === 'pending' && q.marsello_customer_id);
+    const noMatch = queue.filter(q => selectedIds.has(q.id) && q.status === 'pending' && !q.marsello_customer_id);
+    if (items.length === 0) {
+      alert('選中的項目中沒有可批准的（需要有 Marsello 客戶匹配）。');
+      return;
+    }
+    let msg = `確認批准並同步 ${items.length} 個項目到 Marsello？`;
+    if (noMatch.length > 0) msg += `\n（${noMatch.length} 個未匹配客戶的項目將被跳過）`;
+    if (!confirm(msg)) return;
+
+    setScanning(true);
+    for (const item of items) {
+      await supabase.from('garage_marsello_queue').update({
+        status: 'approved',
+        approved_at: new Date().toISOString(),
+      }).eq('id', item.id);
+      await syncToMarsello(item);
+      await new Promise(r => setTimeout(r, 300));
+    }
+    setSelectedIds(new Set());
+    await loadQueue();
+    setScanning(false);
+  }
+
+  // ── Batch reject ────────────────────────────────────────────
+  async function batchReject() {
+    const items = queue.filter(q => selectedIds.has(q.id) && q.status === 'pending');
+    if (items.length === 0) {
+      alert('沒有選中的待審批項目。');
+      return;
+    }
+    if (!confirm(`確認拒絕 ${items.length} 個項目？`)) return;
+
+    setScanning(true);
+    for (const item of items) {
+      await supabase.from('garage_marsello_queue').update({ status: 'rejected' }).eq('id', item.id);
+    }
+    setSelectedIds(new Set());
+    await loadQueue();
+    setScanning(false);
+  }
+
   // ── Filtered list ──────────────────────────────────────────
   const filtered = useMemo(() => {
     const sl = searchText.trim().toLowerCase();
@@ -599,6 +717,33 @@ export default function MarselloApprovalPage() {
         <span className="text-xs text-muted-foreground ml-auto">顯示 {filtered.length} / {queue.length} 筆</span>
       </div>
 
+      {/* Batch action bar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 bg-primary/10 border border-primary/30 rounded-lg px-4 py-2.5">
+          <span className="text-xs font-medium">已選 {selectedIds.size} 項</span>
+          <button
+            onClick={batchApprove}
+            disabled={scanning}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs bg-green-500/20 text-green-400 border border-green-500/30 rounded hover:bg-green-500/30 transition-colors font-medium disabled:opacity-50"
+          >
+            <CheckCircle2 className="h-3 w-3" /> 批量批准
+          </button>
+          <button
+            onClick={batchReject}
+            disabled={scanning}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs bg-red-500/20 text-red-400 border border-red-500/30 rounded hover:bg-red-500/30 transition-colors font-medium disabled:opacity-50"
+          >
+            <XCircle className="h-3 w-3" /> 批量拒絕
+          </button>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors ml-auto"
+          >
+            取消選擇
+          </button>
+        </div>
+      )}
+
       {/* Table */}
       <Card className="border-border/40">
         <CardContent className="p-0">
@@ -630,6 +775,14 @@ export default function MarselloApprovalPage() {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border/50 text-muted-foreground bg-muted/20">
+                    <th className="py-2.5 px-2 text-center w-8">
+                      <input
+                        type="checkbox"
+                        checked={filtered.filter(q => q.status === 'pending').length > 0 && filtered.filter(q => q.status === 'pending').every(q => selectedIds.has(q.id))}
+                        onChange={toggleSelectAll}
+                        className="rounded border-border/50 cursor-pointer"
+                      />
+                    </th>
                     <th className="py-2.5 px-3 text-left font-medium">發票</th>
                     <th className="py-2.5 px-3 text-left font-medium">BC 客戶</th>
                     <th className="py-2.5 px-3 text-left font-medium">Marsello 匹配</th>
@@ -653,6 +806,16 @@ export default function MarselloApprovalPage() {
                           }`}
                           onClick={() => setExpandedId(isExpanded ? null : item.id)}
                         >
+                          <td className="py-2.5 px-2 text-center" onClick={e => e.stopPropagation()}>
+                            {item.status === 'pending' && (
+                              <input
+                                type="checkbox"
+                                checked={selectedIds.has(item.id)}
+                                onChange={() => toggleSelect(item.id)}
+                                className="rounded border-border/50 cursor-pointer"
+                              />
+                            )}
+                          </td>
                           <td className="py-2.5 px-3">
                             <div className="font-mono font-medium">#{item.bc_invoice_number}</div>
                             <div className="text-[10px] text-muted-foreground">{item.bc_invoice_date?.slice(0, 10)}</div>
@@ -679,6 +842,9 @@ export default function MarselloApprovalPage() {
                           </td>
                           <td className="py-2.5 px-3 text-center">
                             <StatusBadge status={item.status} />
+                            {item.notes?.startsWith('[自動拒絕]') && (
+                              <div className="text-[9px] text-muted-foreground mt-0.5" title={item.notes}>🤖 自動</div>
+                            )}
                           </td>
                           <td className="py-2.5 px-3 text-right">
                             {item.status === 'pending' && (
@@ -714,13 +880,18 @@ export default function MarselloApprovalPage() {
                                 {item.status === 'synced' ? '✅ Done' : '❌ Error'}
                               </span>
                             )}
+                            {item.status === 'rejected' && item.notes && (
+                              <span className="text-[10px] text-muted-foreground max-w-[150px] truncate block" title={item.notes}>
+                                {item.notes}
+                              </span>
+                            )}
                           </td>
                         </tr>
 
                         {/* Expanded detail row */}
                         {isExpanded && (
                           <tr key={`${item.id}-expand`} className="bg-accent/5 border-b border-border/20">
-                            <td colSpan={7} className="px-4 py-3">
+                            <td colSpan={8} className="px-4 py-3">
                               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-[11px]">
                                 <div>
                                   <p className="font-semibold text-muted-foreground mb-1.5">BC 發票詳情</p>
