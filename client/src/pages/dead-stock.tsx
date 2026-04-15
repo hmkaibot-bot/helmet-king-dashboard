@@ -280,9 +280,7 @@ export default function DeadStockPage() {
     setError(null);
     try {
       const [invRows, bcRows, linesRows, ordersRows, reviewsResult, auditResult] = await Promise.all([
-        queryAllPages('shopify_inventory', 'sku,product_title,variant_title,vendor,product_type,inventory_quantity,price', [
-          { column: 'inventory_quantity', op: 'gte', value: '1' },
-        ]),
+        queryAllPages('shopify_inventory', 'sku,product_title,variant_title,vendor,product_type,inventory_quantity,price'),
         queryAllPages('bc_inventory', 'number,unit_cost,unit_price'),
         queryAllPages('shopify_order_lines', 'sku,quantity,order_id'),
         queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
