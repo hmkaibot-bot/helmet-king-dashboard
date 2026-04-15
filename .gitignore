@@ -5,3 +5,6 @@ dist/*.js
 .env
 *.log
 *.jpg
+!client/src/assets/*.jpg
+!client/public/*.jpg
+!dist/public/assets/*.jpg

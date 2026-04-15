@@ -1,3 +1,5 @@
+import logoSrc from '../assets/hk-logo.jpg';
+
 interface HelmetLogoProps {
   size?: number;
   className?: string;
@@ -6,7 +8,7 @@ interface HelmetLogoProps {
 export function HelmetLogo({ size = 32, className = '' }: HelmetLogoProps) {
   return (
     <img
-      src="./hk-logo.jpg"
+      src={logoSrc}
       alt="Helmet King logo"
       width={size}
       height={size}
