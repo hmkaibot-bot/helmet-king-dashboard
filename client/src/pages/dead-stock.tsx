@@ -634,10 +634,10 @@ export default function DeadStockPage() {
   const productGroups = useMemo<ProductGroup[]>(() => {
     let items = computedItems;
 
-    // Default: hide normal
+    // Default: hide normal (but keep 0-stock variants for grouping — they'll be visible inside groups that have stocked variants)
     const hasStatusFilter = filters.system_statuses.length > 0;
     if (!hasStatusFilter) {
-      items = items.filter(i => i.system_status !== '正常');
+      items = items.filter(i => i.system_status !== '正常' || i.inventory_quantity <= 0);
     }
 
     if (filters.search) {
@@ -704,8 +704,13 @@ export default function DeadStockPage() {
       });
     }
 
+    // Hide product groups where ALL variants have 0 stock (unless user explicitly filters for them)
+    const visibleGroups = hasStatusFilter
+      ? groups
+      : groups.filter(g => g.skus.some(s => s.inventory_quantity > 0));
+
     // Sort groups
-    groups.sort((a, b) => {
+    visibleGroups.sort((a, b) => {
       const mul = sortDir === 'asc' ? 1 : -1;
       if (sortKey === 'worst_system_status') {
         return ((STATUS_ORDER[a.worst_system_status] ?? 0) - (STATUS_ORDER[b.worst_system_status] ?? 0)) * mul;
@@ -713,7 +718,7 @@ export default function DeadStockPage() {
       return ((a as any)[sortKey] - (b as any)[sortKey]) * mul;
     });
 
-    return groups;
+    return visibleGroups;
   }, [computedItems, filters, sortKey, sortDir]);
 
   const totalFilteredSkus = useMemo(() => productGroups.reduce((s, g) => s + g.skus.length, 0), [productGroups]);
