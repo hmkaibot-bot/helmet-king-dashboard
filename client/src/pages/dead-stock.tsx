@@ -554,7 +554,8 @@ export default function DeadStockPage() {
         : null;
 
       let system_status: SystemStatus;
-      if (daysSince >= 270 && inv.inventory_quantity >= 3) system_status = '真正死貨';
+      if (inv.inventory_quantity <= 0) system_status = '正常'; // 0 庫存不算死貨風險
+      else if (daysSince >= 270 && inv.inventory_quantity >= 3) system_status = '真正死貨';
       else if (daysSince >= 180) system_status = '高風險死貨';
       else if (daysSince >= 90) system_status = '慢移貨';
       else system_status = '正常';
