@@ -9,6 +9,14 @@
  * Layout: Product-grouped rows (expand to see variant SKUs).
  * Filters integrated into the table header row.
  * No "priority" field — removed per user request.
+ *
+ * Enhancements:
+ * - New columns: Compare Price, Retail Price, Unit Cost, Margin %
+ * - Resizable columns (drag right border)
+ * - Reorderable columns (drag header)
+ * - Sticky header
+ * - localStorage persistence for column order/widths
+ * - Column definitions array for clean rendering
  */
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
@@ -32,6 +40,7 @@ interface ShopifyInventoryRow {
   product_type: string;
   inventory_quantity: number;
   price: number;
+  compare_at_price: number | null;
 }
 
 interface BcInventoryRow {
@@ -84,6 +93,7 @@ interface DeadStockItem {
   product_type: string;
   inventory_quantity: number;
   price: number;
+  compare_at_price: number | null;
   unit_cost: number;
   stock_cost: number;
   last_sold_date: string | null;
@@ -112,6 +122,7 @@ interface ProductGroup {
   worst_system_status: SystemStatus;
   worst_days_since: number;
   total_sold_90d: number;
+  avg_margin: number | null;
   skus: DeadStockItem[];
 }
 
@@ -165,6 +176,39 @@ const DEFAULT_FILTERS: FilterState = {
 
 type SortKey = 'stock_cost' | 'total_qty' | 'worst_days_since' | 'total_sold_90d' | 'worst_system_status';
 type SortDir = 'asc' | 'desc';
+
+// ── Column Configuration ─────────────────────────────────────────────────────
+
+interface ColumnDef {
+  id: string;
+  label: string;
+  align: 'left' | 'right';
+  defaultWidth: number;
+  sortKey?: SortKey;
+  filter?: 'vendors' | 'product_types' | 'system_statuses';
+  renderGroup: (group: ProductGroup) => React.ReactNode;
+  renderItem: (item: DeadStockItem) => React.ReactNode;
+}
+
+interface ColumnConfig {
+  order: string[];
+  widths: Record<string, number>;
+}
+
+const LOCALSTORAGE_KEY = 'hk-deadstock-columns';
+
+// Helper: margin color class
+function marginColorClass(margin: number): string {
+  if (margin > 40) return 'text-green-400';
+  if (margin >= 20) return 'text-amber-400';
+  return 'text-red-400';
+}
+
+// Helper: compute margin
+function computeMargin(price: number, unitCost: number): number | null {
+  if (!price || price === 0) return null;
+  return ((price - unitCost) / price) * 100;
+}
 
 // ── Dropdown Popover component (for header filter) ──────────────────────────
 
@@ -273,6 +317,149 @@ export default function DeadStockPage() {
   const [batchField, setBatchField] = useState<'system_status' | 'manual_status' | 'action'>('manual_status');
   const [batchValue, setBatchValue] = useState('');
 
+  // ── Column order & widths state ─────────────────────────────────────────────
+
+  const DEFAULT_COLUMN_ORDER = [
+    'product_title', 'vendor', 'product_type', 'total_qty',
+    'compare_price', 'retail_price', 'unit_cost', 'stock_cost',
+    'margin_pct', 'days_since', 'sold_90d', 'system_status',
+  ];
+
+  const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
+    product_title: 220,
+    vendor: 100,
+    product_type: 100,
+    total_qty: 70,
+    compare_price: 90,
+    retail_price: 85,
+    unit_cost: 80,
+    stock_cost: 90,
+    margin_pct: 70,
+    days_since: 80,
+    sold_90d: 70,
+    system_status: 140,
+  };
+
+  const [columnOrder, setColumnOrder] = useState<string[]>(DEFAULT_COLUMN_ORDER);
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>(DEFAULT_COLUMN_WIDTHS);
+
+  // Load column config from localStorage on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LOCALSTORAGE_KEY);
+      if (raw) {
+        const config: ColumnConfig = JSON.parse(raw);
+        // Merge gracefully: keep known columns in saved order, append new ones
+        const knownIds = new Set(DEFAULT_COLUMN_ORDER);
+        const savedOrder = (config.order ?? []).filter((id: string) => knownIds.has(id));
+        const savedSet = new Set(savedOrder);
+        const newCols = DEFAULT_COLUMN_ORDER.filter(id => !savedSet.has(id));
+        const mergedOrder = [...savedOrder, ...newCols];
+
+        const mergedWidths: Record<string, number> = { ...DEFAULT_COLUMN_WIDTHS };
+        if (config.widths) {
+          for (const [k, v] of Object.entries(config.widths)) {
+            if (knownIds.has(k) && typeof v === 'number' && v > 30) {
+              mergedWidths[k] = v;
+            }
+          }
+        }
+
+        setColumnOrder(mergedOrder);
+        setColumnWidths(mergedWidths);
+      }
+    } catch {
+      // ignore parse errors
+    }
+  }, []);
+
+  // Save column config to localStorage (debounced)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      try {
+        const config: ColumnConfig = { order: columnOrder, widths: columnWidths };
+        localStorage.setItem(LOCALSTORAGE_KEY, JSON.stringify(config));
+      } catch {
+        // ignore quota errors
+      }
+    }, 300);
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, [columnOrder, columnWidths]);
+
+  // ── Resize handling (via ref to avoid excessive re-renders) ─────────────────
+
+  const resizeRef = useRef<{
+    active: boolean;
+    colId: string;
+    startX: number;
+    startWidth: number;
+  } | null>(null);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent, colId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startWidth = columnWidths[colId] ?? DEFAULT_COLUMN_WIDTHS[colId] ?? 100;
+    resizeRef.current = { active: true, colId, startX: e.clientX, startWidth };
+
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!resizeRef.current?.active) return;
+      const diff = ev.clientX - resizeRef.current.startX;
+      const newWidth = Math.max(40, resizeRef.current.startWidth + diff);
+      setColumnWidths(prev => ({ ...prev, [resizeRef.current!.colId]: newWidth }));
+    };
+
+    const onMouseUp = () => {
+      if (resizeRef.current) resizeRef.current.active = false;
+      resizeRef.current = null;
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [columnWidths]);
+
+  // ── Drag-to-reorder handling ────────────────────────────────────────────────
+
+  const [dragColId, setDragColId] = useState<string | null>(null);
+  const [dragOverColId, setDragOverColId] = useState<string | null>(null);
+
+  const handleDragStart = useCallback((e: React.DragEvent, colId: string) => {
+    setDragColId(colId);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', colId);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, colId: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (colId !== dragColId) {
+      setDragOverColId(colId);
+    }
+  }, [dragColId]);
+
+  const handleDragEnd = useCallback(() => {
+    if (dragColId && dragOverColId && dragColId !== dragOverColId) {
+      setColumnOrder(prev => {
+        const newOrder = [...prev];
+        const fromIdx = newOrder.indexOf(dragColId);
+        const toIdx = newOrder.indexOf(dragOverColId);
+        if (fromIdx === -1 || toIdx === -1) return prev;
+        newOrder.splice(fromIdx, 1);
+        newOrder.splice(toIdx, 0, dragColId);
+        return newOrder;
+      });
+    }
+    setDragColId(null);
+    setDragOverColId(null);
+  }, [dragColId, dragOverColId]);
+
+  const handleDragLeave = useCallback(() => {
+    setDragOverColId(null);
+  }, []);
+
   // ── Data Loading ────────────────────────────────────────────────────────────
 
   const loadData = useCallback(async () => {
@@ -280,7 +467,7 @@ export default function DeadStockPage() {
     setError(null);
     try {
       const [invRows, bcRows, linesRows, ordersRows, reviewsResult, auditResult] = await Promise.all([
-        queryAllPages('shopify_inventory', 'sku,product_title,variant_title,vendor,product_type,inventory_quantity,price'),
+        queryAllPages('shopify_inventory', 'sku,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price'),
         queryAllPages('bc_inventory', 'number,unit_cost,unit_price'),
         queryAllPages('shopify_order_lines', 'sku,quantity,order_id'),
         queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
@@ -387,6 +574,7 @@ export default function DeadStockPage() {
         product_type: inv.product_type,
         inventory_quantity: inv.inventory_quantity,
         price: inv.price ?? 0,
+        compare_at_price: inv.compare_at_price ?? null,
         unit_cost: unitCost,
         stock_cost: stockCost,
         last_sold_date: lastSoldDate,
@@ -485,6 +673,22 @@ export default function DeadStockPage() {
       }
       const worst_system_status = (['正常', '慢移貨', '高風險死貨', '真正死貨'] as SystemStatus[])[worstIdx];
 
+      // Weighted average margin (weight by price * qty, fallback to simple average)
+      let totalRevenue = 0;
+      let totalCostWeighted = 0;
+      let marginCount = 0;
+      for (const s of skus) {
+        if (s.price > 0) {
+          const qty = Math.max(s.inventory_quantity, 1);
+          totalRevenue += s.price * qty;
+          totalCostWeighted += s.unit_cost * qty;
+          marginCount++;
+        }
+      }
+      const avg_margin = totalRevenue > 0
+        ? ((totalRevenue - totalCostWeighted) / totalRevenue) * 100
+        : null;
+
       groups.push({
         product_title: title,
         vendor: skus[0].vendor,
@@ -494,6 +698,7 @@ export default function DeadStockPage() {
         worst_system_status,
         worst_days_since,
         total_sold_90d,
+        avg_margin,
         skus,
       });
     }
@@ -760,6 +965,211 @@ export default function DeadStockPage() {
     return arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
   }
 
+  // ── Column Definitions ──────────────────────────────────────────────────────
+
+  const columnDefs = useMemo<ColumnDef[]>(() => {
+    return [
+      {
+        id: 'product_title',
+        label: '產品名稱',
+        align: 'left' as const,
+        defaultWidth: 220,
+        renderGroup: (group: ProductGroup) => (
+          <div className="flex items-center gap-1.5">
+            <span className="truncate font-medium" title={group.product_title}>
+              {group.product_title?.slice(0, 40)}{(group.product_title?.length ?? 0) > 40 ? '…' : ''}
+            </span>
+            <span className="shrink-0 px-1.5 py-0 rounded bg-muted text-muted-foreground text-[9px] border border-border/40">
+              {group.skus.length} SKU
+            </span>
+          </div>
+        ),
+        renderItem: (item: DeadStockItem) => (
+          <div className="flex items-center gap-1.5">
+            <span className="font-mono text-[10px] text-muted-foreground">{item.sku}</span>
+            {item.variant_title && (
+              <span className="text-[10px] text-foreground/70">{item.variant_title}</span>
+            )}
+          </div>
+        ),
+      },
+      {
+        id: 'vendor',
+        label: '品牌',
+        align: 'left' as const,
+        defaultWidth: 100,
+        filter: 'vendors' as const,
+        renderGroup: (group: ProductGroup) => (
+          <span className="text-muted-foreground">{group.vendor}</span>
+        ),
+        renderItem: (item: DeadStockItem) => (
+          <span className="text-muted-foreground text-[10px]">{item.vendor}</span>
+        ),
+      },
+      {
+        id: 'product_type',
+        label: '分類',
+        align: 'left' as const,
+        defaultWidth: 100,
+        filter: 'product_types' as const,
+        renderGroup: (group: ProductGroup) => (
+          <span className="text-muted-foreground">{group.product_type}</span>
+        ),
+        renderItem: (item: DeadStockItem) => (
+          <span className="text-muted-foreground text-[10px]">{item.product_type}</span>
+        ),
+      },
+      {
+        id: 'total_qty',
+        label: '總存量',
+        align: 'right' as const,
+        defaultWidth: 70,
+        sortKey: 'total_qty' as SortKey,
+        renderGroup: (group: ProductGroup) => (
+          <span className="tabular-nums">{formatNumber(group.total_qty)}</span>
+        ),
+        renderItem: (item: DeadStockItem) => (
+          <span className="tabular-nums text-[10px]">{formatNumber(item.inventory_quantity)}</span>
+        ),
+      },
+      {
+        id: 'compare_price',
+        label: '比較價',
+        align: 'right' as const,
+        defaultWidth: 90,
+        renderGroup: (_group: ProductGroup) => (
+          <span className="text-muted-foreground">—</span>
+        ),
+        renderItem: (item: DeadStockItem) => (
+          <span className="tabular-nums text-[10px] text-muted-foreground">
+            {item.compare_at_price != null && item.compare_at_price > 0
+              ? formatCurrency(item.compare_at_price)
+              : '—'}
+          </span>
+        ),
+      },
+      {
+        id: 'retail_price',
+        label: '零售價',
+        align: 'right' as const,
+        defaultWidth: 85,
+        renderGroup: (_group: ProductGroup) => (
+          <span className="text-muted-foreground">—</span>
+        ),
+        renderItem: (item: DeadStockItem) => (
+          <span className="tabular-nums text-[10px]">{formatCurrency(item.price)}</span>
+        ),
+      },
+      {
+        id: 'unit_cost',
+        label: '單件成本',
+        align: 'right' as const,
+        defaultWidth: 80,
+        renderGroup: (_group: ProductGroup) => (
+          <span className="text-muted-foreground">—</span>
+        ),
+        renderItem: (item: DeadStockItem) => (
+          <span className="tabular-nums text-[10px]">{formatCurrency(item.unit_cost)}</span>
+        ),
+      },
+      {
+        id: 'stock_cost',
+        label: '庫存成本',
+        align: 'right' as const,
+        defaultWidth: 90,
+        sortKey: 'stock_cost' as SortKey,
+        renderGroup: (group: ProductGroup) => (
+          <span className="tabular-nums font-medium">{formatCurrency(group.total_stock_cost)}</span>
+        ),
+        renderItem: (item: DeadStockItem) => (
+          <span className="tabular-nums text-[10px]">{formatCurrency(item.stock_cost)}</span>
+        ),
+      },
+      {
+        id: 'margin_pct',
+        label: '利潤%',
+        align: 'right' as const,
+        defaultWidth: 70,
+        renderGroup: (group: ProductGroup) => {
+          if (group.avg_margin == null) return <span className="text-muted-foreground">—</span>;
+          return (
+            <span className={`tabular-nums font-medium ${marginColorClass(group.avg_margin)}`}>
+              {group.avg_margin.toFixed(1)}%
+            </span>
+          );
+        },
+        renderItem: (item: DeadStockItem) => {
+          const margin = computeMargin(item.price, item.unit_cost);
+          if (margin == null) return <span className="text-muted-foreground text-[10px]">—</span>;
+          return (
+            <span className={`tabular-nums text-[10px] font-medium ${marginColorClass(margin)}`}>
+              {margin.toFixed(1)}%
+            </span>
+          );
+        },
+      },
+      {
+        id: 'days_since',
+        label: '最長無銷天數',
+        align: 'right' as const,
+        defaultWidth: 80,
+        sortKey: 'worst_days_since' as SortKey,
+        renderGroup: (group: ProductGroup) => (
+          <span className={group.worst_days_since >= 270 ? 'text-red-400 font-medium tabular-nums' : group.worst_days_since >= 180 ? 'text-orange-400 tabular-nums' : 'text-amber-400 tabular-nums'}>
+            {group.worst_days_since >= 9000 ? '∞' : group.worst_days_since}
+          </span>
+        ),
+        renderItem: (item: DeadStockItem) => (
+          <span className={`text-[10px] tabular-nums ${item.days_since_last_sale >= 270 ? 'text-red-400 font-medium' : item.days_since_last_sale >= 180 ? 'text-orange-400' : 'text-amber-400'}`}>
+            {item.days_since_last_sale >= 9000 ? '∞' : item.days_since_last_sale}
+          </span>
+        ),
+      },
+      {
+        id: 'sold_90d',
+        label: '近90日銷',
+        align: 'right' as const,
+        defaultWidth: 70,
+        sortKey: 'total_sold_90d' as SortKey,
+        renderGroup: (group: ProductGroup) => (
+          <span className="tabular-nums text-muted-foreground">{group.total_sold_90d}</span>
+        ),
+        renderItem: (item: DeadStockItem) => (
+          <span className="tabular-nums text-[10px] text-muted-foreground">{item.sold_90d}</span>
+        ),
+      },
+      {
+        id: 'system_status',
+        label: '系統狀態',
+        align: 'left' as const,
+        defaultWidth: 140,
+        sortKey: 'worst_system_status' as SortKey,
+        filter: 'system_statuses' as const,
+        renderGroup: (group: ProductGroup) => (
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+            group.worst_system_status === '真正死貨' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
+            group.worst_system_status === '高風險死貨' ? 'bg-orange-500/15 text-orange-400 border-orange-500/30' :
+            group.worst_system_status === '慢移貨' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' :
+            'bg-green-500/15 text-green-400 border-green-500/30'
+          }`}>
+            {group.worst_system_status}
+          </span>
+        ),
+        renderItem: () => null, // handled separately with inline dropdowns
+      },
+    ];
+  }, []);
+
+  // ── Ordered columns (applying user column order) ────────────────────────────
+
+  const orderedColumns = useMemo(() => {
+    const defMap = new Map(columnDefs.map(c => [c.id, c]));
+    return columnOrder.map(id => defMap.get(id)).filter(Boolean) as ColumnDef[];
+  }, [columnDefs, columnOrder]);
+
+  // ── Column count = 2 fixed (checkbox + expand) + data columns ───────────────
+  const COL_COUNT = 2 + orderedColumns.length;
+
   // ── Skeleton ────────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -790,10 +1200,196 @@ export default function DeadStockPage() {
     );
   }
 
-  // ── Column count ──────────────────────────────────────────────────────────
-  const COL_COUNT = 10; // checkbox, expand, product, vendor, type, qty, cost, days, 90d-sold, status
-
   // ── Render ──────────────────────────────────────────────────────────────────
+
+  /** Render the system_status column for a variant SKU row (with inline dropdowns) */
+  const renderSystemStatusCell = (item: DeadStockItem) => (
+    <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+      <select
+        value={item.system_status}
+        onChange={async (e) => {
+          const newVal = e.target.value as SystemStatus;
+          if (newVal === item.system_status) return;
+          await handleInlineUpdate(item.sku, 'system_status_override', newVal, item.system_status);
+        }}
+        className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent ${
+          item.system_status === '真正死貨' ? 'text-red-400 border-red-500/30' :
+          item.system_status === '高風險死貨' ? 'text-orange-400 border-orange-500/30' :
+          item.system_status === '慢移貨' ? 'text-amber-400 border-amber-500/30' :
+          'text-green-400 border-green-500/30'
+        }`}
+      >
+        <option value="正常">正常</option>
+        <option value="慢移貨">慢移貨</option>
+        <option value="高風險死貨">高風險死貨</option>
+        <option value="真正死貨">真正死貨</option>
+      </select>
+      <select
+        value={item.manual_status ?? ''}
+        onChange={async (e) => {
+          const newVal = e.target.value;
+          if (newVal === (item.manual_status ?? '')) return;
+          await handleInlineUpdate(item.sku, 'manual_status', newVal, item.manual_status);
+        }}
+        className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent ${
+          !item.manual_status ? 'text-muted-foreground border-border/30' :
+          item.manual_status === 'confirmed_dead' ? 'text-red-400 border-red-500/30' :
+          item.manual_status === 'revived' ? 'text-green-400 border-green-500/30' :
+          item.manual_status === 'promoting' ? 'text-purple-400 border-purple-500/30' :
+          item.manual_status === 'pending_review' ? 'text-yellow-400 border-yellow-500/30' :
+          item.manual_status === 'observing' ? 'text-blue-400 border-blue-500/30' :
+          'text-muted-foreground border-border/30'
+        }`}
+      >
+        <option value="">—</option>
+        {MANUAL_STATUS_OPTIONS.map(s => (
+          <option key={s} value={s}>{MANUAL_STATUS_LABELS[s]}</option>
+        ))}
+      </select>
+      <select
+        value={item.action ?? ''}
+        onChange={async (e) => {
+          const newVal = e.target.value;
+          if (newVal === (item.action ?? '')) return;
+          await handleInlineUpdate(item.sku, 'action', newVal, item.action);
+        }}
+        className="text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent text-muted-foreground border-border/30"
+      >
+        <option value="">—</option>
+        {ACTION_OPTIONS.map(a => (
+          <option key={a} value={a}>{ACTION_LABELS[a]}</option>
+        ))}
+      </select>
+    </div>
+  );
+
+  /** Render a header cell for a column def */
+  const renderHeaderCell = (col: ColumnDef) => {
+    const width = columnWidths[col.id] ?? col.defaultWidth;
+    const isDragTarget = dragOverColId === col.id;
+    const isDragging = dragColId === col.id;
+
+    // Determine content
+    let content: React.ReactNode;
+
+    if (col.filter && col.id === 'vendor') {
+      content = (
+        <FilterDropdown
+          label={col.label}
+          options={filterOptions.vendors}
+          selected={filters.vendors}
+          onToggle={v => setFilters(f => ({ ...f, vendors: toggleFilter(f.vendors, v) }))}
+        />
+      );
+    } else if (col.filter && col.id === 'product_type') {
+      content = (
+        <FilterDropdown
+          label={col.label}
+          options={filterOptions.product_types}
+          selected={filters.product_types}
+          onToggle={v => setFilters(f => ({ ...f, product_types: toggleFilter(f.product_types, v) }))}
+        />
+      );
+    } else if (col.filter && col.id === 'system_status') {
+      content = (
+        <span
+          className="cursor-pointer hover:text-foreground select-none"
+          onClick={() => col.sortKey && handleSort(col.sortKey)}
+        >
+          <FilterDropdown
+            label={col.label}
+            options={SYSTEM_STATUS_OPTIONS}
+            selected={filters.system_statuses}
+            onToggle={v => setFilters(f => ({ ...f, system_statuses: toggleFilter(f.system_statuses, v as SystemStatus) }))}
+          />
+          {col.sortKey && <SortIcon col={col.sortKey} />}
+        </span>
+      );
+    } else if (col.sortKey) {
+      content = (
+        <span
+          className="cursor-pointer hover:text-foreground select-none text-[10px] font-medium text-muted-foreground whitespace-nowrap"
+          onClick={() => col.sortKey && handleSort(col.sortKey)}
+        >
+          {col.label} <SortIcon col={col.sortKey} />
+        </span>
+      );
+    } else {
+      content = (
+        <span className="text-[10px] font-medium text-muted-foreground whitespace-nowrap">
+          {col.label}
+        </span>
+      );
+    }
+
+    return (
+      <th
+        key={col.id}
+        className={`px-2 py-2 relative select-none ${col.align === 'right' ? 'text-right' : 'text-left'}`}
+        style={{ width: width, minWidth: width }}
+        draggable
+        onDragStart={(e) => handleDragStart(e, col.id)}
+        onDragOver={(e) => handleDragOver(e, col.id)}
+        onDragEnd={handleDragEnd}
+        onDragLeave={handleDragLeave}
+      >
+        <div
+          style={{ opacity: isDragging ? 0.5 : 1 }}
+          className={isDragTarget ? 'border-l-2 border-l-blue-500 pl-1' : ''}
+        >
+          {content}
+        </div>
+        {/* Resize handle */}
+        <div
+          className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary/50 active:bg-primary z-20"
+          onMouseDown={(e) => handleResizeStart(e, col.id)}
+        />
+      </th>
+    );
+  };
+
+  /** Render a data cell for a group row */
+  const renderGroupCell = (col: ColumnDef, group: ProductGroup) => {
+    const width = columnWidths[col.id] ?? col.defaultWidth;
+    return (
+      <td
+        key={col.id}
+        className={`px-2 py-2 ${col.align === 'right' ? 'text-right' : 'text-left'}`}
+        style={{ width: width, minWidth: width }}
+      >
+        {col.renderGroup(group)}
+      </td>
+    );
+  };
+
+  /** Render a data cell for a variant SKU row */
+  const renderItemCell = (col: ColumnDef, item: DeadStockItem) => {
+    const width = columnWidths[col.id] ?? col.defaultWidth;
+
+    // Special handling for system_status column (inline dropdowns)
+    if (col.id === 'system_status') {
+      return (
+        <td
+          key={col.id}
+          className="px-2 py-1.5"
+          style={{ width: width, minWidth: width }}
+          onClick={e => e.stopPropagation()}
+        >
+          {renderSystemStatusCell(item)}
+        </td>
+      );
+    }
+
+    return (
+      <td
+        key={col.id}
+        className={`px-2 py-1.5 ${col.align === 'right' ? 'text-right' : 'text-left'}`}
+        style={{ width: width, minWidth: width }}
+      >
+        {col.renderItem(item)}
+      </td>
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -967,6 +1563,7 @@ export default function DeadStockPage() {
 
       {/* ── Table ── */}
       <div className="border border-border/50 rounded-lg overflow-hidden">
+        {/* Summary bar */}
         <div className="flex items-center justify-between px-3 py-2 bg-muted/20 border-b border-border/50">
           <span className="text-xs text-muted-foreground">
             顯示 <span className="font-medium text-foreground">{productGroups.length}</span> 個產品
@@ -981,12 +1578,14 @@ export default function DeadStockPage() {
           )}
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+        {/* Scrollable table container with sticky header */}
+        <div className="overflow-x-auto overflow-y-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+          <table className="w-full text-xs" style={{ tableLayout: 'fixed' }}>
             {/* ── Header row with integrated filters ── */}
-            <thead className="bg-muted/30 border-b border-border/50">
-              <tr>
-                <th className="px-2 py-2 w-8">
+            <thead className="bg-muted/30 border-b border-border/50" style={{ position: 'sticky', top: 0, zIndex: 10 }}>
+              <tr className="bg-muted/30">
+                {/* Fixed: Checkbox */}
+                <th className="px-2 py-2 bg-muted/30" style={{ width: 32, minWidth: 32 }}>
                   <input
                     type="checkbox"
                     checked={totalFilteredSkus > 0 && selectedSkus.size === totalFilteredSkus}
@@ -995,62 +1594,10 @@ export default function DeadStockPage() {
                     title="全選 / 取消全選"
                   />
                 </th>
-                <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground w-8"></th>
-                <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground max-w-[220px]">
-                  產品名稱
-                </th>
-                <th className="text-left px-2 py-2">
-                  <FilterDropdown
-                    label="品牌"
-                    options={filterOptions.vendors}
-                    selected={filters.vendors}
-                    onToggle={v => setFilters(f => ({ ...f, vendors: toggleFilter(f.vendors, v) }))}
-                  />
-                </th>
-                <th className="text-left px-2 py-2">
-                  <FilterDropdown
-                    label="分類"
-                    options={filterOptions.product_types}
-                    selected={filters.product_types}
-                    onToggle={v => setFilters(f => ({ ...f, product_types: toggleFilter(f.product_types, v) }))}
-                  />
-                </th>
-                <th
-                  className="text-right px-2 py-2 text-[10px] font-medium text-muted-foreground cursor-pointer hover:text-foreground select-none"
-                  onClick={() => handleSort('total_qty')}
-                >
-                  總存量 <SortIcon col="total_qty" />
-                </th>
-                <th
-                  className="text-right px-2 py-2 text-[10px] font-medium text-muted-foreground cursor-pointer hover:text-foreground select-none"
-                  onClick={() => handleSort('stock_cost')}
-                >
-                  庫存成本 <SortIcon col="stock_cost" />
-                </th>
-                <th
-                  className="text-right px-2 py-2 text-[10px] font-medium text-muted-foreground cursor-pointer hover:text-foreground select-none"
-                  onClick={() => handleSort('worst_days_since')}
-                >
-                  最長無銷天數 <SortIcon col="worst_days_since" />
-                </th>
-                <th
-                  className="text-right px-2 py-2 text-[10px] font-medium text-muted-foreground cursor-pointer hover:text-foreground select-none"
-                  onClick={() => handleSort('total_sold_90d')}
-                >
-                  近90日銷 <SortIcon col="total_sold_90d" />
-                </th>
-                <th
-                  className="text-left px-2 py-2 cursor-pointer hover:text-foreground select-none"
-                  onClick={() => handleSort('worst_system_status')}
-                >
-                  <FilterDropdown
-                    label="系統狀態"
-                    options={SYSTEM_STATUS_OPTIONS}
-                    selected={filters.system_statuses}
-                    onToggle={v => setFilters(f => ({ ...f, system_statuses: toggleFilter(f.system_statuses, v as SystemStatus) }))}
-                  />
-                  <SortIcon col="worst_system_status" />
-                </th>
+                {/* Fixed: Expand arrow */}
+                <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground bg-muted/30" style={{ width: 32, minWidth: 32 }}></th>
+                {/* Dynamic data columns */}
+                {orderedColumns.map(col => renderHeaderCell(col))}
               </tr>
             </thead>
 
@@ -1081,7 +1628,7 @@ export default function DeadStockPage() {
                           : 'hover:bg-muted/30'
                       }`}
                     >
-                      <td className="px-2 py-2" onClick={e => e.stopPropagation()}>
+                      <td className="px-2 py-2" style={{ width: 32, minWidth: 32 }} onClick={e => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           checked={allGroupSelected}
@@ -1100,41 +1647,12 @@ export default function DeadStockPage() {
                           className="h-3.5 w-3.5 rounded cursor-pointer"
                         />
                       </td>
-                      <td className="px-2 py-2 text-muted-foreground">
+                      <td className="px-2 py-2 text-muted-foreground" style={{ width: 32, minWidth: 32 }}>
                         {isProductExpanded
                           ? <ChevronDown className="h-3.5 w-3.5" />
                           : <ChevronRight className="h-3.5 w-3.5" />}
                       </td>
-                      <td className="px-2 py-2 max-w-[220px]">
-                        <div className="flex items-center gap-1.5">
-                          <span className="truncate font-medium" title={group.product_title}>
-                            {group.product_title?.slice(0, 40)}{(group.product_title?.length ?? 0) > 40 ? '…' : ''}
-                          </span>
-                          <span className="shrink-0 px-1.5 py-0 rounded bg-muted text-muted-foreground text-[9px] border border-border/40">
-                            {skuCount} SKU
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-2 py-2 text-muted-foreground">{group.vendor}</td>
-                      <td className="px-2 py-2 text-muted-foreground">{group.product_type}</td>
-                      <td className="px-2 py-2 text-right tabular-nums">{formatNumber(group.total_qty)}</td>
-                      <td className="px-2 py-2 text-right tabular-nums font-medium">{formatCurrency(group.total_stock_cost)}</td>
-                      <td className="px-2 py-2 text-right tabular-nums">
-                        <span className={group.worst_days_since >= 270 ? 'text-red-400 font-medium' : group.worst_days_since >= 180 ? 'text-orange-400' : 'text-amber-400'}>
-                          {group.worst_days_since >= 9000 ? '∞' : group.worst_days_since}
-                        </span>
-                      </td>
-                      <td className="px-2 py-2 text-right tabular-nums text-muted-foreground">{group.total_sold_90d}</td>
-                      <td className="px-2 py-2">
-                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${
-                          group.worst_system_status === '真正死貨' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
-                          group.worst_system_status === '高風險死貨' ? 'bg-orange-500/15 text-orange-400 border-orange-500/30' :
-                          group.worst_system_status === '慢移貨' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' :
-                          'bg-green-500/15 text-green-400 border-green-500/30'
-                        }`}>
-                          {group.worst_system_status}
-                        </span>
-                      </td>
+                      {orderedColumns.map(col => renderGroupCell(col, group))}
                     </tr>
 
                     {/* ── Expanded variant SKU rows ── */}
@@ -1147,7 +1665,7 @@ export default function DeadStockPage() {
                               isSkuExpanded ? 'bg-primary/5' : 'hover:bg-muted/20'
                             }`}
                           >
-                            <td className="px-2 py-1.5 pl-6" onClick={e => e.stopPropagation()}>
+                            <td className="px-2 py-1.5 pl-6" style={{ width: 32, minWidth: 32 }} onClick={e => e.stopPropagation()}>
                               <input
                                 type="checkbox"
                                 checked={selectedSkus.has(item.sku)}
@@ -1157,89 +1675,14 @@ export default function DeadStockPage() {
                             </td>
                             <td
                               className="px-2 py-1.5 text-muted-foreground cursor-pointer"
+                              style={{ width: 32, minWidth: 32 }}
                               onClick={() => handleSkuClick(item)}
                             >
                               {isSkuExpanded
                                 ? <ChevronDown className="h-3 w-3" />
                                 : <ChevronRight className="h-3 w-3" />}
                             </td>
-                            <td className="px-2 py-1.5 pl-4">
-                              <div className="flex items-center gap-1.5">
-                                <span className="font-mono text-[10px] text-muted-foreground">{item.sku}</span>
-                                {item.variant_title && (
-                                  <span className="text-[10px] text-foreground/70">{item.variant_title}</span>
-                                )}
-                              </div>
-                            </td>
-                            <td className="px-2 py-1.5 text-muted-foreground text-[10px]">{item.vendor}</td>
-                            <td className="px-2 py-1.5 text-muted-foreground text-[10px]">{item.product_type}</td>
-                            <td className="px-2 py-1.5 text-right tabular-nums text-[10px]">{formatNumber(item.inventory_quantity)}</td>
-                            <td className="px-2 py-1.5 text-right tabular-nums text-[10px]">{formatCurrency(item.stock_cost)}</td>
-                            <td className="px-2 py-1.5 text-right tabular-nums text-[10px]">
-                              <span className={item.days_since_last_sale >= 270 ? 'text-red-400 font-medium' : item.days_since_last_sale >= 180 ? 'text-orange-400' : 'text-amber-400'}>
-                                {item.days_since_last_sale >= 9000 ? '∞' : item.days_since_last_sale}
-                              </span>
-                            </td>
-                            <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-muted-foreground">{item.sold_90d}</td>
-                            <td className="px-2 py-1.5" onClick={e => e.stopPropagation()}>
-                              <div className="flex items-center gap-1">
-                                <select
-                                  value={item.system_status}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.value as SystemStatus;
-                                    if (newVal === item.system_status) return;
-                                    await handleInlineUpdate(item.sku, 'system_status_override', newVal, item.system_status);
-                                  }}
-                                  className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent ${
-                                    item.system_status === '真正死貨' ? 'text-red-400 border-red-500/30' :
-                                    item.system_status === '高風險死貨' ? 'text-orange-400 border-orange-500/30' :
-                                    item.system_status === '慢移貨' ? 'text-amber-400 border-amber-500/30' :
-                                    'text-green-400 border-green-500/30'
-                                  }`}
-                                >
-                                  <option value="正常">正常</option>
-                                  <option value="慢移貨">慢移貨</option>
-                                  <option value="高風險死貨">高風險死貨</option>
-                                  <option value="真正死貨">真正死貨</option>
-                                </select>
-                                <select
-                                  value={item.manual_status ?? ''}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.value;
-                                    if (newVal === (item.manual_status ?? '')) return;
-                                    await handleInlineUpdate(item.sku, 'manual_status', newVal, item.manual_status);
-                                  }}
-                                  className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent ${
-                                    !item.manual_status ? 'text-muted-foreground border-border/30' :
-                                    item.manual_status === 'confirmed_dead' ? 'text-red-400 border-red-500/30' :
-                                    item.manual_status === 'revived' ? 'text-green-400 border-green-500/30' :
-                                    item.manual_status === 'promoting' ? 'text-purple-400 border-purple-500/30' :
-                                    item.manual_status === 'pending_review' ? 'text-yellow-400 border-yellow-500/30' :
-                                    item.manual_status === 'observing' ? 'text-blue-400 border-blue-500/30' :
-                                    'text-muted-foreground border-border/30'
-                                  }`}
-                                >
-                                  <option value="">—</option>
-                                  {MANUAL_STATUS_OPTIONS.map(s => (
-                                    <option key={s} value={s}>{MANUAL_STATUS_LABELS[s]}</option>
-                                  ))}
-                                </select>
-                                <select
-                                  value={item.action ?? ''}
-                                  onChange={async (e) => {
-                                    const newVal = e.target.value;
-                                    if (newVal === (item.action ?? '')) return;
-                                    await handleInlineUpdate(item.sku, 'action', newVal, item.action);
-                                  }}
-                                  className="text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent text-muted-foreground border-border/30"
-                                >
-                                  <option value="">—</option>
-                                  {ACTION_OPTIONS.map(a => (
-                                    <option key={a} value={a}>{ACTION_LABELS[a]}</option>
-                                  ))}
-                                </select>
-                              </div>
-                            </td>
+                            {orderedColumns.map(col => renderItemCell(col, item))}
                           </tr>
 
                           {/* SKU detail panel */}
@@ -1272,6 +1715,14 @@ export default function DeadStockPage() {
                                         <span className="tabular-nums">{item.inventory_quantity}</span>
                                       </div>
                                       <div className="flex justify-between">
+                                        <span className="text-muted-foreground">比較價</span>
+                                        <span className="tabular-nums">{item.compare_at_price != null ? formatCurrency(item.compare_at_price) : '—'}</span>
+                                      </div>
+                                      <div className="flex justify-between">
+                                        <span className="text-muted-foreground">零售價</span>
+                                        <span className="tabular-nums">{formatCurrency(item.price)}</span>
+                                      </div>
+                                      <div className="flex justify-between">
                                         <span className="text-muted-foreground">單位成本</span>
                                         <span className="tabular-nums">{formatCurrency(item.unit_cost)}</span>
                                       </div>
@@ -1280,8 +1731,16 @@ export default function DeadStockPage() {
                                         <span className="tabular-nums font-medium">{formatCurrency(item.stock_cost)}</span>
                                       </div>
                                       <div className="flex justify-between">
-                                        <span className="text-muted-foreground">零售價</span>
-                                        <span className="tabular-nums">{formatCurrency(item.price)}</span>
+                                        <span className="text-muted-foreground">利潤%</span>
+                                        <span className={`tabular-nums font-medium ${
+                                          computeMargin(item.price, item.unit_cost) != null
+                                            ? marginColorClass(computeMargin(item.price, item.unit_cost)!)
+                                            : 'text-muted-foreground'
+                                        }`}>
+                                          {computeMargin(item.price, item.unit_cost) != null
+                                            ? `${computeMargin(item.price, item.unit_cost)!.toFixed(1)}%`
+                                            : '—'}
+                                        </span>
                                       </div>
                                     </div>
 
