@@ -357,6 +357,7 @@ export default function RetailInventoryPage() {
   const [lastPurchaseDateByItem, setLastPurchaseDateByItem] = useState<Record<string, string>>({});
   const [salesByProduct, setSalesByProduct] = useState<Record<string, { qty: number; lastSaleDate: string }>>({});
   const [procurementByItem, setProcurementByItem] = useState<Record<string, ItemProcurement>>({});
+  const [deadStockExcludedProductIds, setDeadStockExcludedProductIds] = useState<Set<string>>(new Set());
 
   // Filter state
   const [filters, setFilters] = useState<FilterState>({ ...DEFAULT_FILTERS });
@@ -419,15 +420,25 @@ export default function RetailInventoryPage() {
     async function load() {
       setLoading(true);
       try {
-        const [inv, bcInv, purchaseLines, purchaseInvoices, orderLines, orders] = await Promise.all([
+        const [inv, bcInv, purchaseLines, purchaseInvoices, orderLines, orders, shopifyProducts] = await Promise.all([
           fetchAllInventory(),
           queryAll('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code', undefined, 50000),
           queryAll('bc_purchase_invoice_lines', 'invoice_id,invoice_number,item_number,quantity,unit_cost', undefined, 50000),
           queryAll('bc_purchase_invoices', 'id,posting_date,number', undefined, 50000),
           queryAll('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity', undefined, 50000),
           queryAll('shopify_orders', 'id,created_at,financial_status,cancelled_at', undefined, 50000),
+          queryAll('shopify_products', 'id,status,created_at', undefined, 50000),
         ]);
         if (cancelled) return;
+
+        // Build set of product IDs to exclude from dead stock (draft or created within 90 days)
+        const ninetyDaysAgo = Date.now() - 90 * 86400000;
+        const excludedIds = new Set<string>();
+        (shopifyProducts || []).forEach((p: any) => {
+          if (p.status === 'draft') excludedIds.add(String(p.id));
+          else if (p.created_at && new Date(p.created_at).getTime() > ninetyDaysAgo) excludedIds.add(String(p.id));
+        });
+        setDeadStockExcludedProductIds(excludedIds);
 
         setInventory(inv);
         setBcInventory(bcInv);
@@ -635,6 +646,8 @@ export default function RetailInventoryPage() {
   const deadStockData = useMemo(() => {
     return filteredInventory
       .filter((i: any) => (i.inventory_quantity || 0) > 0)
+      // Exclude draft products and products created within the last 90 days
+      .filter((i: any) => !deadStockExcludedProductIds.has(String(i.product_id)))
       .map((i: any) => {
         const sku = i.sku || '';
         const sales = salesByProduct[sku] || salesByProduct[i.product_title] || { qty: 0, lastSaleDate: '' };
@@ -661,7 +674,7 @@ export default function RetailInventoryPage() {
       })
       .filter((d) => d.status !== null)
       .sort((a, b) => b.totalCostAtRisk - a.totalCostAtRisk);
-  }, [filteredInventory, salesByProduct, lastPurchaseDateByItem, bcCostMap]);
+  }, [filteredInventory, salesByProduct, lastPurchaseDateByItem, bcCostMap, deadStockExcludedProductIds]);
 
   const deadCount = deadStockData.filter((d) => d.status === 'DEAD').length;
   const warningCount = deadStockData.filter((d) => d.status === 'WARNING').length;

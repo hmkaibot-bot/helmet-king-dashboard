@@ -34,6 +34,7 @@ import {
 
 interface ShopifyInventoryRow {
   sku: string;
+  product_id: string;
   product_title: string;
   variant_title: string | null;
   vendor: string;
@@ -41,6 +42,12 @@ interface ShopifyInventoryRow {
   inventory_quantity: number;
   price: number;
   compare_at_price: number | null;
+}
+
+interface ShopifyProductRow {
+  id: string;
+  status: string;
+  created_at: string;
 }
 
 interface BcInventoryRow {
@@ -297,6 +304,7 @@ export default function DeadStockPage() {
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [reviews, setReviews] = useState<DeadStockReview[]>([]);
   const [auditLog, setAuditLog] = useState<AuditLogRow[]>([]);
+  const [shopifyProducts, setShopifyProducts] = useState<ShopifyProductRow[]>([]);
 
   // UI state
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
@@ -467,8 +475,8 @@ export default function DeadStockPage() {
     setLoading(true);
     setError(null);
     try {
-      const [invRows, bcRows, linesRows, ordersRows, reviewsResult, auditResult] = await Promise.all([
-        queryAllPages('shopify_inventory', 'sku,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price', [
+      const [invRows, bcRows, linesRows, ordersRows, reviewsResult, auditResult, productsRows] = await Promise.all([
+        queryAllPages('shopify_inventory', 'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price', [
           { column: 'inventory_quantity', op: 'gte', value: '1' },
         ]),
         queryAllPages('bc_inventory', 'number,unit_cost,unit_price'),
@@ -476,6 +484,7 @@ export default function DeadStockPage() {
         queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
         supabase.from('dead_stock_reviews').select('*'),
         supabase.from('dead_stock_audit_log').select('*').order('changed_at', { ascending: false }),
+        queryAllPages('shopify_products', 'id,status,created_at'),
       ]);
 
       setShopifyInv(invRows as ShopifyInventoryRow[]);
@@ -484,6 +493,7 @@ export default function DeadStockPage() {
       setOrders(ordersRows as OrderRow[]);
       setReviews((reviewsResult.data ?? []) as DeadStockReview[]);
       setAuditLog((auditResult.data ?? []) as AuditLogRow[]);
+      setShopifyProducts(productsRows as ShopifyProductRow[]);
     } catch (e: any) {
       setError(e?.message ?? 'Failed to load data');
     } finally {
@@ -498,6 +508,11 @@ export default function DeadStockPage() {
   const computedItems = useMemo<DeadStockItem[]>(() => {
     const now = Date.now();
     const MS_PER_DAY = 86400000;
+
+    // Build product lookup: exclude draft products and products created within 90 days
+    const productMap = new Map<string, ShopifyProductRow>();
+    for (const p of shopifyProducts) productMap.set(String(p.id), p);
+    const ninetyDaysAgo = now - 90 * MS_PER_DAY;
 
     const bcMap = new Map<string, BcInventoryRow>();
     for (const b of bcInv) bcMap.set(b.number, b);
@@ -539,6 +554,11 @@ export default function DeadStockPage() {
     const result: DeadStockItem[] = [];
 
     for (const inv of shopifyInv) {
+      // Exclude draft products — they are unpublished and cannot be sold
+      const product = productMap.get(String(inv.product_id));
+      if (product?.status === 'draft') continue;
+      // Exclude products created within the last 90 days — too new to classify as dead stock
+      if (product?.created_at && new Date(product.created_at).getTime() > ninetyDaysAgo) continue;
       const bc = bcMap.get(inv.sku);
       const unitCost = bc?.unit_cost ?? 0;
       const stockCost = inv.inventory_quantity * unitCost;
@@ -597,7 +617,7 @@ export default function DeadStockPage() {
     }
 
     return result;
-  }, [shopifyInv, bcInv, orderLines, orders, reviews]);
+  }, [shopifyInv, bcInv, orderLines, orders, reviews, shopifyProducts]);
 
   // ── Summary stats ───────────────────────────────────────────────────────────
 
