@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { queryAll, queryWithDateRange } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
@@ -64,7 +65,7 @@ function toggleFilter<T extends string>(arr: T[], val: T): T[] {
   return arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
 }
 
-// ── FilterDropdown (dead-stock style header filter) ───────
+// ── FilterDropdown (portal-based to escape overflow clipping) ───────
 function FilterDropdown({
   label,
   options,
@@ -79,21 +80,40 @@ function FilterDropdown({
   renderLabel?: (val: string) => string;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const dropRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
 
+  // Position the portal dropdown below the button
+  useLayoutEffect(() => {
+    if (open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      setPos({ top: rect.bottom + 4, left: rect.left });
+    }
+  }, [open]);
+
+  // Close on outside click
   useEffect(() => {
+    if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (
+        btnRef.current && !btnRef.current.contains(target) &&
+        dropRef.current && !dropRef.current.contains(target)
+      ) {
+        setOpen(false);
+      }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, []);
+  }, [open]);
 
   const hasFilter = selected.length > 0;
 
   return (
-    <div ref={ref} className="relative inline-block">
+    <div className="inline-block">
       <button
+        ref={btnRef}
         onClick={() => setOpen(o => !o)}
         className={`flex items-center gap-0.5 text-[10px] font-medium select-none whitespace-nowrap ${
           hasFilter ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
@@ -107,8 +127,12 @@ function FilterDropdown({
         )}
         <ChevronDown className="h-2.5 w-2.5 opacity-50" />
       </button>
-      {open && (
-        <div className="absolute z-50 top-full left-0 mt-1 bg-background border border-border rounded-md shadow-lg min-w-[140px] max-h-52 overflow-y-auto p-1.5">
+      {open && createPortal(
+        <div
+          ref={dropRef}
+          className="fixed z-[9999] bg-background border border-border rounded-md shadow-lg min-w-[140px] max-h-52 overflow-y-auto p-1.5"
+          style={{ top: pos.top, left: pos.left }}
+        >
           {options.length === 0 && (
             <span className="text-[10px] text-muted-foreground px-1">無選項</span>
           )}
@@ -131,7 +155,8 @@ function FilterDropdown({
               清除
             </button>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
