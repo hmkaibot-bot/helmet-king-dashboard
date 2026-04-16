@@ -154,7 +154,233 @@ export default function MarselloApprovalPage() {
     }
   }
 
-  useEffect(() => { loadQueue(); }, []);
+  // ── Retroactive auto-reject on page load ────────────────────
+  // Catches pending items that should have been auto-rejected
+  // (e.g. zero-amount invoices, or Receipt in advance lines synced after queue population)
+  async function retroactiveAutoReject(queueData: QueueItem[]) {
+    const pendingItems = queueData.filter(q => q.status === 'pending');
+    if (pendingItems.length === 0) return;
+
+    // Phase 1: Zero-amount invoices — can reject immediately without fetching lines
+    const zeroAmountItems = pendingItems.filter(q => (q.invoice_amount || 0) === 0);
+    let rejectedCount = 0;
+
+    for (const item of zeroAmountItems) {
+      await supabase.from('garage_marsello_queue').update({
+        status: 'rejected',
+        notes: '[自動拒絕] 零金額發票 (Zero amount invoice)',
+      }).eq('id', item.id);
+      rejectedCount++;
+    }
+
+    // Phase 2: Check invoice lines for Receipt in advance (lines may have been synced after initial queue population)
+    const remainingPending = pendingItems.filter(q => (q.invoice_amount || 0) !== 0);
+    if (remainingPending.length > 0) {
+      const invoiceNumbers = remainingPending.map(q => q.bc_invoice_number).filter(Boolean);
+      const allLines: any[] = [];
+      for (let i = 0; i < invoiceNumbers.length; i += 50) {
+        const batch = invoiceNumbers.slice(i, i + 50);
+        const { data } = await supabase
+          .from('bc_invoice_lines')
+          .select('invoice_number,description,item_number,discount_amount')
+          .in('invoice_number', batch);
+        if (data) allLines.push(...data);
+      }
+
+      const invoiceLinesByNumber: Record<string, any[]> = {};
+      for (const line of allLines) {
+        if (!invoiceLinesByNumber[line.invoice_number]) invoiceLinesByNumber[line.invoice_number] = [];
+        invoiceLinesByNumber[line.invoice_number].push(line);
+      }
+
+      for (const item of remainingPending) {
+        const lines = invoiceLinesByNumber[item.bc_invoice_number] || [];
+        let autoRejectReason: string | null = null;
+
+        // Check: any line contains "Receipt in advance"
+        const hasReceiptInAdvance = lines.some((l: any) =>
+          (l.description || '').toLowerCase().includes('receipt in advance')
+        );
+        if (hasReceiptInAdvance) {
+          autoRejectReason = '含有 Receipt in advance 項目';
+        }
+
+        // Check: ALL lines are "Receipt in advance"
+        if (!autoRejectReason && lines.length > 0) {
+          const allReceiptInAdvance = lines.every((l: any) =>
+            (l.description || '').toLowerCase().includes('receipt in advance')
+          );
+          if (allReceiptInAdvance) {
+            autoRejectReason = '所有項目均為 Receipt in advance';
+          }
+        }
+
+        if (autoRejectReason) {
+          await supabase.from('garage_marsello_queue').update({
+            status: 'rejected',
+            notes: `[自動拒絕] ${autoRejectReason}`,
+          }).eq('id', item.id);
+          rejectedCount++;
+        }
+      }
+    }
+
+    // Reload queue if any items were auto-rejected
+    if (rejectedCount > 0) {
+      console.log(`[Marsello] 自動拒絕 ${rejectedCount} 個待審批項目`);
+      await loadQueue();
+    }
+  }
+
+  // ── Auto-populate: silently add un-queued invoices + retroactive auto-reject ──
+  async function autoPopulateQueue() {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 90);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+    const [invoices, existingIds] = await Promise.all([
+      queryAllPages('bc_sales_invoices',
+        'id,number,invoice_date,customer_number,customer_name,total_amount_incl_tax',
+        [
+          { column: 'dimension1_code', op: 'eq', value: 'GARAGE' },
+          { column: 'invoice_date', op: 'gte', value: cutoffStr },
+        ]
+      ),
+      (async () => {
+        const { data } = await supabase.from('garage_marsello_queue').select('bc_invoice_id');
+        return new Set((data || []).map((r: any) => r.bc_invoice_id));
+      })(),
+    ]);
+
+    const newInvoices = (invoices as any[]).filter((inv: any) =>
+      !existingIds.has(inv.id) && !EXCLUDED_CUSTOMERS.has(inv.customer_number)
+    );
+
+    if (newInvoices.length > 0) {
+      // Fetch customer data for matching
+      const [marselloCustomers, bcCustomers] = await Promise.all([
+        queryAllPages('marsello_customers', 'id,email,first_name,last_name,phone,loyalty_points'),
+        queryAllPages('bc_customers', 'number,display_name,phone_number,email'),
+      ]);
+
+      // Fetch invoice lines for auto-reject
+      const invoiceNumbers = newInvoices.map((inv: any) => inv.number).filter(Boolean);
+      const allLines: any[] = [];
+      for (let i = 0; i < invoiceNumbers.length; i += 50) {
+        const batch = invoiceNumbers.slice(i, i + 50);
+        const { data } = await supabase.from('bc_invoice_lines')
+          .select('invoice_number,description,item_number,discount_amount')
+          .in('invoice_number', batch);
+        if (data) allLines.push(...data);
+      }
+      const invoiceLinesByNumber: Record<string, any[]> = {};
+      for (const line of allLines) {
+        if (!invoiceLinesByNumber[line.invoice_number]) invoiceLinesByNumber[line.invoice_number] = [];
+        invoiceLinesByNumber[line.invoice_number].push(line);
+      }
+
+      // Build lookup maps
+      const bcPhoneMap: Record<string, string> = {};
+      const bcEmailMap: Record<string, string> = {};
+      (bcCustomers as any[]).forEach((c: any) => {
+        if (c.phone_number) bcPhoneMap[c.number] = c.phone_number;
+        if (c.email)        bcEmailMap[c.number] = c.email;
+      });
+      const marselloList = marselloCustomers as MarselloCustomer[];
+      const marselloByPhone: Record<string, MarselloCustomer> = {};
+      const marselloByEmail: Record<string, MarselloCustomer> = {};
+      marselloList.forEach(m => {
+        const np = normalizePhone(m.phone);
+        if (np && np.length >= 8) marselloByPhone[np] = m;
+        if (m.email) marselloByEmail[m.email.toLowerCase().trim()] = m;
+      });
+
+      // Match and insert
+      const toInsert: any[] = [];
+      for (const inv of newInvoices) {
+        let matched: MarselloCustomer | null = null;
+        let matchType: MatchType = 'unmatched';
+        const custNum = inv.customer_number || '';
+
+        const bcPhone = bcPhoneMap[custNum];
+        if (bcPhone) {
+          const np = normalizePhone(bcPhone);
+          if (np && marselloByPhone[np]) { matched = marselloByPhone[np]; matchType = 'phone_match'; }
+        }
+        if (!matched) {
+          const bcEmail = bcEmailMap[custNum];
+          if (bcEmail) {
+            const ne = bcEmail.toLowerCase().trim();
+            if (marselloByEmail[ne]) { matched = marselloByEmail[ne]; matchType = 'exact_email'; }
+          }
+        }
+
+        // Auto-reject checks
+        let autoRejectReason: string | null = null;
+        const lines = invoiceLinesByNumber[inv.number] || [];
+        const invAmount = parseFloat(inv.total_amount_incl_tax) || 0;
+
+        if (invAmount === 0) {
+          autoRejectReason = '零金額發票 (Zero amount invoice)';
+        }
+        if (!autoRejectReason) {
+          if (lines.some((l: any) => (l.description || '').toLowerCase().includes('receipt in advance'))) {
+            autoRejectReason = '含有 Receipt in advance 項目';
+          }
+        }
+        if (!autoRejectReason && lines.length > 0) {
+          if (lines.every((l: any) => (l.description || '').toLowerCase().includes('receipt in advance'))) {
+            autoRejectReason = '所有項目均為 Receipt in advance';
+          }
+        }
+        if (!autoRejectReason) {
+          const totalDiscount = lines.reduce((sum: number, l: any) => sum + (parseFloat(l.discount_amount) || 0), 0);
+          if (totalDiscount > 0) autoRejectReason = `發票含折扣 (Invoice Discount: HK$${totalDiscount.toFixed(0)})`;
+        }
+
+        toInsert.push({
+          bc_invoice_id: inv.id, bc_invoice_number: inv.number || '',
+          bc_invoice_date: inv.invoice_date, bc_customer_number: custNum,
+          bc_customer_name: inv.customer_name || '', bc_customer_email: bcEmailMap[custNum] || null,
+          invoice_amount: invAmount,
+          marsello_customer_id: matched?.id || null,
+          marsello_customer_name: matched ? `${matched.first_name || ''} ${matched.last_name || ''}`.trim() : null,
+          marsello_customer_email: matched?.email || null,
+          marsello_current_points: matched?.loyalty_points || null,
+          match_type: matchType,
+          status: autoRejectReason ? 'rejected' : 'pending',
+          notes: autoRejectReason ? `[自動拒絕] ${autoRejectReason}` : null,
+        });
+      }
+
+      for (let i = 0; i < toInsert.length; i += 50) {
+        await supabase.from('garage_marsello_queue')
+          .upsert(toInsert.slice(i, i + 50), { onConflict: 'bc_invoice_id' });
+      }
+      console.log(`[Marsello] 自動補入 ${newInvoices.length} 張未入隊發票`);
+    }
+
+    // Retroactive auto-reject on existing pending items
+    const { data: currentQueue } = await supabase.from('garage_marsello_queue')
+      .select('*').eq('status', 'pending');
+    if (currentQueue && currentQueue.length > 0) {
+      await retroactiveAutoReject(currentQueue as QueueItem[]);
+    }
+
+    // Reload to reflect any changes
+    await loadQueue();
+  }
+
+  useEffect(() => {
+    (async () => {
+      await loadQueue();
+      try {
+        await autoPopulateQueue();
+      } catch (e) {
+        console.error('[Marsello] Auto-populate error:', e);
+      }
+    })();
+  }, []);
 
   // ── Scan BC Garage invoices → populate queue ───────────────
   async function scanInvoices() {
@@ -267,14 +493,33 @@ export default function MarselloApprovalPage() {
         // Auto-reject checks
         let autoRejectReason: string | null = null;
         const lines = invoiceLinesByNumber[inv.number] || [];
+        const invAmount = parseFloat(inv.total_amount_incl_tax) || 0;
+
+        // Rule 0: Zero-amount invoice — no loyalty points value
+        if (invAmount === 0) {
+          autoRejectReason = '零金額發票 (Zero amount invoice)';
+        }
 
         // Rule 1: Contains "Receipt in advance" item (any type — 26Pack, Motorcycle, etc.)
-        const hasReceiptInAdvance = lines.some((l: any) => {
-          const desc = (l.description || '').toLowerCase();
-          return desc.includes('receipt in advance');
-        });
-        if (hasReceiptInAdvance) {
-          autoRejectReason = '含有 Receipt in advance 項目';
+        if (!autoRejectReason) {
+          const hasReceiptInAdvance = lines.some((l: any) => {
+            const desc = (l.description || '').toLowerCase();
+            return desc.includes('receipt in advance');
+          });
+          if (hasReceiptInAdvance) {
+            autoRejectReason = '含有 Receipt in advance 項目';
+          }
+        }
+
+        // Rule 1b: ALL lines are "Receipt in advance" (even if amount > 0)
+        if (!autoRejectReason && lines.length > 0) {
+          const allReceiptInAdvance = lines.every((l: any) => {
+            const desc = (l.description || '').toLowerCase();
+            return desc.includes('receipt in advance');
+          });
+          if (allReceiptInAdvance) {
+            autoRejectReason = '所有項目均為 Receipt in advance';
+          }
         }
 
         // Rule 2: Has invoice discount (any line with discount_amount > 0)
@@ -451,13 +696,31 @@ export default function MarselloApprovalPage() {
         let autoRejectReason: string | null = null;
         const lines = invoiceLinesByNumber[item.bc_invoice_number] || [];
 
+        // Rule 0: Zero-amount invoice — no loyalty points value
+        if ((item.invoice_amount || 0) === 0) {
+          autoRejectReason = '零金額發票 (Zero amount invoice)';
+        }
+
         // Rule 1: Contains "Receipt in advance" item
-        const hasReceiptInAdvance = lines.some((l: any) => {
-          const desc = (l.description || '').toLowerCase();
-          return desc.includes('receipt in advance');
-        });
-        if (hasReceiptInAdvance) {
-          autoRejectReason = '含有 Receipt in advance 項目';
+        if (!autoRejectReason) {
+          const hasReceiptInAdvance = lines.some((l: any) => {
+            const desc = (l.description || '').toLowerCase();
+            return desc.includes('receipt in advance');
+          });
+          if (hasReceiptInAdvance) {
+            autoRejectReason = '含有 Receipt in advance 項目';
+          }
+        }
+
+        // Rule 1b: ALL lines are "Receipt in advance" (even if amount > 0)
+        if (!autoRejectReason && lines.length > 0) {
+          const allReceiptInAdvance = lines.every((l: any) => {
+            const desc = (l.description || '').toLowerCase();
+            return desc.includes('receipt in advance');
+          });
+          if (allReceiptInAdvance) {
+            autoRejectReason = '所有項目均為 Receipt in advance';
+          }
         }
 
         // Rule 2: Has invoice discount
