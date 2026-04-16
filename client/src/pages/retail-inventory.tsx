@@ -1,11 +1,11 @@
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { queryAll, queryWithDateRange } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
-import { Package, AlertTriangle, XCircle, DollarSign, Clock, RefreshCw, Leaf, Skull, Tag, ChevronRight, ChevronDown, History, Search, X, Filter } from 'lucide-react';
+import { Package, AlertTriangle, XCircle, DollarSign, Clock, RefreshCw, Leaf, Skull, Tag, ChevronRight, ChevronDown, ChevronUp, History, Search, X, Filter } from 'lucide-react';
 import {
   PieChart, Pie, Cell, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -45,6 +45,96 @@ function parseVariantTitle(vt: string | null | undefined): { color: string; size
   }
   // Otherwise treat as color/style
   return { color: trimmed, size: '' };
+}
+
+// ── Margin helpers (from dead-stock page) ──────────────────
+function marginColorClass(margin: number): string {
+  if (margin > 40) return 'text-green-400';
+  if (margin >= 20) return 'text-amber-400';
+  return 'text-red-400';
+}
+
+function computeMargin(price: number, unitCost: number): number | null {
+  if (!price || price === 0) return null;
+  return ((price - unitCost) / price) * 100;
+}
+
+// ── Filter toggle helper ──────────────────────────────────
+function toggleFilter<T extends string>(arr: T[], val: T): T[] {
+  return arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val];
+}
+
+// ── FilterDropdown (dead-stock style header filter) ───────
+function FilterDropdown({
+  label,
+  options,
+  selected,
+  onToggle,
+  renderLabel,
+}: {
+  label: string;
+  options: string[];
+  selected: string[];
+  onToggle: (val: string) => void;
+  renderLabel?: (val: string) => string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const hasFilter = selected.length > 0;
+
+  return (
+    <div ref={ref} className="relative inline-block">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={`flex items-center gap-0.5 text-[10px] font-medium select-none whitespace-nowrap ${
+          hasFilter ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
+        }`}
+      >
+        {label}
+        {hasFilter && (
+          <span className="ml-0.5 px-1 py-0 rounded bg-primary/20 text-primary text-[9px] leading-tight">
+            {selected.length}
+          </span>
+        )}
+        <ChevronDown className="h-2.5 w-2.5 opacity-50" />
+      </button>
+      {open && (
+        <div className="absolute z-50 top-full left-0 mt-1 bg-background border border-border rounded-md shadow-lg min-w-[140px] max-h-52 overflow-y-auto p-1.5">
+          {options.length === 0 && (
+            <span className="text-[10px] text-muted-foreground px-1">無選項</span>
+          )}
+          {options.map(v => (
+            <label key={v} className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-muted/40 rounded px-1 py-0.5">
+              <input
+                type="checkbox"
+                checked={selected.includes(v)}
+                onChange={() => onToggle(v)}
+                className="h-3 w-3 rounded"
+              />
+              <span className="truncate">{renderLabel ? renderLabel(v) : v}</span>
+            </label>
+          ))}
+          {hasFilter && (
+            <button
+              onClick={() => { selected.forEach(s => onToggle(s)); }}
+              className="mt-1 w-full text-[10px] text-center text-muted-foreground hover:text-foreground py-0.5 border-t border-border/40"
+            >
+              清除
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Types ──────────────────────────────────────────────────
@@ -253,9 +343,51 @@ export default function RetailInventoryPage() {
   // Track which variant (by sku) is expanded inside a product group in the products/brand tab
   const [expandedProductVariant, setExpandedProductVariant] = useState<string | null>(null);
 
+  // Products tab: sort state
+  type ProductSortKey = 'total_stock' | 'stock_cost' | 'avg_margin';
+  type SortDir = 'asc' | 'desc';
+  const [productSortKey, setProductSortKey] = useState<ProductSortKey>('total_stock');
+  const [productSortDir, setProductSortDir] = useState<SortDir>('desc');
+
+  // Products tab: zero-stock variants loaded on demand
+  const [zeroStockVariants, setZeroStockVariants] = useState<Map<string, any[]>>(new Map());
+
   const toggleExpand = useCallback((sku: string) => {
     setExpandedSku((prev) => prev === sku ? null : sku);
   }, []);
+
+  // Products tab: expand product group and load 0-stock variants on demand
+  const toggleProductGroup = useCallback(async (title: string) => {
+    if (expandedProduct === title) {
+      setExpandedProduct(null);
+    } else {
+      setExpandedProduct(title);
+      if (!zeroStockVariants.has(title)) {
+        const { data } = await supabase
+          .from('shopify_inventory')
+          .select('sku,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price')
+          .eq('product_title', title)
+          .eq('inventory_quantity', 0);
+        if (data && data.length > 0) {
+          setZeroStockVariants(prev => new Map(prev).set(title, data));
+        } else {
+          setZeroStockVariants(prev => new Map(prev).set(title, []));
+        }
+      }
+    }
+  }, [expandedProduct, zeroStockVariants]);
+
+  const handleProductSort = useCallback((key: ProductSortKey) => {
+    if (productSortKey === key) setProductSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setProductSortKey(key); setProductSortDir('desc'); }
+  }, [productSortKey]);
+
+  const ProductSortIcon = ({ col }: { col: ProductSortKey }) => {
+    if (productSortKey !== col) return <ChevronDown className="h-3 w-3 opacity-30 inline ml-0.5" />;
+    return productSortDir === 'asc'
+      ? <ChevronUp className="h-3 w-3 text-primary inline ml-0.5" />
+      : <ChevronDown className="h-3 w-3 text-primary inline ml-0.5" />;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -514,9 +646,9 @@ export default function RetailInventoryPage() {
   // Brand detail expansion
   const [expandedBrand, setExpandedBrand] = useState<string | null>(null);
 
-  // Group filteredInventory by product_title for the products tab
+  // Group filteredInventory by product_title for the products tab (dead-stock style)
   const productGroups = useMemo(() => {
-    const map: Record<string, { items: any[]; vendor: string; productType: string; totalStock: number; minPrice: number; maxPrice: number }> = {};
+    const map: Record<string, { items: any[]; vendor: string; productType: string; totalStock: number; minPrice: number; maxPrice: number; minComparePrice: number; maxComparePrice: number; minUnitCost: number; maxUnitCost: number; totalStockCost: number; totalRevenue: number; totalCostWeighted: number }> = {};
     filteredInventory.forEach((i: any) => {
       const title = i.product_title || 'Unknown';
       if (!map[title]) {
@@ -527,15 +659,37 @@ export default function RetailInventoryPage() {
           totalStock: 0,
           minPrice: Infinity,
           maxPrice: -Infinity,
+          minComparePrice: Infinity,
+          maxComparePrice: -Infinity,
+          minUnitCost: Infinity,
+          maxUnitCost: -Infinity,
+          totalStockCost: 0,
+          totalRevenue: 0,
+          totalCostWeighted: 0,
         };
       }
-      map[title].items.push(i);
-      map[title].totalStock += i.inventory_quantity || 0;
+      const g = map[title];
+      g.items.push(i);
+      const qty = i.inventory_quantity || 0;
+      g.totalStock += qty;
       const p = parseFloat(i.price) || 0;
-      if (p < map[title].minPrice) map[title].minPrice = p;
-      if (p > map[title].maxPrice) map[title].maxPrice = p;
+      if (p > 0 && p < g.minPrice) g.minPrice = p;
+      if (p > 0 && p > g.maxPrice) g.maxPrice = p;
+      const cp = i.compare_at_price != null ? parseFloat(i.compare_at_price) || 0 : 0;
+      if (cp > 0 && cp < g.minComparePrice) g.minComparePrice = cp;
+      if (cp > 0 && cp > g.maxComparePrice) g.maxComparePrice = cp;
+      const bc = bcCostMap[i.sku];
+      const uc = bc ? bc.unitCost : 0;
+      if (uc > 0 && uc < g.minUnitCost) g.minUnitCost = uc;
+      if (uc > 0 && uc > g.maxUnitCost) g.maxUnitCost = uc;
+      g.totalStockCost += uc * Math.max(qty, 0);
+      if (p > 0) {
+        const q = Math.max(qty, 1);
+        g.totalRevenue += p * q;
+        g.totalCostWeighted += uc * q;
+      }
     });
-    return Object.entries(map)
+    const groups = Object.entries(map)
       .map(([title, d]) => ({
         title,
         vendor: d.vendor,
@@ -544,10 +698,25 @@ export default function RetailInventoryPage() {
         variantCount: d.items.length,
         minPrice: d.minPrice === Infinity ? 0 : d.minPrice,
         maxPrice: d.maxPrice === -Infinity ? 0 : d.maxPrice,
+        minComparePrice: d.minComparePrice === Infinity ? 0 : d.minComparePrice,
+        maxComparePrice: d.maxComparePrice === -Infinity ? 0 : d.maxComparePrice,
+        minUnitCost: d.minUnitCost === Infinity ? 0 : d.minUnitCost,
+        maxUnitCost: d.maxUnitCost === -Infinity ? 0 : d.maxUnitCost,
+        stock_cost: d.totalStockCost,
+        avg_margin: d.totalRevenue > 0 ? ((d.totalRevenue - d.totalCostWeighted) / d.totalRevenue) * 100 : null,
         items: d.items,
-      }))
-      .sort((a, b) => b.totalStock - a.totalStock);
-  }, [filteredInventory]);
+      }));
+
+    // Sort
+    groups.sort((a, b) => {
+      const mul = productSortDir === 'asc' ? 1 : -1;
+      if (productSortKey === 'stock_cost') return (a.stock_cost - b.stock_cost) * mul;
+      if (productSortKey === 'avg_margin') return ((a.avg_margin ?? -1) - (b.avg_margin ?? -1)) * mul;
+      return (a.totalStock - b.totalStock) * mul;
+    });
+
+    return groups;
+  }, [filteredInventory, bcCostMap, productSortKey, productSortDir]);
 
   // Brand products grouped by product_title
   const brandProductGroups = useMemo(() => {
@@ -750,83 +919,213 @@ export default function RetailInventoryPage() {
           </div>
         </TabsContent>
 
-        {/* ═══ PRODUCTS TAB ═══ */}
+        {/* ═══ PRODUCTS TAB (dead-stock style) ═══ */}
         <TabsContent value="products" className="space-y-4 mt-4">
-          <Card className="border-border/40">
-            <CardHeader className="pb-2 pt-4 px-4">
-              <CardTitle className="text-sm font-medium">產品總覽 <span className="text-xs font-normal text-muted-foreground">Grouped by product — click to expand variants</span></CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              {loading ? <Skeleton className="h-[400px] w-full" /> : (
-                <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
-                  <table className="w-full text-xs" data-testid="table-products">
-                    <thead className="sticky top-0 bg-card z-10">
-                      <tr className="border-b border-border/50 text-muted-foreground">
-                        <th className="py-2 w-5"></th>
-                        <th className="py-2 text-left font-medium">產品 Product</th>
-                        <th className="py-2 text-left font-medium">品牌 Vendor</th>
-                        <th className="py-2 text-left font-medium">顏色/款式 Color</th>
-                        <th className="py-2 text-left font-medium">尺碼 Size</th>
-                        <th className="py-2 text-right font-medium">型號數 Variants</th>
-                        <th className="py-2 text-right font-medium">總庫存 Total Stock</th>
-                        <th className="py-2 text-right font-medium">價格範圍 Price Range</th>
+          {loading ? <Skeleton className="h-[500px] w-full" /> : (
+            <div className="border border-border/50 rounded-lg overflow-hidden">
+              {/* Summary bar */}
+              <div className="flex items-center justify-between px-3 py-2 bg-muted/20 border-b border-border/50">
+                <span className="text-xs text-muted-foreground">
+                  顯示 <span className="font-medium text-foreground">{productGroups.length}</span> 個產品
+                  （<span className="font-medium text-foreground">{productGroups.reduce((s, g) => s + g.variantCount, 0)}</span> 個 SKU）
+                </span>
+                {productGroups.length > 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    庫存成本合計: <span className="font-medium text-foreground">
+                      {formatCurrency(productGroups.reduce((s, g) => s + g.stock_cost, 0))}
+                    </span>
+                  </span>
+                )}
+              </div>
+
+              {/* Scrollable table with sticky header */}
+              <div className="overflow-x-auto overflow-y-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
+                <table className="w-full text-xs" style={{ tableLayout: 'fixed' }} data-testid="table-products">
+                  <thead className="bg-muted/30 border-b border-border/50" style={{ position: 'sticky', top: 0, zIndex: 10 }}>
+                    <tr className="bg-muted/30">
+                      {/* Expand arrow */}
+                      <th className="text-left px-2 py-2 bg-muted/30" style={{ width: 32, minWidth: 32 }}></th>
+                      {/* 產品名稱 */}
+                      <th className="px-2 py-2 text-left bg-muted/30" style={{ width: 220 }}>
+                        <span className="text-[10px] font-medium text-muted-foreground whitespace-nowrap">產品名稱</span>
+                      </th>
+                      {/* 品牌 with filter */}
+                      <th className="px-2 py-2 text-left bg-muted/30" style={{ width: 100 }}>
+                        <FilterDropdown
+                          label="品牌"
+                          options={vendorOptions}
+                          selected={filters.vendors}
+                          onToggle={v => setFilters(f => ({ ...f, vendors: toggleFilter(f.vendors, v) }))}
+                        />
+                      </th>
+                      {/* 分類 with filter */}
+                      <th className="px-2 py-2 text-left bg-muted/30" style={{ width: 100 }}>
+                        <FilterDropdown
+                          label="分類"
+                          options={productTypeOptions}
+                          selected={filters.productTypes}
+                          onToggle={v => setFilters(f => ({ ...f, productTypes: toggleFilter(f.productTypes, v) }))}
+                        />
+                      </th>
+                      {/* 總存量 */}
+                      <th className="px-2 py-2 text-right bg-muted/30" style={{ width: 70 }}>
+                        <span
+                          className="cursor-pointer hover:text-foreground select-none text-[10px] font-medium text-muted-foreground whitespace-nowrap"
+                          onClick={() => handleProductSort('total_stock')}
+                        >
+                          總存量 <ProductSortIcon col="total_stock" />
+                        </span>
+                      </th>
+                      {/* 比較價 */}
+                      <th className="px-2 py-2 text-right bg-muted/30" style={{ width: 90 }}>
+                        <span className="text-[10px] font-medium text-muted-foreground whitespace-nowrap">比較價</span>
+                      </th>
+                      {/* 零售價 */}
+                      <th className="px-2 py-2 text-right bg-muted/30" style={{ width: 85 }}>
+                        <span className="text-[10px] font-medium text-muted-foreground whitespace-nowrap">零售價</span>
+                      </th>
+                      {/* 單件成本 */}
+                      <th className="px-2 py-2 text-right bg-muted/30" style={{ width: 80 }}>
+                        <span className="text-[10px] font-medium text-muted-foreground whitespace-nowrap">單件成本</span>
+                      </th>
+                      {/* 庫存成本 */}
+                      <th className="px-2 py-2 text-right bg-muted/30" style={{ width: 90 }}>
+                        <span
+                          className="cursor-pointer hover:text-foreground select-none text-[10px] font-medium text-muted-foreground whitespace-nowrap"
+                          onClick={() => handleProductSort('stock_cost')}
+                        >
+                          庫存成本 <ProductSortIcon col="stock_cost" />
+                        </span>
+                      </th>
+                      {/* 利潤% */}
+                      <th className="px-2 py-2 text-right bg-muted/30" style={{ width: 70 }}>
+                        <span
+                          className="cursor-pointer hover:text-foreground select-none text-[10px] font-medium text-muted-foreground whitespace-nowrap"
+                          onClick={() => handleProductSort('avg_margin')}
+                        >
+                          利潤% <ProductSortIcon col="avg_margin" />
+                        </span>
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody className="divide-y divide-border/30">
+                    {productGroups.length === 0 && (
+                      <tr>
+                        <td colSpan={10} className="text-center py-8 text-sm text-muted-foreground">
+                          <Package className="h-8 w-8 mx-auto mb-2 opacity-30" />
+                          無符合條件的產品
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {productGroups.map((pg) => {
-                        const isExpanded = expandedProduct === pg.title;
-                        const priceRange = pg.minPrice === pg.maxPrice
-                          ? formatCurrency(pg.minPrice)
-                          : `${formatCurrency(pg.minPrice)} – ${formatCurrency(pg.maxPrice)}`;
-                        return (
-                          <>
-                            <tr
-                              key={pg.title}
-                              className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer"
-                              onClick={() => setExpandedProduct(isExpanded ? null : pg.title)}
-                            >
-                              <td className="py-2 pl-1">
-                                {isExpanded
-                                  ? <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
-                                  : <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />}
-                              </td>
-                              <td className="py-2 font-medium max-w-[240px] truncate">{pg.title}</td>
-                              <td className="py-2 text-muted-foreground">{pg.vendor || '—'}</td>
-                              <td className="py-2 text-muted-foreground text-[10px]" colSpan={2}>{pg.productType || '—'}</td>
-                              <td className="py-2 text-right tabular-nums">
-                                {pg.variantCount}
-                                {pg.items.filter((v: any) => (v.inventory_quantity ?? 0) <= 0).length > 0 && (
-                                  <span className="text-[9px] text-muted-foreground ml-1">({pg.items.filter((v: any) => (v.inventory_quantity ?? 0) > 0).length} 有貨)</span>
-                                )}
-                              </td>
-                              <td className="py-2 text-right tabular-nums font-medium">{pg.totalStock}</td>
-                              <td className="py-2 text-right tabular-nums">{priceRange}</td>
-                            </tr>
-                            {isExpanded && pg.items.map((variant: any, vi: number) => {
-                              const varKey = variant.sku || `${pg.title}-v${vi}`;
-                              const sales60d = salesByProduct[variant.sku] || salesByProduct[variant.product_title];
-                              const parsed = parseVariantTitle(variant.variant_title);
-                              return (
-                                <tr key={varKey} className={`border-b border-border/10 bg-accent/10 ${(variant.inventory_quantity ?? 0) <= 0 ? 'opacity-50' : ''}`}>
-                                  <td className="py-1.5"></td>
-                                  <td className="py-1.5 pl-4 font-mono text-[10px] text-muted-foreground">{variant.sku || '—'}</td>
-                                  <td className="py-1.5 text-muted-foreground text-[11px]">{parsed.color || '—'}</td>
-                                  <td className="py-1.5 text-muted-foreground text-[11px]">{parsed.size || '—'}</td>
-                                  <td className="py-1.5 text-right tabular-nums text-[10px] text-muted-foreground">{sales60d ? `${sales60d.qty} sold` : '—'}</td>
-                                  <td className="py-1.5 text-right tabular-nums">{variant.inventory_quantity ?? 0}</td>
-                                  <td className="py-1.5 text-right tabular-nums">{formatCurrency(parseFloat(variant.price) || 0)}</td>
-                                </tr>
-                              );
-                            })}
-                          </>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                    )}
+                    {productGroups.map(pg => {
+                      const isExpanded = expandedProduct === pg.title;
+                      const extraZero = zeroStockVariants.get(pg.title) ?? [];
+                      const existingSkuSet = new Set(pg.items.map((s: any) => s.sku));
+                      const mergedItems = [...pg.items, ...extraZero.filter((z: any) => !existingSkuSet.has(z.sku))];
+                      const skuCount = mergedItems.length;
+                      const comparePriceRange = pg.minComparePrice > 0
+                        ? (pg.minComparePrice === pg.maxComparePrice ? formatCurrency(pg.minComparePrice) : `${formatCurrency(pg.minComparePrice)}–${formatCurrency(pg.maxComparePrice)}`)
+                        : '—';
+                      const retailPriceRange = pg.minPrice > 0
+                        ? (pg.minPrice === pg.maxPrice ? formatCurrency(pg.minPrice) : `${formatCurrency(pg.minPrice)}–${formatCurrency(pg.maxPrice)}`)
+                        : '—';
+                      const unitCostRange = pg.minUnitCost > 0
+                        ? (pg.minUnitCost === pg.maxUnitCost ? formatCurrency(pg.minUnitCost) : `${formatCurrency(pg.minUnitCost)}–${formatCurrency(pg.maxUnitCost)}`)
+                        : '—';
+
+                      return (
+                        <React.Fragment key={pg.title}>
+                          {/* ── Product group row ── */}
+                          <tr
+                            onClick={() => toggleProductGroup(pg.title)}
+                            className={`cursor-pointer transition-colors ${
+                              isExpanded
+                                ? 'bg-primary/5 border-l-2 border-l-primary'
+                                : 'hover:bg-muted/30'
+                            }`}
+                          >
+                            <td className="px-2 py-2 text-muted-foreground" style={{ width: 32, minWidth: 32 }}>
+                              {isExpanded
+                                ? <ChevronDown className="h-3.5 w-3.5" />
+                                : <ChevronRight className="h-3.5 w-3.5" />}
+                            </td>
+                            <td className="px-2 py-2" style={{ width: 220 }}>
+                              <div className="flex items-center gap-1.5">
+                                <span className="truncate font-medium" title={pg.title}>
+                                  {pg.title?.slice(0, 40)}{(pg.title?.length ?? 0) > 40 ? '…' : ''}
+                                </span>
+                                <span className="shrink-0 px-1.5 py-0 rounded bg-muted text-muted-foreground text-[9px] border border-border/40">
+                                  {skuCount} SKU
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-2 py-2 text-muted-foreground" style={{ width: 100 }}>{pg.vendor || '—'}</td>
+                            <td className="px-2 py-2 text-muted-foreground" style={{ width: 100 }}>{pg.productType || '—'}</td>
+                            <td className="px-2 py-2 text-right tabular-nums" style={{ width: 70 }}>{formatNumber(pg.totalStock)}</td>
+                            <td className="px-2 py-2 text-right tabular-nums text-[10px] text-muted-foreground" style={{ width: 90 }}>{comparePriceRange}</td>
+                            <td className="px-2 py-2 text-right tabular-nums text-[10px]" style={{ width: 85 }}>{retailPriceRange}</td>
+                            <td className="px-2 py-2 text-right tabular-nums text-[10px] text-muted-foreground" style={{ width: 80 }}>{unitCostRange}</td>
+                            <td className="px-2 py-2 text-right tabular-nums font-medium" style={{ width: 90 }}>{formatCurrency(pg.stock_cost)}</td>
+                            <td className="px-2 py-2 text-right" style={{ width: 70 }}>
+                              {pg.avg_margin != null
+                                ? <span className={`tabular-nums font-medium ${marginColorClass(pg.avg_margin)}`}>{pg.avg_margin.toFixed(1)}%</span>
+                                : <span className="text-muted-foreground">—</span>}
+                            </td>
+                          </tr>
+
+                          {/* ── Expanded variant rows (incl. 0-stock) ── */}
+                          {isExpanded && mergedItems.map((variant: any, vi: number) => {
+                            const varKey = variant.sku || `${pg.title}-v${vi}`;
+                            const isZeroStock = (variant.inventory_quantity ?? 0) <= 0;
+                            const parsed = parseVariantTitle(variant.variant_title);
+                            const bc = bcCostMap[variant.sku];
+                            const unitCost = bc ? bc.unitCost : 0;
+                            const price = parseFloat(variant.price) || 0;
+                            const comparePrice = variant.compare_at_price != null ? parseFloat(variant.compare_at_price) || 0 : 0;
+                            const stockCost = unitCost * Math.max(variant.inventory_quantity ?? 0, 0);
+                            const margin = computeMargin(price, unitCost);
+
+                            return (
+                              <tr
+                                key={varKey}
+                                className={`bg-muted/5 transition-colors hover:bg-muted/20 ${isZeroStock ? 'opacity-50' : ''}`}
+                              >
+                                <td className="px-2 py-1.5" style={{ width: 32, minWidth: 32 }}></td>
+                                <td className="px-2 py-1.5" style={{ width: 220 }}>
+                                  <div className="flex items-center gap-1.5 pl-4">
+                                    <span className="font-mono text-[10px] text-muted-foreground">{variant.sku || '—'}</span>
+                                    {parsed.color && <span className="text-[10px] text-foreground/70">{parsed.color}</span>}
+                                    {parsed.size && <span className="text-[10px] text-foreground/70">/ {parsed.size}</span>}
+                                  </div>
+                                </td>
+                                <td className="px-2 py-1.5 text-muted-foreground text-[10px]" style={{ width: 100 }}>{variant.vendor || '—'}</td>
+                                <td className="px-2 py-1.5 text-muted-foreground text-[10px]" style={{ width: 100 }}>{variant.product_type || '—'}</td>
+                                <td className="px-2 py-1.5 text-right tabular-nums text-[10px]" style={{ width: 70 }}>{formatNumber(variant.inventory_quantity ?? 0)}</td>
+                                <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-muted-foreground" style={{ width: 90 }}>
+                                  {comparePrice > 0 ? formatCurrency(comparePrice) : '—'}
+                                </td>
+                                <td className="px-2 py-1.5 text-right tabular-nums text-[10px]" style={{ width: 85 }}>{formatCurrency(price)}</td>
+                                <td className="px-2 py-1.5 text-right tabular-nums text-[10px] text-muted-foreground" style={{ width: 80 }}>
+                                  {unitCost > 0 ? formatCurrency(unitCost) : '—'}
+                                </td>
+                                <td className="px-2 py-1.5 text-right tabular-nums text-[10px]" style={{ width: 90 }}>{formatCurrency(stockCost)}</td>
+                                <td className="px-2 py-1.5 text-right" style={{ width: 70 }}>
+                                  {margin != null
+                                    ? <span className={`tabular-nums text-[10px] font-medium ${marginColorClass(margin)}`}>{margin.toFixed(1)}%</span>
+                                    : <span className="text-muted-foreground text-[10px]">—</span>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </TabsContent>
 
         {/* ═══ EVERGREEN TAB ═══ */}
