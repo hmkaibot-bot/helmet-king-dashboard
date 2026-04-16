@@ -4,7 +4,7 @@
  * Once logged in, hides itself and calls onSuccess.
  */
 import { useEffect, useState, useCallback } from 'react';
-import { getCaptcha, loginFoorir, getFoorirToken, checkSession } from '@/lib/foorir';
+import { getCaptcha, loginFoorir, getFoorirToken, checkSession, getCachedServerToken } from '@/lib/foorir';
 import { Card, CardContent } from '@/components/ui/card';
 import { Users, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
 
@@ -22,13 +22,21 @@ export function FoorirLogin({ onSuccess, compact = false }: Props) {
   const [connected, setConnected] = useState(false);
   const [checking, setChecking] = useState(true);
 
-  // Check existing session on mount
+  // Check existing session on mount — try local token first, then server-cached token
   useEffect(() => {
     (async () => {
+      // 1) Try local token (localStorage)
       if (getFoorirToken()) {
         const valid = await checkSession();
         if (valid) { setConnected(true); onSuccess(); setChecking(false); return; }
       }
+      // 2) Try server-cached token (Supabase Edge Function)
+      const serverToken = await getCachedServerToken();
+      if (serverToken) {
+        const valid = await checkSession();
+        if (valid) { setConnected(true); onSuccess(); setChecking(false); return; }
+      }
+      // 3) No valid token — show CAPTCHA
       setChecking(false);
       refreshCaptcha();
     })();

@@ -9,6 +9,10 @@ import JSEncrypt from 'jsencrypt';
 const BASE = 'https://vf.foorir.com/hx-api';
 const USERNAME = 'HMK';
 const PASSWORD = '12345678';
+
+// Supabase Edge Function proxy for server-side token caching
+const SUPABASE_URL = 'https://myrangmxyjamsupbxbba.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15cmFuZ214eWphbXN1cGJ4YmJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MzA0NjQsImV4cCI6MjA5MTMwNjQ2NH0.RmMZyuLZrddw7kL4y2qFY8XaI6zGXPx5D9xCi58-iSY';
 const RSA_PUBLIC_KEY =
   'MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBANL378k3RiZHWx5AfJqdH9xRNBmD9wGD' +
   '\n2iRe41HdTNF8RUhNnHit5NpMNtGL0NPTSSpPjjI1kJfVorRvaQerUgkCAwEAAQ==';
@@ -48,22 +52,59 @@ export interface FoorirKPIRow {
   yoy: number;        // YoY %
 }
 
-// ── Token management ──────────────────────────────────────────
+// ── Token management (localStorage for cross-session persistence) ─────
 let _token: string | null = null;
 
 export function getFoorirToken(): string | null {
   if (_token) return _token;
-  try { return sessionStorage.getItem('foorir_token'); } catch { return null; }
+  try { return localStorage.getItem('foorir_token'); } catch { return null; }
 }
 
 function setFoorirToken(t: string) {
   _token = t;
-  try { sessionStorage.setItem('foorir_token', t); } catch {}
+  try { localStorage.setItem('foorir_token', t); } catch {}
 }
 
 export function clearFoorirToken() {
   _token = null;
-  try { sessionStorage.removeItem('foorir_token'); } catch {}
+  try { localStorage.removeItem('foorir_token'); } catch {}
+}
+
+/** Try to get a cached token from server (Supabase Edge Function) */
+export async function getCachedServerToken(): Promise<string | null> {
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/functions/v1/foorir-proxy`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'x-foorir-action': 'get-cached-token',
+      },
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (data?.token) {
+      setFoorirToken(data.token);
+      return data.token;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Save token to server for cross-session persistence */
+async function saveTokenToServer(token: string): Promise<void> {
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/foorir-proxy`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        'x-foorir-action': 'save-token',
+      },
+      body: JSON.stringify({ token }),
+    });
+  } catch { /* best effort */ }
 }
 
 function authHeaders(): Record<string, string> {
@@ -103,6 +144,8 @@ export async function loginFoorir(code: string, uuid: string): Promise<{ ok: boo
     // Token from API may include "Bearer " prefix — strip it for storage
     const raw = data.token.replace(/^Bearer\s+/i, '');
     setFoorirToken(raw);
+    // Also cache server-side for cross-session persistence
+    saveTokenToServer(raw);
     return { ok: true, message: 'Login successful' };
   }
   return { ok: false, message: data.message || 'Login failed' };
@@ -123,10 +166,22 @@ export async function getKPI(period: FoorirPeriod = 'yesterday'): Promise<Foorir
     assignType: FOORIR_PERIODS[period],
     queryType: 'flowIn',  // primary metric
   });
-  const resp = await fetch(`${BASE}/home/keliukpi?${params}`, { headers: authHeaders() });
-  if (!resp.ok) { if (resp.status === 401) clearFoorirToken(); return null; }
-  const data = await resp.json();
-  return data?.data || data || null;
+  try {
+    const resp = await fetch(`${BASE}/home/keliukpi?${params}`, { headers: authHeaders() });
+    if (!resp.ok) {
+      if (resp.status === 401) clearFoorirToken();
+      console.warn('[Foorir] KPI fetch failed:', resp.status, resp.statusText);
+      return null;
+    }
+    const data = await resp.json();
+    console.log('[Foorir] KPI raw response:', JSON.stringify(data).slice(0, 300));
+    // API may nest under data.data, data, or return flat
+    const kpi = data?.data?.overview || data?.data || data;
+    return kpi || null;
+  } catch (e) {
+    console.error('[Foorir] KPI fetch error:', e);
+    return null;
+  }
 }
 
 /** Get KPI comparison data (has chainIndex + YoY for each period) */
