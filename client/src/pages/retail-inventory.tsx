@@ -793,7 +793,12 @@ export default function RetailInventoryPage() {
                               <td className="py-2 font-medium max-w-[240px] truncate">{pg.title}</td>
                               <td className="py-2 text-muted-foreground">{pg.vendor || '—'}</td>
                               <td className="py-2 text-muted-foreground text-[10px]" colSpan={2}>{pg.productType || '—'}</td>
-                              <td className="py-2 text-right tabular-nums">{pg.variantCount}</td>
+                              <td className="py-2 text-right tabular-nums">
+                                {pg.variantCount}
+                                {pg.items.filter((v: any) => (v.inventory_quantity ?? 0) <= 0).length > 0 && (
+                                  <span className="text-[9px] text-muted-foreground ml-1">({pg.items.filter((v: any) => (v.inventory_quantity ?? 0) > 0).length} 有貨)</span>
+                                )}
+                              </td>
                               <td className="py-2 text-right tabular-nums font-medium">{pg.totalStock}</td>
                               <td className="py-2 text-right tabular-nums">{priceRange}</td>
                             </tr>
@@ -802,7 +807,7 @@ export default function RetailInventoryPage() {
                               const sales60d = salesByProduct[variant.sku] || salesByProduct[variant.product_title];
                               const parsed = parseVariantTitle(variant.variant_title);
                               return (
-                                <tr key={varKey} className="border-b border-border/10 bg-accent/10">
+                                <tr key={varKey} className={`border-b border-border/10 bg-accent/10 ${(variant.inventory_quantity ?? 0) <= 0 ? 'opacity-50' : ''}`}>
                                   <td className="py-1.5"></td>
                                   <td className="py-1.5 pl-4 font-mono text-[10px] text-muted-foreground">{variant.sku || '—'}</td>
                                   <td className="py-1.5 text-muted-foreground text-[11px]">{parsed.color || '—'}</td>

@@ -507,7 +507,7 @@ export default function DeadStockPage() {
 
     const orderMap = new Map<string, { created_at: string; cancelled: boolean }>();
     for (const o of orders) {
-      orderMap.set(o.id, { created_at: o.created_at, cancelled: !!o.cancelled_at });
+      orderMap.set(String(o.id), { created_at: o.created_at, cancelled: !!o.cancelled_at });
     }
 
     const skuStats = new Map<string, { lastDate: number; firstDate: number; sold30: number; sold90: number }>();
@@ -515,7 +515,7 @@ export default function DeadStockPage() {
     const now90 = now - 90 * MS_PER_DAY;
 
     for (const line of orderLines) {
-      const ord = orderMap.get(line.order_id);
+      const ord = orderMap.get(String(line.order_id));
       if (!ord || ord.cancelled) continue;
       const ts = new Date(ord.created_at).getTime();
       if (isNaN(ts)) continue;
@@ -1088,9 +1088,12 @@ export default function DeadStockPage() {
         label: '比較價',
         align: 'right' as const,
         defaultWidth: 90,
-        renderGroup: (_group: ProductGroup) => (
-          <span className="text-muted-foreground">—</span>
-        ),
+        renderGroup: (group: ProductGroup) => {
+          const prices = group.skus.map(s => s.compare_at_price).filter((p): p is number => p != null && p > 0);
+          if (prices.length === 0) return <span className="text-muted-foreground">—</span>;
+          const min = Math.min(...prices), max = Math.max(...prices);
+          return <span className="tabular-nums text-[10px] text-muted-foreground">{min === max ? formatCurrency(min) : `${formatCurrency(min)}–${formatCurrency(max)}`}</span>;
+        },
         renderItem: (item: DeadStockItem) => (
           <span className="tabular-nums text-[10px] text-muted-foreground">
             {item.compare_at_price != null && item.compare_at_price > 0
@@ -1104,9 +1107,12 @@ export default function DeadStockPage() {
         label: '零售價',
         align: 'right' as const,
         defaultWidth: 85,
-        renderGroup: (_group: ProductGroup) => (
-          <span className="text-muted-foreground">—</span>
-        ),
+        renderGroup: (group: ProductGroup) => {
+          const prices = group.skus.map(s => s.price).filter(p => p > 0);
+          if (prices.length === 0) return <span className="text-muted-foreground">—</span>;
+          const min = Math.min(...prices), max = Math.max(...prices);
+          return <span className="tabular-nums text-[10px]">{min === max ? formatCurrency(min) : `${formatCurrency(min)}–${formatCurrency(max)}`}</span>;
+        },
         renderItem: (item: DeadStockItem) => (
           <span className="tabular-nums text-[10px]">{formatCurrency(item.price)}</span>
         ),
@@ -1116,9 +1122,12 @@ export default function DeadStockPage() {
         label: '單件成本',
         align: 'right' as const,
         defaultWidth: 80,
-        renderGroup: (_group: ProductGroup) => (
-          <span className="text-muted-foreground">—</span>
-        ),
+        renderGroup: (group: ProductGroup) => {
+          const costs = group.skus.map(s => s.unit_cost).filter(c => c > 0);
+          if (costs.length === 0) return <span className="text-muted-foreground">—</span>;
+          const min = Math.min(...costs), max = Math.max(...costs);
+          return <span className="tabular-nums text-[10px] text-muted-foreground">{min === max ? formatCurrency(min) : `${formatCurrency(min)}–${formatCurrency(max)}`}</span>;
+        },
         renderItem: (item: DeadStockItem) => (
           <span className="tabular-nums text-[10px]">{formatCurrency(item.unit_cost)}</span>
         ),

@@ -508,8 +508,8 @@ export default function DailyWeeklyPage() {
 
   // ── Yesterday products (enriched) ────────────────────────
   const yProducts = useMemo((): EnrichedProduct[] => {
-    const orderIds = new Set(yOrders.map((o: any) => o.id));
-    const lines = allOrderLines.filter((l: any) => orderIds.has(l.order_id));
+    const orderIds = new Set(yOrders.map((o: any) => String(o.id)));
+    const lines = allOrderLines.filter((l: any) => orderIds.has(String(l.order_id)));
     const map: Record<string, { title: string; sku: string; vendor: string; productType: string; qty: number; revenue: number }> = {};
     lines.forEach((l: any) => {
       const k = l.product_id ? String(l.product_id) : (l.title || 'unknown');
@@ -573,8 +573,8 @@ export default function DailyWeeklyPage() {
   }, [weekOrders]);
 
   const bestProduct = useMemo(() => {
-    const ids = new Set(weekOrders.map((o: any) => o.id));
-    const lines = allOrderLines.filter((l: any) => ids.has(l.order_id));
+    const ids = new Set(weekOrders.map((o: any) => String(o.id)));
+    const lines = allOrderLines.filter((l: any) => ids.has(String(l.order_id)));
     const pm: Record<string, { title: string; qty: number }> = {};
     lines.forEach((l: any) => {
       const k = l.title || String(l.product_id);
@@ -628,8 +628,8 @@ export default function DailyWeeklyPage() {
   }, [allOrders, lastYearOrders, wkBounds, prevWkBounds]);
 
   const weekTopProducts = useMemo(() => {
-    const ids = new Set(weekOrders.map((o: any) => o.id));
-    const lines = allOrderLines.filter((l: any) => ids.has(l.order_id));
+    const ids = new Set(weekOrders.map((o: any) => String(o.id)));
+    const lines = allOrderLines.filter((l: any) => ids.has(String(l.order_id)));
     const pm: Record<string, { title: string; qty: number; revenue: number }> = {};
     lines.forEach((l: any) => {
       const k = l.title || String(l.product_id);
@@ -642,8 +642,8 @@ export default function DailyWeeklyPage() {
 
   // Week category breakdown (for table) — with per-product items for expand
   const weekCatBreakdown = useMemo(() => {
-    const ids = new Set(weekOrders.map((o: any) => o.id));
-    const lines = allOrderLines.filter((l: any) => ids.has(l.order_id));
+    const ids = new Set(weekOrders.map((o: any) => String(o.id)));
+    const lines = allOrderLines.filter((l: any) => ids.has(String(l.order_id)));
     const cm: Record<string, { type: string; qty: number; revenue: number; brands: Set<string>; skus: number; items: Record<string, { title: string; vendor: string; qty: number; revenue: number }> }> = {};
     lines.forEach((l: any) => {
       const type = l.product_type || productTypeMap[String(l.product_id)] || 'Other';
@@ -723,9 +723,9 @@ export default function DailyWeeklyPage() {
   const [expandedBrands, setExpandedBrands] = useState<Set<string>>(new Set());
   const brandComparison = useMemo(() => {
     const dayBefore = (() => { const d = new Date(yesterday + 'T00:00:00'); d.setDate(d.getDate() - 1); return toDateStr(d); })();
-    const yOrderIds = new Set(yOrders.map((o: any) => o.id));
+    const yOrderIds = new Set(yOrders.map((o: any) => String(o.id)));
     const dbOrders = filterOrders(allOrders, dayBefore, dayBefore);
-    const dbOrderIds = new Set(dbOrders.map((o: any) => o.id));
+    const dbOrderIds = new Set(dbOrders.map((o: any) => String(o.id)));
 
     type ItemDetail = { title: string; qty: number; revenue: number };
     const yBrands: Record<string, { qty: number; revenue: number; items: Record<string, ItemDetail> }> = {};
@@ -736,7 +736,7 @@ export default function DailyWeeklyPage() {
       const qty = l.quantity || 0;
       const rev = (parseFloat(l.price) || 0) * qty;
       const title = l.title || 'unknown';
-      if (yOrderIds.has(l.order_id)) {
+      if (yOrderIds.has(String(l.order_id))) {
         if (!yBrands[vendor]) yBrands[vendor] = { qty: 0, revenue: 0, items: {} };
         yBrands[vendor].qty += qty;
         yBrands[vendor].revenue += rev;
@@ -744,7 +744,7 @@ export default function DailyWeeklyPage() {
         yBrands[vendor].items[title].qty += qty;
         yBrands[vendor].items[title].revenue += rev;
       }
-      if (dbOrderIds.has(l.order_id)) {
+      if (dbOrderIds.has(String(l.order_id))) {
         if (!dbBrands[vendor]) dbBrands[vendor] = { qty: 0, revenue: 0, items: {} };
         dbBrands[vendor].qty += qty;
         dbBrands[vendor].revenue += rev;
