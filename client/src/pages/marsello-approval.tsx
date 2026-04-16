@@ -268,13 +268,13 @@ export default function MarselloApprovalPage() {
         let autoRejectReason: string | null = null;
         const lines = invoiceLinesByNumber[inv.number] || [];
 
-        // Rule 1: Contains "Receipt in advance - 26Pack" item
-        const has26Pack = lines.some((l: any) => {
+        // Rule 1: Contains "Receipt in advance" item (any type — 26Pack, Motorcycle, etc.)
+        const hasReceiptInAdvance = lines.some((l: any) => {
           const desc = (l.description || '').toLowerCase();
-          return desc.includes('receipt in advance') && desc.includes('26pack');
+          return desc.includes('receipt in advance');
         });
-        if (has26Pack) {
-          autoRejectReason = '含有 Receipt in advance - 26Pack 項目';
+        if (hasReceiptInAdvance) {
+          autoRejectReason = '含有 Receipt in advance 項目';
         }
 
         // Rule 2: Has invoice discount (any line with discount_amount > 0)
@@ -401,11 +401,29 @@ export default function MarselloApprovalPage() {
   async function refreshMatching() {
     setScanning(true);
     try {
-      // Re-fetch latest Marsello + BC customer data
-      const [marselloCustomers, bcCustomers] = await Promise.all([
+      // Re-fetch latest Marsello + BC customer data + invoice lines for auto-reject
+      const pendingItems = queue.filter(q => q.status === 'pending');
+      const pendingInvoiceNumbers = pendingItems.map(q => q.bc_invoice_number).filter(Boolean);
+
+      const [marselloCustomers, bcCustomers, ...invoiceLineBatches] = await Promise.all([
         queryAllPages('marsello_customers', 'id,email,first_name,last_name,phone,loyalty_points'),
         queryAllPages('bc_customers', 'number,display_name,phone_number,email'),
+        // Fetch invoice lines in batches for auto-reject checks
+        ...Array.from({ length: Math.ceil(pendingInvoiceNumbers.length / 50) }, (_, i) =>
+          supabase.from('bc_invoice_lines')
+            .select('invoice_number,description,item_number,discount_amount')
+            .in('invoice_number', pendingInvoiceNumbers.slice(i * 50, (i + 1) * 50))
+            .then(r => r.data || [])
+        ),
       ]);
+
+      // Group invoice lines by invoice number
+      const allInvLines: any[] = invoiceLineBatches.flat();
+      const invoiceLinesByNumber: Record<string, any[]> = {};
+      for (const line of allInvLines) {
+        if (!invoiceLinesByNumber[line.invoice_number]) invoiceLinesByNumber[line.invoice_number] = [];
+        invoiceLinesByNumber[line.invoice_number].push(line);
+      }
 
       // Build lookup maps
       const bcPhoneMap: Record<string, string> = {};
@@ -424,11 +442,42 @@ export default function MarselloApprovalPage() {
         if (m.email) marselloByEmail[m.email.toLowerCase().trim()] = m;
       });
 
-      // Re-match all pending items (especially unmatched ones)
-      const pendingItems = queue.filter(q => q.status === 'pending');
+      // Re-match all pending items (especially unmatched ones) + apply auto-reject rules
       let updatedCount = 0;
+      let autoRejectedCount = 0;
 
       for (const item of pendingItems) {
+        // Auto-reject checks first
+        let autoRejectReason: string | null = null;
+        const lines = invoiceLinesByNumber[item.bc_invoice_number] || [];
+
+        // Rule 1: Contains "Receipt in advance" item
+        const hasReceiptInAdvance = lines.some((l: any) => {
+          const desc = (l.description || '').toLowerCase();
+          return desc.includes('receipt in advance');
+        });
+        if (hasReceiptInAdvance) {
+          autoRejectReason = '含有 Receipt in advance 項目';
+        }
+
+        // Rule 2: Has invoice discount
+        if (!autoRejectReason) {
+          const totalDiscount = lines.reduce((sum: number, l: any) => sum + (parseFloat(l.discount_amount) || 0), 0);
+          if (totalDiscount > 0) {
+            autoRejectReason = `發票含折扣 (Invoice Discount: HK$${totalDiscount.toFixed(0)})`;
+          }
+        }
+
+        if (autoRejectReason) {
+          await supabase.from('garage_marsello_queue').update({
+            status: 'rejected',
+            notes: `[自動拒絕] ${autoRejectReason}`,
+          }).eq('id', item.id);
+          autoRejectedCount++;
+          continue;
+        }
+
+        // Re-match customer
         let matched: MarselloCustomer | null = null;
         let matchType: MatchType = 'unmatched';
         const custNum = item.bc_customer_number || '';
@@ -477,8 +526,9 @@ export default function MarselloApprovalPage() {
       await loadQueue();
       alert(
         `✅ 已重新匹配 ${pendingItems.length} 個待審批項目。\n` +
-        `更新了 ${updatedCount} 個匹配結果。\n\n` +
-        `(Refreshed ${pendingItems.length} pending items, ${updatedCount} updated)`
+        `更新了 ${updatedCount} 個匹配結果。\n` +
+        `自動拒絕: ${autoRejectedCount} 個 (Receipt in advance / 折扣)\n\n` +
+        `(Refreshed ${pendingItems.length} pending items, ${updatedCount} updated, ${autoRejectedCount} auto-rejected)`
       );
     } catch (e) {
       console.error('Refresh matching error:', e);
