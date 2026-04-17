@@ -227,6 +227,7 @@ export default function DailyWeeklyPage() {
   const [productTypeMap, setProductTypeMap] = useState<Record<string, string>>({});
   const [expandedCats, setExpandedCats] = useState<Set<string> | 'all'>('all');
   const [foorirData, setFoorirData] = useState<FoorirKPI | null>(null);
+  const [foorirWeekly, setFoorirWeekly] = useState<FoorirKPI | null>(null);
   const [foorirConnected, setFoorirConnected] = useState(false);
   const [weather, setWeather] = useState<{
     temp: number | null;
@@ -413,6 +414,10 @@ export default function DailyWeeklyPage() {
   const yAov  = yOrders.length  > 0 ? yRevenue  / yOrders.length  : 0;
   const lwAov = lwOrders.length > 0 ? lwRevenue / lwOrders.length : 0;
   const calcDelta = (curr: number, prev: number) => prev === 0 ? null : ((curr - prev) / prev) * 100;
+
+  // ── This week orders (for foot traffic weekly comparison) ──
+  const twOrders  = useMemo(() => filterOrders(allOrders, thisWeek.from, thisWeek.to), [allOrders, thisWeek, filterOrders]);
+  const twRevenue = useMemo(() => twOrders.reduce((s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0), [twOrders]);
 
   // ── Channel breakdown (from shopify source_name) ───────────
   const channelBreakdown = useMemo(() => {
@@ -944,8 +949,12 @@ export default function DailyWeeklyPage() {
             compact
             onSuccess={async () => {
               setFoorirConnected(true);
-              const data = await getKPI('yesterday');
-              if (data) setFoorirData(data);
+              const [dayData, weekData] = await Promise.all([
+                getKPI('yesterday'),
+                getKPI('this_week'),
+              ]);
+              if (dayData) setFoorirData(dayData);
+              if (weekData) setFoorirWeekly(weekData);
             }}
           />
           {foorirConnected && !foorirData && (
@@ -960,60 +969,65 @@ export default function DailyWeeklyPage() {
               <CardHeader className="pb-2 pt-3 px-4">
                 <CardTitle className="text-sm font-medium flex items-center gap-2">
                   <Users className="h-3.5 w-3.5 text-cyan-400" />
-                  昨日客流
-                  <span className="text-xs font-normal text-muted-foreground">Foot Traffic — {yesterday}</span>
+                  客流總覽
+                  <span className="text-xs font-normal text-muted-foreground">Foot Traffic — 昨日 vs 本週</span>
                 </CardTitle>
               </CardHeader>
               <CardContent className="px-4 pb-4">
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  {[
-                    { label: '進店人數', sublabel: 'Entered', value: foorirData.flowIn, color: 'text-cyan-400', ratioKey: 'flowIn' as const, isPercent: false },
-                    { label: '路過人數', sublabel: 'Passerby', value: foorirData.flowPassby, color: 'text-blue-400', ratioKey: 'flowPassby' as const, isPercent: false },
-                    { label: '團體客', sublabel: 'Groups', value: foorirData.batch, color: 'text-purple-400', ratioKey: 'batch' as const, isPercent: false },
-                    {
-                      label: '轉化率',
-                      sublabel: 'Conversion',
-                      value: foorirData.flowIn > 0 ? ((yOrders.length / foorirData.flowIn) * 100) : 0,
-                      color: 'text-green-400',
-                      isPercent: true,
-                      ratioKey: undefined as undefined | 'flowIn' | 'flowPassby' | 'batch' | 'adult' | 'children',
-                    },
-                  ].map((m, i) => {
-                    const ratio = m.ratioKey ? foorirData.ratios?.[m.ratioKey] : undefined;
-                    const wow = ratio?.chainRelativeRatio;
-                    const wowNum = wow ? parseFloat(wow) : null;
-                    return (
+                  {(() => {
+                    const wk = foorirWeekly;
+                    const wkConversion = wk && wk.flowIn > 0 ? ((twOrders.length / wk.flowIn) * 100) : 0;
+                    const yConversion = foorirData.flowIn > 0 ? ((yOrders.length / foorirData.flowIn) * 100) : 0;
+                    return [
+                      { label: '進店人數', sublabel: 'Entered', yVal: foorirData.flowIn, wVal: wk?.flowIn ?? null, color: 'text-cyan-400', isPercent: false },
+                      { label: '路過人數', sublabel: 'Passerby', yVal: foorirData.flowPassby, wVal: wk?.flowPassby ?? null, color: 'text-blue-400', isPercent: false },
+                      { label: '團體客', sublabel: 'Groups', yVal: foorirData.batch, wVal: wk?.batch ?? null, color: 'text-purple-400', isPercent: false },
+                      { label: '轉化率', sublabel: 'Conversion', yVal: yConversion, wVal: wkConversion, color: 'text-green-400', isPercent: true },
+                    ].map((m, i) => (
                       <div key={i} className="rounded-lg border border-border/30 bg-accent/20 p-3">
                         <p className={`text-[11px] font-medium ${m.color}`}>{m.label}</p>
                         <p className="text-xs text-muted-foreground mb-1">{m.sublabel}</p>
-                        <p className="text-lg font-bold tabular-nums">
-                          {m.isPercent
-                            ? `${m.value.toFixed(1)}%`
-                            : formatNumber(m.value)}
-                        </p>
-                        {wowNum !== null && (
-                          <span className={`inline-flex items-center gap-0.5 text-[10px] font-medium mt-1 ${wowNum >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                            {wowNum >= 0 ? <ArrowUp className="h-2.5 w-2.5" /> : <ArrowDown className="h-2.5 w-2.5" />}
-                            {wow} WoW
-                          </span>
-                        )}
+                        <div className="flex items-end gap-2">
+                          <div>
+                            <p className="text-[9px] text-muted-foreground">昨日</p>
+                            <p className="text-lg font-bold tabular-nums">
+                              {m.isPercent ? `${m.yVal.toFixed(1)}%` : formatNumber(m.yVal)}
+                            </p>
+                          </div>
+                          {m.wVal !== null && (
+                            <div className="border-l border-border/30 pl-2">
+                              <p className="text-[9px] text-muted-foreground">本週</p>
+                              <p className="text-sm font-semibold tabular-nums text-muted-foreground">
+                                {m.isPercent ? `${m.wVal.toFixed(1)}%` : formatNumber(m.wVal)}
+                              </p>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    );
-                  })}
+                    ));
+                  })()}
                 </div>
                 {foorirData.flowIn > 0 && (
                   <div className="mt-3 grid grid-cols-3 gap-3 text-[11px]">
                     <div className="rounded border border-border/20 p-2 text-center">
                       <p className="text-muted-foreground">每客消費</p>
                       <p className="font-semibold tabular-nums">{formatCurrency(yRevenue / foorirData.flowIn)}</p>
+                      {foorirWeekly && foorirWeekly.flowIn > 0 && (
+                        <p className="text-[10px] text-muted-foreground mt-0.5">本週 {formatCurrency(twRevenue / foorirWeekly.flowIn)}</p>
+                      )}
                     </div>
                     <div className="rounded border border-border/20 p-2 text-center">
                       <p className="text-muted-foreground">成人</p>
                       <p className="font-semibold tabular-nums">{formatNumber(foorirData.adult)}</p>
+                      {foorirWeekly && <p className="text-[10px] text-muted-foreground mt-0.5">本週 {formatNumber(foorirWeekly.adult)}</p>}
                     </div>
                     <div className="rounded border border-border/20 p-2 text-center">
                       <p className="text-muted-foreground">兒童</p>
                       <p className="font-semibold tabular-nums">{foorirData.children > 0 ? formatNumber(foorirData.children) : '—'}</p>
+                      {foorirWeekly && foorirWeekly.children > 0 && (
+                        <p className="text-[10px] text-muted-foreground mt-0.5">本週 {formatNumber(foorirWeekly.children)}</p>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1028,24 +1042,38 @@ export default function DailyWeeklyPage() {
             const orders = yOrders.length;
             const rev = yRevenue;
 
-            // Funnel metrics
+            // Weekly data
+            const wk = foorirWeekly;
+            const wkFlowIn = wk?.flowIn ?? 0;
+            const wkFlowPassby = wk?.flowPassby ?? 0;
+            const wkOrderCount = twOrders.length;
+            const wkRev = twRevenue;
+
+            // Funnel metrics — yesterday
             const enterRate = flowPassby > 0 ? (flowIn / flowPassby * 100) : null;
             const orderRate = flowIn > 0 ? (orders / flowIn * 100) : null;
             const aov = orders > 0 ? rev / orders : null;
             const revenuePerVisitor = flowIn > 0 ? rev / flowIn : 0;
             const nonConvertPct = flowIn > 0 ? ((flowIn - orders) / flowIn * 100) : 0;
 
-            // Funnel bar widths (relative to largest stage)
-            const funnelMax = Math.max(flowPassby, flowIn, orders, 1);
+            // Funnel metrics — this week
+            const wkEnterRate = wkFlowPassby > 0 ? (wkFlowIn / wkFlowPassby * 100) : null;
+            const wkOrderRate = wkFlowIn > 0 ? (wkOrderCount / wkFlowIn * 100) : null;
+            const wkAov = wkOrderCount > 0 ? wkRev / wkOrderCount : null;
+            const wkRevenuePerVisitor = wkFlowIn > 0 ? wkRev / wkFlowIn : 0;
+            const wkNonConvertPct = wkFlowIn > 0 ? ((wkFlowIn - wkOrderCount) / wkFlowIn * 100) : 0;
+
+            // Funnel bar widths (relative to largest stage across both periods)
+            const funnelMax = Math.max(flowPassby, flowIn, orders, wkFlowPassby, wkFlowIn, wkOrderCount, 1);
             const funnelStages = [
-              { label: '路過', sublabel: 'Passby', value: flowPassby, color: 'bg-blue-500', textColor: 'text-blue-400' },
-              { label: '進店', sublabel: 'Entered', value: flowIn, color: 'bg-cyan-500', textColor: 'text-cyan-400' },
-              { label: '下單', sublabel: 'Orders', value: orders, color: 'bg-green-500', textColor: 'text-green-400' },
+              { label: '路過', sublabel: 'Passby', yVal: flowPassby, wVal: wkFlowPassby, color: 'bg-blue-500', textColor: 'text-blue-400' },
+              { label: '進店', sublabel: 'Entered', yVal: flowIn, wVal: wkFlowIn, color: 'bg-cyan-500', textColor: 'text-cyan-400' },
+              { label: '下單', sublabel: 'Orders', yVal: orders, wVal: wkOrderCount, color: 'bg-green-500', textColor: 'text-green-400' },
             ];
             const funnelRates = [
-              { label: '進店率', value: enterRate, suffix: '%' },
-              { label: '下單率', value: orderRate, suffix: '%' },
-              { label: '客單價', value: aov, suffix: '', isCurrency: true },
+              { label: '進店率', yVal: enterRate, wVal: wkEnterRate, suffix: '%' },
+              { label: '下單率', yVal: orderRate, wVal: wkOrderRate, suffix: '%' },
+              { label: '客單價', yVal: aov, wVal: wkAov, suffix: '', isCurrency: true },
             ];
 
             // Time segment analysis: group yOrders by HK hour
@@ -1056,19 +1084,24 @@ export default function DailyWeeklyPage() {
               const h = hkt.getHours();
               hourCounts[h] = (hourCounts[h] || 0) + 1;
             });
+            // Weekly hour distribution
+            const wkHourCounts: Record<number, number> = {};
+            twOrders.forEach((o: any) => {
+              const d = new Date(o.created_at);
+              const hkt = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
+              const h = hkt.getHours();
+              wkHourCounts[h] = (wkHourCounts[h] || 0) + 1;
+            });
             const hourData = Array.from({ length: 24 }, (_, h) => ({
               hour: h,
               count: hourCounts[h] || 0,
+              wkCount: wkHourCounts[h] || 0,
             }));
-            const maxHourCount = Math.max(...hourData.map(h => h.count), 1);
-            const peakHours = hourData.filter(h => h.count === maxHourCount && h.count > 0);
+            const maxHourCount = Math.max(...hourData.map(h => Math.max(h.count, h.wkCount)), 1);
+            const peakHours = hourData.filter(h => h.count === Math.max(...hourData.map(x => x.count)) && h.count > 0);
             const peakSummary = peakHours.length > 0
-              ? `${peakHours.map(h => `${String(h.hour).padStart(2, '0')}:00`).join(', ')} (${maxHourCount} 單)`
+              ? `${peakHours.map(h => `${String(h.hour).padStart(2, '0')}:00`).join(', ')} (${peakHours[0].count} 單)`
               : '—';
-
-            // WoW ratios for funnel
-            const wowFlowIn = foorirData.ratios?.flowIn?.chainRelativeRatio;
-            const wowPassby = foorirData.ratios?.flowPassby?.chainRelativeRatio;
 
             return (
               <div className="space-y-3">
@@ -1078,14 +1111,20 @@ export default function DailyWeeklyPage() {
                     <CardTitle className="text-sm font-medium flex items-center gap-2">
                       <TrendingUp className="h-3.5 w-3.5 text-green-400" />
                       轉化漏斗
-                      <span className="text-xs font-normal text-muted-foreground">Conversion Funnel — {yesterday}</span>
+                      <span className="text-xs font-normal text-muted-foreground">Conversion Funnel — 昨日 vs 本週</span>
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="px-4 pb-4">
+                    {/* Legend */}
+                    <div className="flex items-center gap-4 mb-3 text-[10px]">
+                      <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-cyan-500 opacity-70" /> 昨日</span>
+                      <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-cyan-500 opacity-30" /> 本週</span>
+                    </div>
                     {/* Funnel visualization */}
                     <div className="space-y-2">
                       {funnelStages.map((stage, idx) => {
-                        const widthPct = funnelMax > 0 ? Math.max((stage.value / funnelMax) * 100, 2) : 2;
+                        const yWidthPct = funnelMax > 0 ? Math.max((stage.yVal / funnelMax) * 100, 2) : 2;
+                        const wWidthPct = funnelMax > 0 ? Math.max((stage.wVal / funnelMax) * 100, 2) : 2;
                         return (
                           <div key={stage.label}>
                             <div className="flex items-center gap-3">
@@ -1093,49 +1132,46 @@ export default function DailyWeeklyPage() {
                                 <p className={`text-[11px] font-semibold ${stage.textColor}`}>{stage.label}</p>
                                 <p className="text-[9px] text-muted-foreground">{stage.sublabel}</p>
                               </div>
-                              <div className="flex-1 relative">
-                                <div
-                                  className={`${stage.color}/20 rounded-r h-8 flex items-center transition-all`}
-                                  style={{ width: `${widthPct}%` }}
-                                >
-                                  <div
-                                    className={`${stage.color} rounded-r h-8 flex items-center px-2`}
-                                    style={{ width: '100%', opacity: 0.7 }}
-                                  >
-                                    <span className="text-xs font-bold text-white tabular-nums drop-shadow">
-                                      {formatNumber(stage.value)}
-                                    </span>
+                              <div className="flex-1 space-y-0.5">
+                                {/* Yesterday bar */}
+                                <div className={`${stage.color}/20 rounded-r h-4 flex items-center transition-all`} style={{ width: `${yWidthPct}%` }}>
+                                  <div className={`${stage.color} rounded-r h-4 flex items-center px-2`} style={{ width: '100%', opacity: 0.7 }}>
+                                    <span className="text-[10px] font-bold text-white tabular-nums drop-shadow">{formatNumber(stage.yVal)}</span>
                                   </div>
                                 </div>
-                              </div>
-                              {/* WoW for first two stages */}
-                              <div className="w-16 shrink-0 text-right">
-                                {idx === 0 && wowPassby && (
-                                  <span className={`text-[10px] font-medium ${parseFloat(wowPassby) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                    {wowPassby} WoW
-                                  </span>
-                                )}
-                                {idx === 1 && wowFlowIn && (
-                                  <span className={`text-[10px] font-medium ${parseFloat(wowFlowIn) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                    {wowFlowIn} WoW
-                                  </span>
+                                {/* Weekly bar */}
+                                {wk && (
+                                  <div className={`${stage.color}/10 rounded-r h-3 flex items-center transition-all`} style={{ width: `${wWidthPct}%` }}>
+                                    <div className={`${stage.color} rounded-r h-3 flex items-center px-2`} style={{ width: '100%', opacity: 0.3 }}>
+                                      <span className="text-[9px] font-semibold text-white/80 tabular-nums drop-shadow">{formatNumber(stage.wVal)}</span>
+                                    </div>
+                                  </div>
                                 )}
                               </div>
+                              <div className="w-16 shrink-0 text-right" />
                             </div>
                             {/* Arrow + conversion rate between stages */}
                             {idx < funnelRates.length && (
                               <div className="flex items-center gap-3 my-1">
                                 <div className="w-14" />
-                                <div className="flex items-center gap-1.5 text-[10px] text-amber-400">
-                                  <span>↓</span>
-                                  <span className="font-medium">
-                                    {funnelRates[idx].label}:{' '}
-                                    {funnelRates[idx].value !== null
+                                <div className="flex items-center gap-3 text-[10px]">
+                                  <span className="text-amber-400">↓</span>
+                                  <span className="font-medium text-amber-400">
+                                    {funnelRates[idx].label}: 昨日{' '}
+                                    {funnelRates[idx].yVal !== null
                                       ? funnelRates[idx].isCurrency
-                                        ? formatCurrency(funnelRates[idx].value!)
-                                        : `${funnelRates[idx].value!.toFixed(1)}${funnelRates[idx].suffix}`
+                                        ? formatCurrency(funnelRates[idx].yVal!)
+                                        : `${funnelRates[idx].yVal!.toFixed(1)}${funnelRates[idx].suffix}`
                                       : '—'}
                                   </span>
+                                  {wk && funnelRates[idx].wVal !== null && (
+                                    <span className="font-medium text-muted-foreground">
+                                      本週{' '}
+                                      {funnelRates[idx].isCurrency
+                                        ? formatCurrency(funnelRates[idx].wVal!)
+                                        : `${funnelRates[idx].wVal!.toFixed(1)}${funnelRates[idx].suffix}`}
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                             )}
@@ -1148,12 +1184,19 @@ export default function DailyWeeklyPage() {
                           <p className="text-[11px] font-semibold text-emerald-400">消費額</p>
                           <p className="text-[9px] text-muted-foreground">Revenue</p>
                         </div>
-                        <div className="flex-1">
-                          <div className="bg-emerald-500/20 rounded-r h-8 flex items-center px-3" style={{ width: '60%' }}>
-                            <span className="text-xs font-bold text-emerald-400 tabular-nums">
-                              {formatCurrency(rev)}
+                        <div className="flex-1 space-y-0.5">
+                          <div className="bg-emerald-500/20 rounded-r h-4 flex items-center px-3" style={{ width: '60%' }}>
+                            <span className="text-[10px] font-bold text-emerald-400 tabular-nums">
+                              昨日 {formatCurrency(rev)}
                             </span>
                           </div>
+                          {wk && (
+                            <div className="bg-emerald-500/10 rounded-r h-3 flex items-center px-3" style={{ width: '60%' }}>
+                              <span className="text-[9px] font-semibold text-emerald-400/60 tabular-nums">
+                                本週 {formatCurrency(wkRev)}
+                              </span>
+                            </div>
+                          )}
                         </div>
                         <div className="w-16" />
                       </div>
@@ -1168,9 +1211,20 @@ export default function DailyWeeklyPage() {
                     <CardContent className="px-4 py-3">
                       <p className="text-[11px] font-medium text-cyan-400">每客消費</p>
                       <p className="text-[9px] text-muted-foreground mb-1">Revenue per Visitor</p>
-                      <p className="text-xl font-bold tabular-nums">{formatCurrency(revenuePerVisitor)}</p>
+                      <div className="flex items-end gap-2">
+                        <div>
+                          <p className="text-[9px] text-muted-foreground">昨日</p>
+                          <p className="text-xl font-bold tabular-nums">{formatCurrency(revenuePerVisitor)}</p>
+                        </div>
+                        {wk && wkFlowIn > 0 && (
+                          <div className="border-l border-border/30 pl-2">
+                            <p className="text-[9px] text-muted-foreground">本週</p>
+                            <p className="text-sm font-semibold tabular-nums text-muted-foreground">{formatCurrency(wkRevenuePerVisitor)}</p>
+                          </div>
+                        )}
+                      </div>
                       <p className="text-[10px] text-muted-foreground mt-1">
-                        = {formatCurrency(rev)} ÷ {formatNumber(flowIn)} 人
+                        昨日 = {formatCurrency(rev)} ÷ {formatNumber(flowIn)} 人
                       </p>
                       {revenuePerVisitor < (aov || 0) * 0.3 && (
                         <p className="text-[10px] text-amber-400 mt-1.5">
@@ -1185,9 +1239,20 @@ export default function DailyWeeklyPage() {
                     <CardContent className="px-4 py-3">
                       <p className="text-[11px] font-medium text-green-400">客單價</p>
                       <p className="text-[9px] text-muted-foreground mb-1">Average Order Value</p>
-                      <p className="text-xl font-bold tabular-nums">{aov !== null ? formatCurrency(aov) : '—'}</p>
+                      <div className="flex items-end gap-2">
+                        <div>
+                          <p className="text-[9px] text-muted-foreground">昨日</p>
+                          <p className="text-xl font-bold tabular-nums">{aov !== null ? formatCurrency(aov) : '—'}</p>
+                        </div>
+                        {wk && wkAov !== null && (
+                          <div className="border-l border-border/30 pl-2">
+                            <p className="text-[9px] text-muted-foreground">本週</p>
+                            <p className="text-sm font-semibold tabular-nums text-muted-foreground">{formatCurrency(wkAov)}</p>
+                          </div>
+                        )}
+                      </div>
                       <p className="text-[10px] text-muted-foreground mt-1">
-                        = {formatCurrency(rev)} ÷ {orders} 單
+                        昨日 = {formatCurrency(rev)} ÷ {orders} 單
                       </p>
                     </CardContent>
                   </Card>
@@ -1197,8 +1262,19 @@ export default function DailyWeeklyPage() {
                     <CardContent className="px-4 py-3">
                       <p className="text-[11px] font-medium text-amber-400">未轉化比例</p>
                       <p className="text-[9px] text-muted-foreground mb-1">Non-converting Visitors</p>
-                      <p className="text-xl font-bold tabular-nums">{nonConvertPct.toFixed(1)}%</p>
-                      {/* Progress bar */}
+                      <div className="flex items-end gap-2">
+                        <div>
+                          <p className="text-[9px] text-muted-foreground">昨日</p>
+                          <p className="text-xl font-bold tabular-nums">{nonConvertPct.toFixed(1)}%</p>
+                        </div>
+                        {wk && wkFlowIn > 0 && (
+                          <div className="border-l border-border/30 pl-2">
+                            <p className="text-[9px] text-muted-foreground">本週</p>
+                            <p className="text-sm font-semibold tabular-nums text-muted-foreground">{wkNonConvertPct.toFixed(1)}%</p>
+                          </div>
+                        )}
+                      </div>
+                      {/* Progress bar — yesterday */}
                       <div className="mt-2 w-full h-2 bg-green-500/20 rounded-full overflow-hidden">
                         <div
                           className="h-full bg-amber-500/70 rounded-full transition-all"
@@ -1206,19 +1282,40 @@ export default function DailyWeeklyPage() {
                         />
                       </div>
                       <div className="flex justify-between text-[9px] text-muted-foreground mt-0.5">
-                        <span>已轉化 {orders}</span>
+                        <span>昨日已轉化 {orders}</span>
                         <span>未轉化 {flowIn - orders}</span>
                       </div>
+                      {/* Progress bar — weekly */}
+                      {wk && wkFlowIn > 0 && (
+                        <>
+                          <div className="mt-1.5 w-full h-1.5 bg-green-500/10 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-amber-500/40 rounded-full transition-all"
+                              style={{ width: `${Math.min(wkNonConvertPct, 100)}%` }}
+                            />
+                          </div>
+                          <div className="flex justify-between text-[9px] text-muted-foreground/60 mt-0.5">
+                            <span>本週已轉化 {wkOrderCount}</span>
+                            <span>未轉化 {wkFlowIn - wkOrderCount}</span>
+                          </div>
+                        </>
+                      )}
                     </CardContent>
                   </Card>
                 </div>
 
                 {/* Insight line */}
-                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-2.5">
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-2.5 space-y-1">
                   <p className="text-[11px] text-amber-300">
-                    💡 昨日 {formatNumber(flowIn)} 人進店，僅 {orders} 人下單，{nonConvertPct.toFixed(1)}% 客人未消費
+                    昨日 {formatNumber(flowIn)} 人進店，僅 {orders} 人下單，{nonConvertPct.toFixed(1)}% 客人未消費
                     {aov !== null && ` — 客單價 ${formatCurrency(aov)}`}
                   </p>
+                  {wk && wkFlowIn > 0 && (
+                    <p className="text-[11px] text-amber-300/70">
+                      本週 {formatNumber(wkFlowIn)} 人進店，{wkOrderCount} 人下單，{wkNonConvertPct.toFixed(1)}% 未消費
+                      {wkAov !== null && ` — 客單價 ${formatCurrency(wkAov)}`}
+                    </p>
+                  )}
                 </div>
 
                 {/* ── Module 3: Time Segment Analysis ─────────── */}
@@ -1226,40 +1323,60 @@ export default function DailyWeeklyPage() {
                   <CardHeader className="pb-2 pt-3 px-4">
                     <CardTitle className="text-sm font-medium flex items-center gap-2">
                       <Zap className="h-3.5 w-3.5 text-amber-400" />
-                      昨日訂單時段分佈
-                      <span className="text-xs font-normal text-muted-foreground">Order Time Distribution — {yesterday}</span>
+                      訂單時段分佈
+                      <span className="text-xs font-normal text-muted-foreground">Order Time Distribution — 昨日 vs 本週</span>
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="px-4 pb-4">
-                    {orders === 0 ? (
-                      <p className="text-xs text-muted-foreground text-center py-4">昨日無訂單</p>
+                    {orders === 0 && wkOrderCount === 0 ? (
+                      <p className="text-xs text-muted-foreground text-center py-4">暫無訂單數據</p>
                     ) : (
                       <>
                         {/* Peak hour summary */}
                         <div className="mb-3 rounded border border-green-500/20 bg-green-500/5 px-3 py-2">
                           <p className="text-[11px] text-green-400 font-medium">
-                            銷售高峰 Peak Hours: {peakSummary}
+                            昨日銷售高峰: {peakSummary}
                           </p>
                         </div>
-                        {/* Hourly bar chart */}
+                        {/* Legend */}
+                        <div className="flex items-center gap-4 mb-2 text-[10px]">
+                          <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-cyan-500/60" /> 昨日</span>
+                          <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-purple-500/40" /> 本週</span>
+                        </div>
+                        {/* Hourly bar chart — overlaid */}
                         <div className="flex items-end gap-[3px] h-28">
                           {hourData.map(h => {
-                            const barH = maxHourCount > 0 ? (h.count / maxHourCount) * 100 : 0;
-                            const isPeak = h.count === maxHourCount && h.count > 0;
+                            const yBarH = maxHourCount > 0 ? (h.count / maxHourCount) * 100 : 0;
+                            const wBarH = maxHourCount > 0 ? (h.wkCount / maxHourCount) * 100 : 0;
+                            const yPeak = h.count === Math.max(...hourData.map(x => x.count)) && h.count > 0;
                             return (
-                              <div key={h.hour} className="flex-1 flex flex-col items-center justify-end h-full group relative">
-                                {h.count > 0 && (
-                                  <span className="text-[8px] tabular-nums text-muted-foreground mb-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    {h.count}
-                                  </span>
-                                )}
-                                <div
-                                  className={`w-full rounded-t transition-all ${
-                                    isPeak ? 'bg-green-500' : h.count > 0 ? 'bg-cyan-500/60' : 'bg-border/20'
-                                  }`}
-                                  style={{ height: `${Math.max(barH, h.count > 0 ? 4 : 1)}%` }}
-                                  title={`${String(h.hour).padStart(2, '0')}:00 — ${h.count} 單`}
-                                />
+                              <div key={h.hour} className="flex-1 flex items-end justify-center h-full group relative gap-[1px]">
+                                {/* Yesterday bar */}
+                                <div className="flex-1 flex flex-col items-center justify-end h-full">
+                                  {h.count > 0 && (
+                                    <span className="text-[7px] tabular-nums text-muted-foreground mb-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      {h.count}
+                                    </span>
+                                  )}
+                                  <div
+                                    className={`w-full rounded-t transition-all ${yPeak ? 'bg-green-500' : h.count > 0 ? 'bg-cyan-500/60' : 'bg-border/20'}`}
+                                    style={{ height: `${Math.max(yBarH, h.count > 0 ? 4 : 1)}%` }}
+                                    title={`${String(h.hour).padStart(2, '0')}:00 — 昨日 ${h.count} 單`}
+                                  />
+                                </div>
+                                {/* Weekly bar */}
+                                <div className="flex-1 flex flex-col items-center justify-end h-full">
+                                  {h.wkCount > 0 && (
+                                    <span className="text-[7px] tabular-nums text-purple-400/60 mb-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      {h.wkCount}
+                                    </span>
+                                  )}
+                                  <div
+                                    className={`w-full rounded-t transition-all ${h.wkCount > 0 ? 'bg-purple-500/40' : 'bg-transparent'}`}
+                                    style={{ height: `${Math.max(wBarH, h.wkCount > 0 ? 4 : 0)}%` }}
+                                    title={`${String(h.hour).padStart(2, '0')}:00 — 本週 ${h.wkCount} 單`}
+                                  />
+                                </div>
                               </div>
                             );
                           })}
