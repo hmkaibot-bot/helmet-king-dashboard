@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { queryAll, queryWithDateRange } from '@/lib/query-helpers';
+import { queryAll, queryAllPages, queryWithDateRange } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
@@ -204,7 +204,7 @@ async function fetchAllInventory(): Promise<any[]> {
   while (true) {
     const { data } = await supabase
       .from('shopify_inventory')
-      .select('variant_id, product_id, product_title, variant_title, sku, price, inventory_quantity, vendor, product_type')
+      .select('variant_id, product_id, product_title, variant_title, sku, price, compare_at_price, inventory_quantity, vendor, product_type')
       .gt('price', 0)
       .range(from, from + pageSize - 1);
     if (!data || data.length === 0) break;
@@ -422,12 +422,12 @@ export default function RetailInventoryPage() {
       try {
         const [inv, bcInv, purchaseLines, purchaseInvoices, orderLines, orders, shopifyProducts] = await Promise.all([
           fetchAllInventory(),
-          queryAll('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code', undefined, 50000),
-          queryAll('bc_purchase_invoice_lines', 'invoice_id,invoice_number,item_number,quantity,unit_cost', undefined, 50000),
-          queryAll('bc_purchase_invoices', 'id,posting_date,number', undefined, 50000),
-          queryAll('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity', undefined, 50000),
-          queryAll('shopify_orders', 'id,created_at,financial_status,cancelled_at', undefined, 50000),
-          queryAll('shopify_products', 'id,status,created_at', undefined, 50000),
+          queryAllPages('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code'),
+          queryAllPages('bc_purchase_invoice_lines', 'invoice_id,invoice_number,item_number,quantity,unit_cost'),
+          queryAllPages('bc_purchase_invoices', 'id,posting_date,number'),
+          queryAllPages('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity'),
+          queryAllPages('shopify_orders', 'id,created_at,financial_status,cancelled_at'),
+          queryAllPages('shopify_products', 'id,status,created_at'),
         ]);
         if (cancelled) return;
 
@@ -815,8 +815,8 @@ export default function RetailInventoryPage() {
         <TabsList className="grid w-full grid-cols-7 h-9" data-testid="inventory-tabs">
           <TabsTrigger value="overview" className="text-xs">概覽 Overview</TabsTrigger>
           <TabsTrigger value="products" className="text-xs">產品總覽 Products</TabsTrigger>
-          <TabsTrigger value="evergreen" className="text-xs">常規 Evergreen</TabsTrigger>
-          <TabsTrigger value="seasonal" className="text-xs">季節性 Seasonal</TabsTrigger>
+          <TabsTrigger value="evergreen" className="text-xs">車件/消耗品</TabsTrigger>
+          <TabsTrigger value="seasonal" className="text-xs">人身部品</TabsTrigger>
           <TabsTrigger value="brand" className="text-xs">按品牌 By Brand</TabsTrigger>
           <TabsTrigger value="value" className="text-xs">按價值 By Value</TabsTrigger>
           <TabsTrigger value="dead" className="text-xs">死貨 Dead Stock</TabsTrigger>
@@ -1204,8 +1204,8 @@ export default function RetailInventoryPage() {
                           const isExpanded = expandedSku === rowKey;
                           const proc = procurementByItem[i.sku];
                           return (
-                            <>
-                              <tr key={rowKey} className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer" onClick={() => toggleExpand(rowKey)}>
+                            <React.Fragment key={rowKey}>
+                              <tr className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer" onClick={() => toggleExpand(rowKey)}>
                                 <td className="py-2 pl-1"><ExpandIcon sku={rowKey} /></td>
                                 <td className="py-2 max-w-[200px] truncate">{i.product_title}</td>
                                 <td className="py-2 font-mono text-[11px]">{i.sku || '—'}</td>
@@ -1221,7 +1221,7 @@ export default function RetailInventoryPage() {
                                 </td>
                               </tr>
                               {isExpanded && proc && <ProcurementRow procurement={proc} colSpan={9} />}
-                            </>
+                            </React.Fragment>
                           );
                         })}
                     </tbody>
@@ -1275,8 +1275,8 @@ export default function RetailInventoryPage() {
                           const isExpanded = expandedSku === rowKey;
                           const proc = procurementByItem[i.sku];
                           return (
-                            <>
-                              <tr key={rowKey} className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer" onClick={() => toggleExpand(rowKey)}>
+                            <React.Fragment key={rowKey}>
+                              <tr className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer" onClick={() => toggleExpand(rowKey)}>
                                 <td className="py-2 pl-1"><ExpandIcon sku={rowKey} /></td>
                                 <td className="py-2 max-w-[200px] truncate">{i.product_title}</td>
                                 <td className="py-2 font-mono text-[11px]">{i.sku || '—'}</td>
@@ -1292,7 +1292,7 @@ export default function RetailInventoryPage() {
                                 </td>
                               </tr>
                               {isExpanded && proc && <ProcurementRow procurement={proc} colSpan={9} />}
-                            </>
+                            </React.Fragment>
                           );
                         })}
                     </tbody>
@@ -1325,8 +1325,8 @@ export default function RetailInventoryPage() {
                     </thead>
                     <tbody>
                       {brandData.map((b) => (
-                        <>
-                          <tr key={b.brand} className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer" onClick={() => setExpandedBrand(expandedBrand === b.brand ? null : b.brand)}>
+                        <React.Fragment key={b.brand}>
+                          <tr className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer" onClick={() => setExpandedBrand(expandedBrand === b.brand ? null : b.brand)}>
                             <td className="py-2 font-medium">{b.brand}</td>
                             <td className="py-2 text-right tabular-nums">{b.skus}</td>
                             <td className="py-2 text-right tabular-nums">{formatNumber(b.stock)}</td>
@@ -1341,9 +1341,8 @@ export default function RetailInventoryPage() {
                               ? formatCurrency(pg.minPrice)
                               : `${formatCurrency(pg.minPrice)} – ${formatCurrency(pg.maxPrice)}`;
                             return (
-                              <>
+                              <React.Fragment key={pgKey}>
                                 <tr
-                                  key={pgKey}
                                   className="border-b border-border/10 bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer"
                                   onClick={(e) => { e.stopPropagation(); setExpandedProduct(isPgExpanded ? null : pgKey); }}
                                 >
@@ -1370,10 +1369,10 @@ export default function RetailInventoryPage() {
                                     </tr>
                                   );
                                 })}
-                              </>
+                              </React.Fragment>
                             );
                           })}
-                        </>
+                        </React.Fragment>
                       ))}
                     </tbody>
                   </table>
@@ -1414,8 +1413,8 @@ export default function RetailInventoryPage() {
                         const isExpanded = expandedSku === rowKey;
                         const proc = procurementByItem[d.sku];
                         return (
-                          <>
-                            <tr key={rowKey} className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer" onClick={() => toggleExpand(rowKey)}>
+                          <React.Fragment key={rowKey}>
+                            <tr className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer" onClick={() => toggleExpand(rowKey)}>
                               <td className="py-2 pl-1"><ExpandIcon sku={rowKey} /></td>
                               <td className="py-2 max-w-[180px] truncate">{d.product}</td>
                               <td className="py-2 font-mono text-[11px]">{d.sku || '—'}</td>
@@ -1435,7 +1434,7 @@ export default function RetailInventoryPage() {
                               </td>
                             </tr>
                             {isExpanded && proc && <ProcurementRow procurement={proc} colSpan={11} />}
-                          </>
+                          </React.Fragment>
                         );
                       })}
                     </tbody>
@@ -1487,8 +1486,8 @@ export default function RetailInventoryPage() {
                         const isExpanded = expandedSku === rowKey;
                         const proc = procurementByItem[d.sku];
                         return (
-                          <>
-                            <tr key={rowKey} className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer" onClick={() => toggleExpand(rowKey)}>
+                          <React.Fragment key={rowKey}>
+                            <tr className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer" onClick={() => toggleExpand(rowKey)}>
                               <td className="py-2 pl-1"><ExpandIcon sku={rowKey} /></td>
                               <td className="py-2">
                                 {d.status === 'DEAD' ? (
@@ -1513,7 +1512,7 @@ export default function RetailInventoryPage() {
                               <td className="py-2 text-[10px]">{d.action}</td>
                             </tr>
                             {isExpanded && proc && <ProcurementRow procurement={proc} colSpan={12} />}
-                          </>
+                          </React.Fragment>
                         );
                       })}
                     </tbody>
