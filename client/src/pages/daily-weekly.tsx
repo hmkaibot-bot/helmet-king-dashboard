@@ -1016,6 +1016,272 @@ export default function DailyWeeklyPage() {
             </Card>
           )}
 
+          {/* ── Foot Traffic Analytics (3 modules) ────────────── */}
+          {foorirConnected && foorirData && foorirData.flowIn > 0 && (() => {
+            const flowIn = foorirData.flowIn;
+            const flowPassby = foorirData.flowPassby;
+            const orders = yOrders.length;
+            const rev = yRevenue;
+
+            // Funnel metrics
+            const enterRate = flowPassby > 0 ? (flowIn / flowPassby * 100) : null;
+            const orderRate = flowIn > 0 ? (orders / flowIn * 100) : null;
+            const aov = orders > 0 ? rev / orders : null;
+            const revenuePerVisitor = flowIn > 0 ? rev / flowIn : 0;
+            const nonConvertPct = flowIn > 0 ? ((flowIn - orders) / flowIn * 100) : 0;
+
+            // Funnel bar widths (relative to largest stage)
+            const funnelMax = Math.max(flowPassby, flowIn, orders, 1);
+            const funnelStages = [
+              { label: '路過', sublabel: 'Passby', value: flowPassby, color: 'bg-blue-500', textColor: 'text-blue-400' },
+              { label: '進店', sublabel: 'Entered', value: flowIn, color: 'bg-cyan-500', textColor: 'text-cyan-400' },
+              { label: '下單', sublabel: 'Orders', value: orders, color: 'bg-green-500', textColor: 'text-green-400' },
+            ];
+            const funnelRates = [
+              { label: '進店率', value: enterRate, suffix: '%' },
+              { label: '下單率', value: orderRate, suffix: '%' },
+              { label: '客單價', value: aov, suffix: '', isCurrency: true },
+            ];
+
+            // Time segment analysis: group yOrders by HK hour
+            const hourCounts: Record<number, number> = {};
+            yOrders.forEach((o: any) => {
+              const d = new Date(o.created_at);
+              const hkt = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
+              const h = hkt.getHours();
+              hourCounts[h] = (hourCounts[h] || 0) + 1;
+            });
+            const hourData = Array.from({ length: 24 }, (_, h) => ({
+              hour: h,
+              count: hourCounts[h] || 0,
+            }));
+            const maxHourCount = Math.max(...hourData.map(h => h.count), 1);
+            const peakHours = hourData.filter(h => h.count === maxHourCount && h.count > 0);
+            const peakSummary = peakHours.length > 0
+              ? `${peakHours.map(h => `${String(h.hour).padStart(2, '0')}:00`).join(', ')} (${maxHourCount} 單)`
+              : '—';
+
+            // WoW ratios for funnel
+            const wowFlowIn = foorirData.ratios?.flowIn?.chainRelativeRatio;
+            const wowPassby = foorirData.ratios?.flowPassby?.chainRelativeRatio;
+
+            return (
+              <div className="space-y-3">
+                {/* ── Module 1: Conversion Funnel ──────────────── */}
+                <Card className="border-border/40">
+                  <CardHeader className="pb-2 pt-3 px-4">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <TrendingUp className="h-3.5 w-3.5 text-green-400" />
+                      轉化漏斗
+                      <span className="text-xs font-normal text-muted-foreground">Conversion Funnel — {yesterday}</span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4">
+                    {/* Funnel visualization */}
+                    <div className="space-y-2">
+                      {funnelStages.map((stage, idx) => {
+                        const widthPct = funnelMax > 0 ? Math.max((stage.value / funnelMax) * 100, 2) : 2;
+                        return (
+                          <div key={stage.label}>
+                            <div className="flex items-center gap-3">
+                              <div className="w-14 shrink-0 text-right">
+                                <p className={`text-[11px] font-semibold ${stage.textColor}`}>{stage.label}</p>
+                                <p className="text-[9px] text-muted-foreground">{stage.sublabel}</p>
+                              </div>
+                              <div className="flex-1 relative">
+                                <div
+                                  className={`${stage.color}/20 rounded-r h-8 flex items-center transition-all`}
+                                  style={{ width: `${widthPct}%` }}
+                                >
+                                  <div
+                                    className={`${stage.color} rounded-r h-8 flex items-center px-2`}
+                                    style={{ width: '100%', opacity: 0.7 }}
+                                  >
+                                    <span className="text-xs font-bold text-white tabular-nums drop-shadow">
+                                      {formatNumber(stage.value)}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                              {/* WoW for first two stages */}
+                              <div className="w-16 shrink-0 text-right">
+                                {idx === 0 && wowPassby && (
+                                  <span className={`text-[10px] font-medium ${parseFloat(wowPassby) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    {wowPassby} WoW
+                                  </span>
+                                )}
+                                {idx === 1 && wowFlowIn && (
+                                  <span className={`text-[10px] font-medium ${parseFloat(wowFlowIn) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    {wowFlowIn} WoW
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            {/* Arrow + conversion rate between stages */}
+                            {idx < funnelRates.length && (
+                              <div className="flex items-center gap-3 my-1">
+                                <div className="w-14" />
+                                <div className="flex items-center gap-1.5 text-[10px] text-amber-400">
+                                  <span>↓</span>
+                                  <span className="font-medium">
+                                    {funnelRates[idx].label}:{' '}
+                                    {funnelRates[idx].value !== null
+                                      ? funnelRates[idx].isCurrency
+                                        ? formatCurrency(funnelRates[idx].value!)
+                                        : `${funnelRates[idx].value!.toFixed(1)}${funnelRates[idx].suffix}`
+                                      : '—'}
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {/* Revenue row (final stage) */}
+                      <div className="flex items-center gap-3">
+                        <div className="w-14 shrink-0 text-right">
+                          <p className="text-[11px] font-semibold text-emerald-400">消費額</p>
+                          <p className="text-[9px] text-muted-foreground">Revenue</p>
+                        </div>
+                        <div className="flex-1">
+                          <div className="bg-emerald-500/20 rounded-r h-8 flex items-center px-3" style={{ width: '60%' }}>
+                            <span className="text-xs font-bold text-emerald-400 tabular-nums">
+                              {formatCurrency(rev)}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="w-16" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* ── Module 2: Spend per Visitor & AOV ────────── */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {/* Revenue per Visitor */}
+                  <Card className="border-border/40">
+                    <CardContent className="px-4 py-3">
+                      <p className="text-[11px] font-medium text-cyan-400">每客消費</p>
+                      <p className="text-[9px] text-muted-foreground mb-1">Revenue per Visitor</p>
+                      <p className="text-xl font-bold tabular-nums">{formatCurrency(revenuePerVisitor)}</p>
+                      <p className="text-[10px] text-muted-foreground mt-1">
+                        = {formatCurrency(rev)} ÷ {formatNumber(flowIn)} 人
+                      </p>
+                      {revenuePerVisitor < (aov || 0) * 0.3 && (
+                        <p className="text-[10px] text-amber-400 mt-1.5">
+                          ⚠ 每客消費偏低，多數訪客未消費
+                        </p>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Average Order Value */}
+                  <Card className="border-border/40">
+                    <CardContent className="px-4 py-3">
+                      <p className="text-[11px] font-medium text-green-400">客單價</p>
+                      <p className="text-[9px] text-muted-foreground mb-1">Average Order Value</p>
+                      <p className="text-xl font-bold tabular-nums">{aov !== null ? formatCurrency(aov) : '—'}</p>
+                      <p className="text-[10px] text-muted-foreground mt-1">
+                        = {formatCurrency(rev)} ÷ {orders} 單
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  {/* Non-converting visitors */}
+                  <Card className="border-border/40">
+                    <CardContent className="px-4 py-3">
+                      <p className="text-[11px] font-medium text-amber-400">未轉化比例</p>
+                      <p className="text-[9px] text-muted-foreground mb-1">Non-converting Visitors</p>
+                      <p className="text-xl font-bold tabular-nums">{nonConvertPct.toFixed(1)}%</p>
+                      {/* Progress bar */}
+                      <div className="mt-2 w-full h-2 bg-green-500/20 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-amber-500/70 rounded-full transition-all"
+                          style={{ width: `${Math.min(nonConvertPct, 100)}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[9px] text-muted-foreground mt-0.5">
+                        <span>已轉化 {orders}</span>
+                        <span>未轉化 {flowIn - orders}</span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Insight line */}
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-2.5">
+                  <p className="text-[11px] text-amber-300">
+                    💡 昨日 {formatNumber(flowIn)} 人進店，僅 {orders} 人下單，{nonConvertPct.toFixed(1)}% 客人未消費
+                    {aov !== null && ` — 客單價 ${formatCurrency(aov)}`}
+                  </p>
+                </div>
+
+                {/* ── Module 3: Time Segment Analysis ─────────── */}
+                <Card className="border-border/40">
+                  <CardHeader className="pb-2 pt-3 px-4">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <Zap className="h-3.5 w-3.5 text-amber-400" />
+                      昨日訂單時段分佈
+                      <span className="text-xs font-normal text-muted-foreground">Order Time Distribution — {yesterday}</span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4 pb-4">
+                    {orders === 0 ? (
+                      <p className="text-xs text-muted-foreground text-center py-4">昨日無訂單</p>
+                    ) : (
+                      <>
+                        {/* Peak hour summary */}
+                        <div className="mb-3 rounded border border-green-500/20 bg-green-500/5 px-3 py-2">
+                          <p className="text-[11px] text-green-400 font-medium">
+                            銷售高峰 Peak Hours: {peakSummary}
+                          </p>
+                        </div>
+                        {/* Hourly bar chart */}
+                        <div className="flex items-end gap-[3px] h-28">
+                          {hourData.map(h => {
+                            const barH = maxHourCount > 0 ? (h.count / maxHourCount) * 100 : 0;
+                            const isPeak = h.count === maxHourCount && h.count > 0;
+                            return (
+                              <div key={h.hour} className="flex-1 flex flex-col items-center justify-end h-full group relative">
+                                {h.count > 0 && (
+                                  <span className="text-[8px] tabular-nums text-muted-foreground mb-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    {h.count}
+                                  </span>
+                                )}
+                                <div
+                                  className={`w-full rounded-t transition-all ${
+                                    isPeak ? 'bg-green-500' : h.count > 0 ? 'bg-cyan-500/60' : 'bg-border/20'
+                                  }`}
+                                  style={{ height: `${Math.max(barH, h.count > 0 ? 4 : 1)}%` }}
+                                  title={`${String(h.hour).padStart(2, '0')}:00 — ${h.count} 單`}
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {/* Hour labels */}
+                        <div className="flex gap-[3px] mt-1">
+                          {hourData.map(h => (
+                            <div key={h.hour} className="flex-1 text-center">
+                              <span className={`text-[7px] tabular-nums ${
+                                h.hour % 3 === 0 ? 'text-muted-foreground' : 'text-transparent'
+                              }`}>
+                                {String(h.hour).padStart(2, '0')}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-[10px] text-muted-foreground mt-2 text-center">
+                          ※ 此為 Shopify 訂單創建時間分佈，非客流進店時間
+                        </p>
+                      </>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            );
+          })()}
+
           {/* ── Brand Monthly Sales (MTD) ─────────────────────── */}
           <BrandMonthlySales
             allOrders={allOrders}
