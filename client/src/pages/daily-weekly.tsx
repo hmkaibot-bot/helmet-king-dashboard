@@ -943,6 +943,13 @@ export default function DailyWeeklyPage() {
               if (data) setFoorirData(data);
             }}
           />
+          {foorirConnected && !foorirData && (
+            <Card className="border-border/40">
+              <CardContent className="px-4 py-3">
+                <p className="text-xs text-muted-foreground text-center">客流數據暫時無法取得</p>
+              </CardContent>
+            </Card>
+          )}
           {foorirConnected && foorirData && (
             <Card className="border-border/40">
               <CardHeader className="pb-2 pt-3 px-4">

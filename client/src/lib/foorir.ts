@@ -167,7 +167,7 @@ export async function getKPI(period: FoorirPeriod = 'yesterday'): Promise<Foorir
     queryType: 'flowIn',  // primary metric
   });
   try {
-    const resp = await fetch(`${BASE}/home/keliukpi?${params}`, { headers: authHeaders() });
+    const resp = await fetch(`${BASE}/home/statistical?${params}`, { headers: authHeaders() });
     if (!resp.ok) {
       if (resp.status === 401) clearFoorirToken();
       console.warn('[Foorir] KPI fetch failed:', resp.status, resp.statusText);
@@ -175,8 +175,7 @@ export async function getKPI(period: FoorirPeriod = 'yesterday'): Promise<Foorir
     }
     const data = await resp.json();
     console.log('[Foorir] KPI raw response:', JSON.stringify(data).slice(0, 300));
-    // API may nest under data.data, data, or return flat
-    const kpi = data?.data?.overview || data?.data || data;
+    const kpi = data?.data || data;
     return kpi || null;
   } catch (e) {
     console.error('[Foorir] KPI fetch error:', e);
