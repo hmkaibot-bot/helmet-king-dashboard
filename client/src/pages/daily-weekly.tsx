@@ -90,6 +90,11 @@ function toHKDateStr(isoStr: string): string {
   const hk = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
   return toDateStr(hk);
 }
+function toHKHour(isoStr: string): number {
+  const d = new Date(isoStr);
+  const hk = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
+  return hk.getHours();
+}
 
 // ── Stock Risk ────────────────────────────────────────────────
 function computeRisk(stock: number | null, velocity: number): { risk: StockRisk; days: number | null } {
@@ -400,8 +405,8 @@ export default function DailyWeeklyPage() {
     return vMap;
   }, [allOrderLines]);
 
-  // ── Yesterday orders ──────────────────────────────────────
-  const yOrders  = useMemo(() => filterOrders(allOrders, yesterday, yesterday),  [allOrders, yesterday, filterOrders]);
+  // ── Yesterday orders (截止 18:00 HKT) ─────────────────────
+  const yOrders  = useMemo(() => filterOrders(allOrders, yesterday, yesterday).filter((o: any) => toHKHour(o.created_at) < 18),  [allOrders, yesterday, filterOrders]);
   const lwOrders = useMemo(() => filterOrders(allOrders, sameDayLW, sameDayLW),  [allOrders, sameDayLW,  filterOrders]);
   const yRevenue  = useMemo(() => yOrders.reduce( (s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0), [yOrders]);
   const lwRevenue = useMemo(() => lwOrders.reduce((s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0), [lwOrders]);
