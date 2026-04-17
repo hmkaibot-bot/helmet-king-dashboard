@@ -17,7 +17,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { FoorirLogin } from '@/components/foorir-login';
-import { getFoorirToken, getKPI, type FoorirKPI, type FoorirPeriod } from '@/lib/foorir';
+import { getFoorirToken, getKPI, type FoorirKPI } from '@/lib/foorir';
 import { PromoPerformance } from '@/components/promo-performance';
 import { BrandMonthlySales } from '@/components/brand-monthly-sales';
 
@@ -962,27 +962,39 @@ export default function DailyWeeklyPage() {
               <CardContent className="px-4 pb-4">
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   {[
-                    { label: '進店人數', sublabel: 'Entered', value: foorirData.flowIn, color: 'text-cyan-400' },
-                    { label: '路過人數', sublabel: 'Passerby', value: foorirData.flowPassby, color: 'text-blue-400' },
-                    { label: '團體客', sublabel: 'Groups', value: foorirData.batch, color: 'text-purple-400' },
+                    { label: '進店人數', sublabel: 'Entered', value: foorirData.flowIn, color: 'text-cyan-400', ratioKey: 'flowIn' as const, isPercent: false },
+                    { label: '路過人數', sublabel: 'Passerby', value: foorirData.flowPassby, color: 'text-blue-400', ratioKey: 'flowPassby' as const, isPercent: false },
+                    { label: '團體客', sublabel: 'Groups', value: foorirData.batch, color: 'text-purple-400', ratioKey: 'batch' as const, isPercent: false },
                     {
                       label: '轉化率',
                       sublabel: 'Conversion',
                       value: foorirData.flowIn > 0 ? ((yOrders.length / foorirData.flowIn) * 100) : 0,
                       color: 'text-green-400',
                       isPercent: true,
+                      ratioKey: undefined as undefined | 'flowIn' | 'flowPassby' | 'batch' | 'adult' | 'children',
                     },
-                  ].map((m, i) => (
-                    <div key={i} className="rounded-lg border border-border/30 bg-accent/20 p-3">
-                      <p className={`text-[11px] font-medium ${m.color}`}>{m.label}</p>
-                      <p className="text-xs text-muted-foreground mb-1">{m.sublabel}</p>
-                      <p className="text-lg font-bold tabular-nums">
-                        {'isPercent' in m && m.isPercent
-                          ? `${(m.value as number).toFixed(1)}%`
-                          : formatNumber(m.value)}
-                      </p>
-                    </div>
-                  ))}
+                  ].map((m, i) => {
+                    const ratio = m.ratioKey ? foorirData.ratios?.[m.ratioKey] : undefined;
+                    const wow = ratio?.chainRelativeRatio;
+                    const wowNum = wow ? parseFloat(wow) : null;
+                    return (
+                      <div key={i} className="rounded-lg border border-border/30 bg-accent/20 p-3">
+                        <p className={`text-[11px] font-medium ${m.color}`}>{m.label}</p>
+                        <p className="text-xs text-muted-foreground mb-1">{m.sublabel}</p>
+                        <p className="text-lg font-bold tabular-nums">
+                          {m.isPercent
+                            ? `${m.value.toFixed(1)}%`
+                            : formatNumber(m.value)}
+                        </p>
+                        {wowNum !== null && (
+                          <span className={`inline-flex items-center gap-0.5 text-[10px] font-medium mt-1 ${wowNum >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {wowNum >= 0 ? <ArrowUp className="h-2.5 w-2.5" /> : <ArrowDown className="h-2.5 w-2.5" />}
+                            {wow} WoW
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
                 {foorirData.flowIn > 0 && (
                   <div className="mt-3 grid grid-cols-3 gap-3 text-[11px]">
@@ -995,8 +1007,8 @@ export default function DailyWeeklyPage() {
                       <p className="font-semibold tabular-nums">{formatNumber(foorirData.adult)}</p>
                     </div>
                     <div className="rounded border border-border/20 p-2 text-center">
-                      <p className="text-muted-foreground">平均停留</p>
-                      <p className="font-semibold tabular-nums">{foorirData.averageDwellTime > 0 ? `${Math.round(foorirData.averageDwellTime)}分` : '—'}</p>
+                      <p className="text-muted-foreground">兒童</p>
+                      <p className="font-semibold tabular-nums">{foorirData.children > 0 ? formatNumber(foorirData.children) : '—'}</p>
                     </div>
                   </div>
                 )}
