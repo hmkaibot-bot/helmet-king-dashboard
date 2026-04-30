@@ -1,0 +1,43 @@
+name: Daily Shopify Backfill
+
+# 備援 n8n workflow — 每天從 Shopify 直接補回最近 7 天的訂單與 line items
+# n8n 排程模式經常拿不到 line_items，這個 job 確保資料一定會進到 Supabase。
+
+on:
+  schedule:
+    # 每天 HKT 早上 7:00 = UTC 23:00（前一天）
+    # 比 n8n 的 6am HKT 晚 1 小時，讓 n8n 先跑、我們再補
+    - cron: "0 23 * * *"
+  workflow_dispatch:
+    inputs:
+      days_back:
+        description: "How many days back to backfill"
+        required: false
+        default: "7"
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet requests
+
+      - name: Run Shopify backfill
+        env:
+          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DAYS_BACK: ${{ github.event.inputs.days_back || '7' }}
+        run: python scripts/daily_shopify_backfill.py
