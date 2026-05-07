@@ -5,9 +5,9 @@ name: Daily Shopify Backfill
 
 on:
   schedule:
-    # 每天 HKT 早上 7:00 = UTC 23:00（前一天）
-    # 比 n8n 的 6am HKT 晚 1 小時，讓 n8n 先跑、我們再補
-    - cron: "0 23 * * *"
+    # 每天 HKT 凌晨 02:00 = UTC 18:00（前一天）
+    # 統一資料更新批次：所有 retail / performance 頁面以此為準
+    - cron: "0 18 * * *"
   workflow_dispatch:
     inputs:
       days_back:
