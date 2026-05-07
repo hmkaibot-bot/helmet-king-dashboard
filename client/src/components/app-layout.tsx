@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from 'react';
 import { Link, useLocation } from 'wouter';
 import { HelmetLogo } from './helmet-logo';
+import { DataFreshnessBadge } from './data-freshness';
 import { useDateRange } from '@/lib/date-context';
 import { useAuth } from '@/lib/auth';
 import { DATE_RANGE_LABELS, type DateRange } from '@/lib/format';
@@ -281,6 +282,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
             <p className="text-xs text-muted-foreground">{currentPage.sublabel}</p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Data freshness badge — 讀取 shopify_orders 最新 updated_at */}
+            <DataFreshnessBadge />
             {/* Light / Dark toggle */}
             <button
               onClick={toggleTheme}

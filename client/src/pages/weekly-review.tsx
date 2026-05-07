@@ -1,279 +1,164 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import {
+  DollarSign, ShoppingCart, TrendingUp, Tag, Calendar,
+  Store, Globe, Truck, ChevronRight, ChevronDown, X,
+} from 'lucide-react';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Cell, PieChart, Pie,
+} from 'recharts';
+
 import { queryAllPages } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
-import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
-import { CHART_COLORS, CHART_PALETTE, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart-theme';
-import {
-  DollarSign, ShoppingCart, TrendingUp, Tag, Package,
-  ChevronDown, ChevronRight, X, Calendar, Store, Globe, Truck,
-} from 'lucide-react';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  Cell, PieChart, Pie,
-} from 'recharts';
+import { DataFreshnessBadge } from '@/components/data-freshness';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
+import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
+import { CHART_COLORS, CHART_PALETTE, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart-theme';
+import {
+  getDefaultWeekRange, getPrevRange, getYoYRange, getMonthBounds,
+  toDateStr, calcDelta, processOrders, type Order, type Line,
+} from '@/lib/weekly-review-utils';
 
-// ── HK timezone helper ────────────────────────────────────────────────────────
-function getHKNow(): Date {
-  const now = new Date();
-  return new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
-}
-
-function toDateStr(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-// "上星期三 to 本星期二":
-// Find most-recent Tuesday (today if Tue), go back 6 days to get Wednesday.
-function getWeekBounds(): { from: string; to: string } {
-  const hkt = getHKNow();
-  const dow = hkt.getDay(); // 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
-  // Days since most-recent Tuesday
-  const daysToTue = (dow + 7 - 2) % 7; // 0 if today is Tue
-  const tuesday = new Date(hkt);
-  tuesday.setDate(hkt.getDate() - daysToTue);
-  const wednesday = new Date(tuesday);
-  wednesday.setDate(tuesday.getDate() - 6);
-  return { from: toDateStr(wednesday), to: toDateStr(tuesday) };
-}
-
-function getPrevWeekBounds(): { from: string; to: string } {
-  const curr = getWeekBounds();
-  const wed = new Date(curr.from + 'T00:00:00');
-  const prevTue = new Date(wed);
-  prevTue.setDate(wed.getDate() - 1);
-  const prevWed = new Date(prevTue);
-  prevWed.setDate(prevTue.getDate() - 6);
-  return { from: toDateStr(prevWed), to: toDateStr(prevTue) };
-}
-
-function getMonthBounds(): { from: string; to: string } {
-  const hkt = getHKNow();
-  const from = `${hkt.getFullYear()}-${String(hkt.getMonth() + 1).padStart(2, '0')}-01`;
-  return { from, to: toDateStr(hkt) };
-}
-
-function fmtDow(dateStr: string): string {
-  const d = new Date(dateStr + 'T00:00:00');
-  const labels = ['日', '一', '二', '三', '四', '五', '六'];
-  return `(${labels[d.getDay()]})`;
-}
-
-// ── Channel mapping ───────────────────────────────────────────────────────────
-function mapChannel(src: string | null): string {
-  if (!src) return '其他渠道 Other';
-  if (src === 'pos') return '門市 POS';
-  if (src === 'web') return '網店 Online';
-  if (src === 'shopify_draft_order') return '手動訂單 Draft';
-  return '其他渠道 Other';
-}
-
-// ── Channel icons ─────────────────────────────────────────────────────────────
-function ChannelIcon({ name }: { name: string }) {
-  if (name.includes('POS')) return <Store className="h-4 w-4" />;
-  if (name.includes('Online')) return <Globe className="h-4 w-4" />;
-  if (name.includes('Draft')) return <Truck className="h-4 w-4" />;
-  return <Package className="h-4 w-4" />;
-}
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-interface ProcessResult {
-  revenue: number;
-  orders: number;
-  aov: number;
-  brandMap: Record<string, { qty: number; revenue: number }>;
-  catMap: Record<string, { qty: number; revenue: number }>;
-  promoCodes: Record<string, { uses: number; discountAmt: number; revenue: number }>;
-  topSkus: { title: string; sku: string; vendor: string; qty: number; revenue: number }[];
-  channelMap: Record<string, { orders: number; revenue: number }>;
-}
-
-// ── Data processor ────────────────────────────────────────────────────────────
-function processOrders(
-  ordersRaw: any[],
-  linesRaw: any[],
-  from: string,
-  to: string
-): ProcessResult {
-  const fromStr = from;
-  const toStr = to + '\xff';
-
-  // Filter valid orders within date range
-  const orders = ordersRaw.filter(o => {
-    if (o.financial_status === 'refunded') return false;
-    if (o.cancelled_at) return false;
-    const ca = String(o.created_at || '');
-    return ca >= fromStr && ca <= toStr;
-  });
-
-  const orderIds = new Set(orders.map(o => String(o.id)));
-
-  // Lines for these orders
-  const lines = linesRaw.filter(l => orderIds.has(String(l.order_id)));
-
-  // Core KPIs
-  const revenue = orders.reduce((s, o) => s + parseFloat(o.total_price || '0'), 0);
-  const orderCount = orders.length;
-  const aov = orderCount > 0 ? revenue / orderCount : 0;
-
-  // Channel map
-  const channelMap: Record<string, { orders: number; revenue: number }> = {};
-  for (const o of orders) {
-    const ch = mapChannel(o.source_name);
-    if (!channelMap[ch]) channelMap[ch] = { orders: 0, revenue: 0 };
-    channelMap[ch].orders += 1;
-    channelMap[ch].revenue += parseFloat(o.total_price || '0');
-  }
-
-  // Brand map
-  const brandMap: Record<string, { qty: number; revenue: number }> = {};
-  const catMap: Record<string, { qty: number; revenue: number }> = {};
-  const skuMap: Record<string, { title: string; sku: string; vendor: string; qty: number; revenue: number }> = {};
-
-  for (const l of lines) {
-    const vendor = l.vendor || '未知品牌';
-    const cat = l.product_type || '未分類';
-    const qty = parseInt(l.quantity || '1', 10);
-    const price = parseFloat(l.price || '0') * qty;
-    const skuKey = l.sku || l.title || 'N/A';
-
-    if (!brandMap[vendor]) brandMap[vendor] = { qty: 0, revenue: 0 };
-    brandMap[vendor].qty += qty;
-    brandMap[vendor].revenue += price;
-
-    if (!catMap[cat]) catMap[cat] = { qty: 0, revenue: 0 };
-    catMap[cat].qty += qty;
-    catMap[cat].revenue += price;
-
-    if (!skuMap[skuKey]) skuMap[skuKey] = { title: l.title || skuKey, sku: l.sku || '', vendor, qty: 0, revenue: 0 };
-    skuMap[skuKey].qty += qty;
-    skuMap[skuKey].revenue += price;
-  }
-
-  const topSkus = Object.values(skuMap)
-    .sort((a, b) => b.revenue - a.revenue)
-    .slice(0, 5);
-
-  // Promo codes
-  const promoCodes: Record<string, { uses: number; discountAmt: number; revenue: number }> = {};
-  for (const o of orders) {
-    let codes: { code: string; amount: number }[] = [];
-    try {
-      const dc = o.discount_codes;
-      if (typeof dc === 'string' && dc.startsWith('[')) {
-        codes = JSON.parse(dc);
-      } else if (Array.isArray(dc)) {
-        codes = dc;
-      }
-    } catch {}
-    const rev = parseFloat(o.total_price || '0');
-    for (const c of codes) {
-      const key = (c.code || '').toUpperCase();
-      if (!key) continue;
-      if (!promoCodes[key]) promoCodes[key] = { uses: 0, discountAmt: 0, revenue: 0 };
-      promoCodes[key].uses += 1;
-      promoCodes[key].discountAmt += parseFloat(String(c.amount || '0'));
-      promoCodes[key].revenue += rev;
-    }
-  }
-
-  return { revenue, orders: orderCount, aov, brandMap, catMap, promoCodes, topSkus, channelMap };
-}
-
-function calcDelta(curr: number, prev: number): number | null {
-  if (prev === 0) return null;
-  return ((curr - prev) / prev) * 100;
-}
-
-// ── DateRangePicker ───────────────────────────────────────────────────────────
-function DateRangePicker({
+// ─── DateRangeBar ────────────────────────────────────────────────────────────
+function DateRangeBar({
   from, to, onChange,
 }: {
-  from: string;
-  to: string;
+  from: string; to: string;
   onChange: (f: string, t: string) => void;
 }) {
+  const setPreset = (preset: 'thisWeek' | 'lastWeek' | 'mtd' | 'last7' | 'last30') => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStr = toDateStr(today);
+    if (preset === 'thisWeek') {
+      const r = getDefaultWeekRange();
+      onChange(r.from, r.to);
+    } else if (preset === 'lastWeek') {
+      const r = getDefaultWeekRange();
+      const p = getPrevRange(r.from, r.to);
+      onChange(p.from, p.to);
+    } else if (preset === 'mtd') {
+      const m = getMonthBounds();
+      onChange(m.from, m.to);
+    } else if (preset === 'last7') {
+      const start = new Date(today);
+      start.setDate(today.getDate() - 6);
+      onChange(toDateStr(start), todayStr);
+    } else {
+      const start = new Date(today);
+      start.setDate(today.getDate() - 29);
+      onChange(toDateStr(start), todayStr);
+    }
+  };
+
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+    <div className="sticky top-0 z-30 -mx-4 px-4 py-3 bg-background/85 backdrop-blur border-b border-border/40 flex flex-wrap items-center gap-3">
+      <div className="flex items-center gap-2">
+        <Calendar className="h-4 w-4 text-muted-foreground" />
+        <span className="text-sm font-semibold">日期範圍</span>
+      </div>
       <input
         type="date"
         value={from}
         onChange={e => onChange(e.target.value, to)}
-        className="bg-accent/50 border border-border/50 rounded px-2 py-1 text-xs text-foreground"
+        className="bg-accent/40 border border-border/50 rounded px-2 py-1 text-xs text-foreground"
+        data-testid="weekly-from"
       />
-      <span className="text-muted-foreground">至</span>
+      <span className="text-muted-foreground text-xs">至</span>
       <input
         type="date"
         value={to}
         onChange={e => onChange(from, e.target.value)}
-        className="bg-accent/50 border border-border/50 rounded px-2 py-1 text-xs text-foreground"
+        className="bg-accent/40 border border-border/50 rounded px-2 py-1 text-xs text-foreground"
+        data-testid="weekly-to"
       />
-    </div>
-  );
-}
-
-// ── DetailModal ───────────────────────────────────────────────────────────────
-function DetailModal({
-  open, onClose, title, children,
-}: {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  children: React.ReactNode;
-}) {
-  if (!open) return null;
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={onClose}
-    >
-      <div
-        className="bg-card border border-border/40 rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between p-4 border-b border-border/40">
-          <h3 className="text-sm font-semibold">{title}</h3>
-          <button onClick={onClose} className="p-1 rounded hover:bg-accent/50">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="p-4 overflow-y-auto max-h-[calc(80vh-60px)]">{children}</div>
+      <span className="text-xs text-muted-foreground hidden md:inline">
+        · 預設為週三至週二（週會週期）
+      </span>
+      <div className="ml-auto flex flex-wrap items-center gap-1.5">
+        <PresetButton onClick={() => setPreset('thisWeek')}>本週(三→二)</PresetButton>
+        <PresetButton onClick={() => setPreset('lastWeek')}>上週</PresetButton>
+        <PresetButton onClick={() => setPreset('last7')}>近 7 日</PresetButton>
+        <PresetButton onClick={() => setPreset('last30')}>近 30 日</PresetButton>
+        <PresetButton onClick={() => setPreset('mtd')}>本月</PresetButton>
+        <DataFreshnessBadge />
       </div>
     </div>
   );
 }
 
-// ── Main Page ─────────────────────────────────────────────────────────────────
+function PresetButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="text-[11px] px-2 py-1 rounded border border-border/50 bg-accent/30 hover:bg-accent/60 transition-colors"
+    >
+      {children}
+    </button>
+  );
+}
+
+// ─── Modal shell ─────────────────────────────────────────────────────────────
+function Modal({
+  open, onClose, title, subtitle, children,
+}: {
+  open: boolean; onClose: () => void; title: string; subtitle?: string;
+  children: React.ReactNode;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div
+        className="bg-card border border-border/40 rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-4 border-b border-border/40">
+          <div>
+            <h3 className="text-sm font-semibold">{title}</h3>
+            {subtitle && <div className="text-xs text-muted-foreground mt-0.5">{subtitle}</div>}
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-accent/50">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="p-4 overflow-y-auto max-h-[calc(85vh-60px)]">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Channel icon ────────────────────────────────────────────────────────────
+function ChannelIcon({ name }: { name: string }) {
+  if (name === '門市 POS') return <Store className="h-4 w-4 text-amber-400" />;
+  if (name === '網店 Online') return <Globe className="h-4 w-4 text-sky-400" />;
+  return <Truck className="h-4 w-4 text-violet-400" />;
+}
+
+// ─── Main page ───────────────────────────────────────────────────────────────
 export default function WeeklyReview() {
   const [loading, setLoading] = useState(true);
-  const [ordersRaw, setOrdersRaw] = useState<any[]>([]);
-  const [linesRaw, setLinesRaw] = useState<any[]>([]);
+  const [ordersRaw, setOrdersRaw] = useState<Order[]>([]);
+  const [linesRaw, setLinesRaw] = useState<Line[]>([]);
+
+  // Global date range
+  const initial = useMemo(() => getDefaultWeekRange(), []);
+  const [range, setRange] = useState(initial);
+  const prevRange = useMemo(() => getPrevRange(range.from, range.to), [range]);
+  const yoyRange = useMemo(() => getYoYRange(range.from, range.to), [range]);
+  const monthRange = useMemo(() => getMonthBounds(), []);
+
+  // Modals
   const [promoOpen, setPromoOpen] = useState(false);
+  const [promoDetail, setPromoDetail] = useState<string | null>(null);
+  const [brandDrill, setBrandDrill] = useState<string | null>(null);
+  const [catDrill, setCatDrill] = useState<string | null>(null);
+  const [brandPerfMetric, setBrandPerfMetric] = useState<'revenue' | 'qty'>('revenue');
+  const [brandPerfExpand, setBrandPerfExpand] = useState(false);
+  const [hiddenBrands, setHiddenBrands] = useState<Set<string>>(new Set());
 
-  // Section 5 date range (brand chart)
-  const monthBounds = getMonthBounds();
-  const [brandChartRange, setBrandChartRange] = useState({ from: monthBounds.from, to: monthBounds.to });
-
-  // Section 6 date ranges
-  const [brandTableRange, setBrandTableRange] = useState({ from: monthBounds.from, to: monthBounds.to });
-  const [catTableRange, setCatTableRange] = useState({ from: monthBounds.from, to: monthBounds.to });
-
-  // Modal state
-  const [brandModal, setBrandModal] = useState<{ open: boolean; brand: string }>({ open: false, brand: '' });
-  const [catModal, setCatModal] = useState<{ open: boolean; cat: string }>({ open: false, cat: '' });
-
-  // Fixed date bounds
-  const weekBounds = useMemo(() => getWeekBounds(), []);
-  const prevWeekBounds = useMemo(() => getPrevWeekBounds(), []);
-
-  // Load data once
   useEffect(() => {
     (async () => {
       try {
@@ -284,744 +169,710 @@ export default function WeeklyReview() {
           ),
           queryAllPages(
             'shopify_order_lines',
-            'order_id,product_id,sku,title,vendor,product_type,quantity,price,created_at'
+            'order_id,product_id,sku,title,vendor,product_type,quantity,price'
           ),
         ]);
-        setOrdersRaw(orders);
-        setLinesRaw(lines);
-      } catch (err) {
-        console.error('Failed to load data:', err);
+        setOrdersRaw(orders as any);
+        setLinesRaw(lines as any);
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  // Weekly KPI data
-  const weekData = useMemo(
-    () => processOrders(ordersRaw, linesRaw, weekBounds.from, weekBounds.to),
-    [ordersRaw, linesRaw, weekBounds.from, weekBounds.to]
+  const cur = useMemo(
+    () => processOrders(ordersRaw, linesRaw, range.from, range.to),
+    [ordersRaw, linesRaw, range]
+  );
+  const prev = useMemo(
+    () => processOrders(ordersRaw, linesRaw, prevRange.from, prevRange.to),
+    [ordersRaw, linesRaw, prevRange]
+  );
+  const yoy = useMemo(
+    () => processOrders(ordersRaw, linesRaw, yoyRange.from, yoyRange.to),
+    [ordersRaw, linesRaw, yoyRange]
+  );
+  const monthly = useMemo(
+    () => processOrders(ordersRaw, linesRaw, monthRange.from, monthRange.to),
+    [ordersRaw, linesRaw, monthRange]
   );
 
-  const prevWeekData = useMemo(
-    () => processOrders(ordersRaw, linesRaw, prevWeekBounds.from, prevWeekBounds.to),
-    [ordersRaw, linesRaw, prevWeekBounds.from, prevWeekBounds.to]
+  // Section 1 — channel rows
+  const channelRows = useMemo(() => {
+    const total = Object.values(monthly.channelMap).reduce((s, c) => s + c.revenue, 0);
+    return Object.entries(monthly.channelMap)
+      .sort((a, b) => b[1].revenue - a[1].revenue)
+      .map(([name, v]) => ({
+        name,
+        orders: v.orders,
+        revenue: v.revenue,
+        share: total > 0 ? v.revenue / total : 0,
+      }));
+  }, [monthly]);
+
+  // Section 4 — top brands / categories (exclude refunds → already done in process)
+  const topBrands = useMemo(
+    () =>
+      Object.entries(cur.brandMap)
+        .sort((a, b) => b[1].revenue - a[1].revenue)
+        .slice(0, 5)
+        .map(([name, v]) => ({ name, revenue: v.revenue, qty: v.qty })),
+    [cur]
+  );
+  const topCats = useMemo(
+    () =>
+      Object.entries(cur.catMap)
+        .sort((a, b) => b[1].revenue - a[1].revenue)
+        .slice(0, 5)
+        .map(([name, v]) => ({ name, revenue: v.revenue, qty: v.qty })),
+    [cur]
   );
 
-  // Monthly channel data
-  const monthData = useMemo(
-    () => processOrders(ordersRaw, linesRaw, monthBounds.from, monthBounds.to),
-    [ordersRaw, linesRaw, monthBounds.from, monthBounds.to]
+  // Section 5 — brand performance bar chart
+  const brandPerf = useMemo(() => {
+    const all = Object.entries(cur.brandMap)
+      .filter(([n]) => !hiddenBrands.has(n))
+      .map(([name, v]) => ({ name, revenue: v.revenue, qty: v.qty }))
+      .sort((a, b) => (brandPerfMetric === 'revenue' ? b.revenue - a.revenue : b.qty - a.qty));
+    return brandPerfExpand ? all : all.slice(0, 10);
+  }, [cur, brandPerfMetric, brandPerfExpand, hiddenBrands]);
+
+  // Section 6 — category & brand performance tables
+  const brandTable = useMemo(
+    () =>
+      Object.entries(cur.brandMap)
+        .sort((a, b) => b[1].revenue - a[1].revenue)
+        .map(([name, v]) => ({ name, revenue: v.revenue, qty: v.qty })),
+    [cur]
+  );
+  const catTable = useMemo(
+    () =>
+      Object.entries(cur.catMap)
+        .sort((a, b) => b[1].revenue - a[1].revenue)
+        .map(([name, v]) => ({ name, revenue: v.revenue, qty: v.qty })),
+    [cur]
   );
 
-  // Section 5: brand chart data
-  const brandChartData = useMemo(() => {
-    const d = processOrders(ordersRaw, linesRaw, brandChartRange.from, brandChartRange.to);
-    return Object.entries(d.brandMap)
-      .filter(([, v]) => v.revenue > 0)
-      .sort((a, b) => b[1].revenue - a[1].revenue)
-      .map(([name, v]) => ({ name, revenue: v.revenue, qty: v.qty }));
-  }, [ordersRaw, linesRaw, brandChartRange]);
+  // Section 3 — promo summary
+  const promoSummary = useMemo(() => {
+    const totalUses = Object.values(cur.promoCodes).reduce((s, c) => s + c.uses, 0);
+    const totalDisc = Object.values(cur.promoCodes).reduce((s, c) => s + c.discountAmt, 0);
+    const totalRev = Object.values(cur.promoCodes).reduce((s, c) => s + c.revenue, 0);
+    return { totalUses, totalDisc, totalRev };
+  }, [cur]);
 
-  // Section 6: brand table data
-  const brandTableData = useMemo(() => {
-    const d = processOrders(ordersRaw, linesRaw, brandTableRange.from, brandTableRange.to);
-    return Object.entries(d.brandMap)
-      .sort((a, b) => b[1].revenue - a[1].revenue)
-      .map(([name, v], i) => ({ rank: i + 1, name, ...v }));
-  }, [ordersRaw, linesRaw, brandTableRange]);
+  const promoRows = useMemo(
+    () =>
+      Object.entries(cur.promoCodes)
+        .sort((a, b) => b[1].revenue - a[1].revenue)
+        .map(([code, v]) => ({
+          code,
+          uses: v.uses,
+          discountAmt: v.discountAmt,
+          revenue: v.revenue,
+          orderIds: Array.from(v.orderIds),
+        })),
+    [cur]
+  );
 
-  // Section 6: cat table data
-  const catTableData = useMemo(() => {
-    const d = processOrders(ordersRaw, linesRaw, catTableRange.from, catTableRange.to);
-    return Object.entries(d.catMap)
-      .sort((a, b) => b[1].revenue - a[1].revenue)
-      .map(([name, v], i) => ({ rank: i + 1, name, ...v }));
-  }, [ordersRaw, linesRaw, catTableRange]);
+  // Helper: when expanding a promo, build its detail rows
+  const promoDetailRows = useMemo(() => {
+    if (!promoDetail) return null;
+    const code = promoDetail;
+    const orderIds = new Set(cur.promoCodes[code]?.orderIds || []);
+    const orders = ordersRaw.filter(o => orderIds.has(String(o.id)));
+    const lines = linesRaw.filter(l => orderIds.has(String(l.order_id)));
+    const items = lines.map(l => ({
+      orderName: orders.find(o => String(o.id) === String(l.order_id))?.order_number || '?',
+      title: l.title || '',
+      sku: l.sku || '',
+      qty: parseInt(String(l.quantity || 0), 10),
+      revenue: parseFloat(String(l.price || 0)) * (parseInt(String(l.quantity || 0), 10) || 0),
+    }));
+    return items.sort((a, b) => b.revenue - a.revenue);
+  }, [promoDetail, cur, ordersRaw, linesRaw]);
 
-  // Brand modal lines
-  const brandModalLines = useMemo(() => {
-    if (!brandModal.brand) return [];
-    const fromStr = brandTableRange.from;
-    const toStr = brandTableRange.to + '\xff';
-    const filtered = linesRaw.filter(l => {
-      const vendor = l.vendor || '未知品牌';
-      const ca = String(l.created_at || '');
-      return vendor === brandModal.brand && ca >= fromStr && ca <= toStr;
-    });
-    const grouped: Record<string, { title: string; sku: string; qty: number; revenue: number }> = {};
-    for (const l of filtered) {
-      const key = (l.sku || l.title || 'N/A');
-      if (!grouped[key]) grouped[key] = { title: l.title || key, sku: l.sku || '', qty: 0, revenue: 0 };
-      const qty = parseInt(l.quantity || '1', 10);
-      grouped[key].qty += qty;
-      grouped[key].revenue += parseFloat(l.price || '0') * qty;
-    }
-    return Object.values(grouped).sort((a, b) => b.revenue - a.revenue);
-  }, [linesRaw, brandModal.brand, brandTableRange]);
+  // Drill-down data for brand
+  const brandDrillData = useMemo(() => {
+    if (!brandDrill) return null;
+    const node = cur.brandTree[brandDrill];
+    if (!node) return null;
+    return Object.values(node.variants).sort((a, b) => b.revenue - a.revenue);
+  }, [brandDrill, cur]);
 
-  // Category modal lines (brand breakdown)
-  const catModalLines = useMemo(() => {
-    if (!catModal.cat) return [];
-    const fromStr = catTableRange.from;
-    const toStr = catTableRange.to + '\xff';
-    const filtered = linesRaw.filter(l => {
-      const cat = l.product_type || '未分類';
-      const ca = String(l.created_at || '');
-      return cat === catModal.cat && ca >= fromStr && ca <= toStr;
-    });
-    const grouped: Record<string, { brand: string; qty: number; revenue: number }> = {};
-    for (const l of filtered) {
-      const brand = l.vendor || '未知品牌';
-      if (!grouped[brand]) grouped[brand] = { brand, qty: 0, revenue: 0 };
-      const qty = parseInt(l.quantity || '1', 10);
-      grouped[brand].qty += qty;
-      grouped[brand].revenue += parseFloat(l.price || '0') * qty;
-    }
-    return Object.values(grouped).sort((a, b) => b.revenue - a.revenue);
-  }, [linesRaw, catModal.cat, catTableRange]);
+  const catDrillData = useMemo(() => {
+    if (!catDrill) return null;
+    const node = cur.catTree[catDrill];
+    if (!node) return null;
+    return Object.values(node.variants).sort((a, b) => b.revenue - a.revenue);
+  }, [catDrill, cur]);
 
-  // Derived weekly values
-  const weekRevDelta = calcDelta(weekData.revenue, prevWeekData.revenue);
-  const weekOrdDelta = calcDelta(weekData.orders, prevWeekData.orders);
-  const weekAovDelta = calcDelta(weekData.aov, prevWeekData.aov);
-  const promoCount = Object.keys(weekData.promoCodes).length;
+  // ── Render ────────────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="space-y-4 p-4">
+        <Skeleton className="h-12 w-full" />
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          {[...Array(4)].map((_, i) => (<Skeleton key={i} className="h-24" />))}
+        </div>
+        <Skeleton className="h-64" />
+        <Skeleton className="h-64" />
+      </div>
+    );
+  }
 
-  // Channel data for display
-  const channelEntries = Object.entries(monthData.channelMap)
-    .sort((a, b) => b[1].revenue - a[1].revenue);
-  const totalMonthRevenue = channelEntries.reduce((s, [, v]) => s + v.revenue, 0);
-  const topChannel = channelEntries[0]?.[0] ?? '';
-
-  // Weekly top brands / cats
-  const weekTopBrands = Object.entries(weekData.brandMap)
-    .sort((a, b) => b[1].revenue - a[1].revenue)
-    .slice(0, 5);
-  const weekTopCats = Object.entries(weekData.catMap)
-    .sort((a, b) => b[1].revenue - a[1].revenue)
-    .slice(0, 5);
-
-  // Promo code table sorted by uses
-  const promoRows = Object.entries(weekData.promoCodes)
-    .sort((a, b) => b[1].uses - a[1].uses);
-
-  // Chart bar height for brand chart
-  const brandChartHeight = Math.max(200, brandChartData.length * 28);
+  const totalDays = Math.round(
+    (new Date(range.to).getTime() - new Date(range.from).getTime()) / 86400000
+  ) + 1;
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="max-w-7xl mx-auto px-4 py-6 space-y-8">
-
-        {/* ── Header ─────────────────────────────────────────────────────── */}
-        <div className="space-y-1">
-          <h1 className="text-2xl font-bold tracking-tight">週報 Weekly Review</h1>
-          <p className="text-sm text-muted-foreground">
-            {weekBounds.from} {fmtDow(weekBounds.from)} — {weekBounds.to} {fmtDow(weekBounds.to)}
-          </p>
-        </div>
-
-        {/* ── Section 1: 銷售渠道分析（當月） ────────────────────────────── */}
-        <section>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            銷售渠道分析 Sales Channel（當月）
-          </h2>
-          {loading ? (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {[0, 1, 2, 3].map(i => <Skeleton key={i} className="h-28" />)}
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {channelEntries.map(([ch, v]) => {
-                const pct = totalMonthRevenue > 0 ? (v.revenue / totalMonthRevenue) * 100 : 0;
-                const isTop = ch === topChannel;
-                return (
-                  <Card
-                    key={ch}
-                    className={`border-border/40 ${isTop ? 'border-amber-500/50 bg-amber-500/5' : ''}`}
-                  >
-                    <CardContent className="p-4 space-y-2">
-                      <div className={`flex items-center gap-2 ${isTop ? 'text-amber-400' : 'text-muted-foreground'}`}>
-                        <ChannelIcon name={ch} />
-                        <span className="text-xs font-medium">{ch}</span>
-                        {isTop && (
-                          <Badge className="ml-auto bg-amber-500/20 text-amber-400 border-0 text-[10px] px-1.5 py-0">
-                            最大
-                          </Badge>
-                        )}
-                      </div>
-                      <p className="text-lg font-semibold tabular-nums">{formatCurrency(v.revenue)}</p>
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>{v.orders} 單</span>
-                        <span className={isTop ? 'text-amber-400 font-medium' : ''}>
-                          {formatPercent(pct)}
-                        </span>
-                      </div>
-                      {/* Bar indicator */}
-                      <div className="h-1 rounded-full bg-border/40 overflow-hidden">
-                        <div
-                          className={`h-full rounded-full ${isTop ? 'bg-amber-500' : 'bg-primary/40'}`}
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
-              {/* Placeholder if fewer than 4 channels */}
-              {channelEntries.length === 0 && (
-                <Card className="border-border/40 col-span-4">
-                  <CardContent className="p-4 text-center text-muted-foreground text-sm">
-                    暫無當月數據
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-          )}
-        </section>
-
-        {/* ── Section 2: 本週核心 KPI ─────────────────────────────────────── */}
-        <section>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            本週核心 KPI
-          </h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <KpiCard
-              title="本週營收"
-              subtitle="Weekly Revenue"
-              value={loading ? '—' : formatCurrency(weekData.revenue)}
-              icon={DollarSign}
-              loading={loading}
-              delta={loading ? null : weekRevDelta}
-              testId="kpi-week-revenue"
-            />
-            <KpiCard
-              title="本週訂單"
-              subtitle="Weekly Orders"
-              value={loading ? '—' : formatNumber(weekData.orders)}
-              icon={ShoppingCart}
-              loading={loading}
-              delta={loading ? null : weekOrdDelta}
-              testId="kpi-week-orders"
-            />
-            <KpiCard
-              title="平均單價"
-              subtitle="Avg Order Value"
-              value={loading ? '—' : formatCurrency(weekData.aov)}
-              icon={TrendingUp}
-              loading={loading}
-              delta={loading ? null : weekAovDelta}
-              testId="kpi-week-aov"
-            />
-            {/* Clickable promo card */}
-            <div
-              className="cursor-pointer select-none"
-              onClick={() => setPromoOpen(v => !v)}
-              title="點擊展開折扣碼詳情"
-            >
-              <Card className={`border-border/40 transition-colors hover:border-amber-500/40 ${promoOpen ? 'border-amber-500/50 bg-amber-500/5' : ''}`}>
-                <CardContent className="p-4">
-                  <div className="flex items-start justify-between">
-                    <div className="space-y-1 min-w-0 flex-1">
-                      <p className="text-xs font-medium text-muted-foreground truncate">
-                        折扣碼數量 <span className="opacity-70">Promo Codes</span>
-                      </p>
-                      {loading ? (
-                        <Skeleton className="h-7 w-16" />
-                      ) : (
-                        <p className="text-xl font-semibold tabular-nums tracking-tight">
-                          {promoCount}
-                        </p>
-                      )}
-                      <div className="flex items-center gap-1 text-xs text-amber-400">
-                        {promoOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                        <span>{promoOpen ? '收起' : '展開詳情'}</span>
-                      </div>
-                    </div>
-                    <div className="ml-3 p-2 rounded-lg bg-primary/10 text-primary shrink-0">
-                      <Tag className="h-4 w-4" />
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          </div>
-        </section>
-
-        {/* ── Section 3: Promo Codes (collapsible) ─────────────────────────── */}
-        {promoOpen && (
-          <section>
-            <Card className="border-amber-500/30 bg-amber-500/5">
-              <CardHeader className="pb-2 pt-4 px-4">
-                <CardTitle className="text-sm font-medium flex items-center gap-2">
-                  <Tag className="h-4 w-4 text-amber-400" />
-                  折扣碼使用情況 Promo Code Usage
-                  <span className="text-xs font-normal text-muted-foreground ml-1">
-                    {weekBounds.from} — {weekBounds.to}
-                  </span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 pb-4">
-                {promoRows.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-4">本週無折扣碼使用記錄</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="border-b border-border/40 text-muted-foreground">
-                          <th className="text-left py-2 pr-4 font-medium">折扣碼 Code</th>
-                          <th className="text-right py-2 pr-4 font-medium">使用次數 Uses</th>
-                          <th className="text-right py-2 pr-4 font-medium">折扣金額 Discount</th>
-                          <th className="text-right py-2 font-medium">帶來營收 Revenue</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {promoRows.map(([code, v]) => (
-                          <tr key={code} className="border-b border-border/20 hover:bg-accent/30">
-                            <td className="py-2 pr-4 font-mono text-amber-400">{code}</td>
-                            <td className="py-2 pr-4 text-right tabular-nums">{v.uses}</td>
-                            <td className="py-2 pr-4 text-right tabular-nums text-red-400">
-                              -{formatCurrency(v.discountAmt)}
-                            </td>
-                            <td className="py-2 text-right tabular-nums">{formatCurrency(v.revenue)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </section>
-        )}
-
-        {/* ── Section 4: Top 5 Brand / Top 5 Category ──────────────────────── */}
-        <section>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            本週表現 Top Performers（本週）
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Top 5 Brands */}
-            <Card className="border-border/40">
-              <CardHeader className="pb-2 pt-4 px-4">
-                <CardTitle className="text-sm font-medium">最佳品牌 Top 5 Brands</CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 pb-4">
-                {loading ? (
-                  <div className="space-y-2">{[0,1,2,3,4].map(i => <Skeleton key={i} className="h-8" />)}</div>
-                ) : weekTopBrands.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-4">暫無數據</p>
-                ) : (
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-border/40 text-muted-foreground">
-                        <th className="text-left py-2 w-8 font-medium">#</th>
-                        <th className="text-left py-2 font-medium">品牌 Brand</th>
-                        <th className="text-right py-2 pr-3 font-medium">銷售額</th>
-                        <th className="text-right py-2 font-medium">件數</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {weekTopBrands.map(([brand, v], i) => (
-                        <tr key={brand} className="border-b border-border/20 hover:bg-accent/30">
-                          <td className="py-2 w-8">
-                            <Badge
-                              className={`text-[10px] px-1.5 py-0 ${
-                                i === 0
-                                  ? 'bg-amber-500/20 text-amber-400 border-0'
-                                  : 'bg-muted/30 text-muted-foreground border-0'
-                              }`}
-                            >
-                              {i + 1}
-                            </Badge>
-                          </td>
-                          <td className="py-2 font-medium max-w-[120px] truncate">{brand}</td>
-                          <td className="py-2 pr-3 text-right tabular-nums">{formatCurrency(v.revenue)}</td>
-                          <td className="py-2 text-right tabular-nums text-muted-foreground">{v.qty}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Top 5 Categories */}
-            <Card className="border-border/40">
-              <CardHeader className="pb-2 pt-4 px-4">
-                <CardTitle className="text-sm font-medium">最佳類別 Top 5 Categories</CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 pb-4">
-                {loading ? (
-                  <div className="space-y-2">{[0,1,2,3,4].map(i => <Skeleton key={i} className="h-8" />)}</div>
-                ) : weekTopCats.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-4">暫無數據</p>
-                ) : (
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-border/40 text-muted-foreground">
-                        <th className="text-left py-2 w-8 font-medium">#</th>
-                        <th className="text-left py-2 font-medium">品類 Category</th>
-                        <th className="text-right py-2 pr-3 font-medium">銷售額</th>
-                        <th className="text-right py-2 font-medium">件數</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {weekTopCats.map(([cat, v], i) => (
-                        <tr key={cat} className="border-b border-border/20 hover:bg-accent/30">
-                          <td className="py-2 w-8">
-                            <Badge
-                              className={`text-[10px] px-1.5 py-0 ${
-                                i === 0
-                                  ? 'bg-amber-500/20 text-amber-400 border-0'
-                                  : 'bg-muted/30 text-muted-foreground border-0'
-                              }`}
-                            >
-                              {i + 1}
-                            </Badge>
-                          </td>
-                          <td className="py-2 font-medium max-w-[120px] truncate">{cat}</td>
-                          <td className="py-2 pr-3 text-right tabular-nums">{formatCurrency(v.revenue)}</td>
-                          <td className="py-2 text-right tabular-nums text-muted-foreground">{v.qty}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        </section>
-
-        {/* ── Section 5: 品牌表現橫向圖表 ──────────────────────────────────── */}
-        <section>
-          <ChartCard
-            title="品牌表現 Brand Performance"
-            subtitle="（可調整日期範圍）"
-            loading={loading}
-          >
-            <div className="flex justify-end mb-3">
-              <DateRangePicker
-                from={brandChartRange.from}
-                to={brandChartRange.to}
-                onChange={(f, t) => setBrandChartRange({ from: f, to: t })}
-              />
-            </div>
-            {brandChartData.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-8">所選日期範圍內無數據</p>
-            ) : (
-              <div style={{ height: brandChartHeight }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    layout="vertical"
-                    data={brandChartData}
-                    margin={{ top: 0, right: 16, left: 8, bottom: 0 }}
-                  >
-                    <CartesianGrid {...GRID_STYLE} horizontal={false} />
-                    <XAxis
-                      type="number"
-                      tickFormatter={v => formatCurrency(v)}
-                      tick={AXIS_STYLE}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      type="category"
-                      dataKey="name"
-                      tick={{ ...AXIS_STYLE, fontSize: 10 }}
-                      axisLine={false}
-                      tickLine={false}
-                      width={90}
-                    />
-                    <Tooltip
-                      {...TOOLTIP_STYLE}
-                      formatter={(value: number) => [formatCurrency(value), '銷售額']}
-                    />
-                    <Bar dataKey="revenue" radius={[0, 4, 4, 0]} maxBarSize={20}>
-                      {brandChartData.map((entry, index) => (
-                        <Cell
-                          key={`cell-${index}`}
-                          fill={index === 0 ? CHART_COLORS.primary : CHART_PALETTE[index % CHART_PALETTE.length]}
-                          opacity={index === 0 ? 1 : 0.7}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </ChartCard>
-        </section>
-
-        {/* ── Section 6: 品牌表現明細 + 品類表現明細 ───────────────────────── */}
-        <section>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            表現明細 Performance Details
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Brand Table */}
-            <Card className="border-border/40">
-              <CardHeader className="pb-2 pt-4 px-4">
-                <div className="flex items-start justify-between gap-2 flex-wrap">
-                  <CardTitle className="text-sm font-medium">品牌表現 Brand Performance</CardTitle>
-                  <DateRangePicker
-                    from={brandTableRange.from}
-                    to={brandTableRange.to}
-                    onChange={(f, t) => setBrandTableRange({ from: f, to: t })}
-                  />
-                </div>
-              </CardHeader>
-              <CardContent className="px-4 pb-4">
-                {loading ? (
-                  <div className="space-y-2">{[0,1,2,3,4].map(i => <Skeleton key={i} className="h-8" />)}</div>
-                ) : brandTableData.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-4">所選日期範圍內無數據</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="border-b border-border/40 text-muted-foreground">
-                          <th className="text-left py-2 w-8 font-medium">排名</th>
-                          <th className="text-left py-2 font-medium">品牌 Brand</th>
-                          <th className="text-right py-2 pr-3 font-medium">銷售額</th>
-                          <th className="text-right py-2 font-medium">件數</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {brandTableData.map(row => (
-                          <tr
-                            key={row.name}
-                            className="border-b border-border/20 hover:bg-accent/30 cursor-pointer"
-                            onClick={() => setBrandModal({ open: true, brand: row.name })}
-                            title={`點擊查看 ${row.name} 明細`}
-                          >
-                            <td className="py-2 w-8">
-                              <Badge
-                                className={`text-[10px] px-1.5 py-0 ${
-                                  row.rank === 1
-                                    ? 'bg-amber-500/20 text-amber-400 border-0'
-                                    : 'bg-muted/30 text-muted-foreground border-0'
-                                }`}
-                              >
-                                {row.rank}
-                              </Badge>
-                            </td>
-                            <td className="py-2 font-medium max-w-[120px] truncate text-amber-400/80 hover:text-amber-400">
-                              {row.name}
-                            </td>
-                            <td className="py-2 pr-3 text-right tabular-nums">{formatCurrency(row.revenue)}</td>
-                            <td className="py-2 text-right tabular-nums text-muted-foreground">{row.qty}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Category Table */}
-            <Card className="border-border/40">
-              <CardHeader className="pb-2 pt-4 px-4">
-                <div className="flex items-start justify-between gap-2 flex-wrap">
-                  <CardTitle className="text-sm font-medium">品類表現 Category Performance</CardTitle>
-                  <DateRangePicker
-                    from={catTableRange.from}
-                    to={catTableRange.to}
-                    onChange={(f, t) => setCatTableRange({ from: f, to: t })}
-                  />
-                </div>
-              </CardHeader>
-              <CardContent className="px-4 pb-4">
-                {loading ? (
-                  <div className="space-y-2">{[0,1,2,3,4].map(i => <Skeleton key={i} className="h-8" />)}</div>
-                ) : catTableData.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-4">所選日期範圍內無數據</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="border-b border-border/40 text-muted-foreground">
-                          <th className="text-left py-2 w-8 font-medium">排名</th>
-                          <th className="text-left py-2 font-medium">品類 Category</th>
-                          <th className="text-right py-2 pr-3 font-medium">銷售額</th>
-                          <th className="text-right py-2 font-medium">件數</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {catTableData.map(row => (
-                          <tr
-                            key={row.name}
-                            className="border-b border-border/20 hover:bg-accent/30 cursor-pointer"
-                            onClick={() => setCatModal({ open: true, cat: row.name })}
-                            title={`點擊查看 ${row.name} 品牌拆解`}
-                          >
-                            <td className="py-2 w-8">
-                              <Badge
-                                className={`text-[10px] px-1.5 py-0 ${
-                                  row.rank === 1
-                                    ? 'bg-amber-500/20 text-amber-400 border-0'
-                                    : 'bg-muted/30 text-muted-foreground border-0'
-                                }`}
-                              >
-                                {row.rank}
-                              </Badge>
-                            </td>
-                            <td className="py-2 font-medium max-w-[120px] truncate text-amber-400/80 hover:text-amber-400">
-                              {row.name}
-                            </td>
-                            <td className="py-2 pr-3 text-right tabular-nums">{formatCurrency(row.revenue)}</td>
-                            <td className="py-2 text-right tabular-nums text-muted-foreground">{row.qty}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        </section>
-
-        {/* ── Section 7: Top 5 SKU 本週最佳產品 ──────────────────────────── */}
-        <section>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            Top 5 SKU 本週最佳產品
-          </h2>
-          {loading ? (
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              {[0,1,2,3,4].map(i => <Skeleton key={i} className="h-36" />)}
-            </div>
-          ) : weekData.topSkus.length === 0 ? (
-            <Card className="border-border/40">
-              <CardContent className="p-4 text-center text-sm text-muted-foreground py-8">
-                本週暫無產品銷售數據
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              {weekData.topSkus.map((sku, i) => (
-                <Card
-                  key={sku.sku || sku.title}
-                  className={`border-border/40 ${i === 0 ? 'border-amber-500/40 bg-amber-500/5' : ''}`}
-                >
-                  <CardContent className="p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Badge
-                        className={`text-[10px] px-1.5 py-0 font-bold ${
-                          i === 0
-                            ? 'bg-amber-500/20 text-amber-400 border-0'
-                            : 'bg-muted/30 text-muted-foreground border-0'
-                        }`}
-                      >
-                        #{i + 1}
-                      </Badge>
-                      <Package className={`h-3.5 w-3.5 ${i === 0 ? 'text-amber-400' : 'text-muted-foreground'}`} />
-                    </div>
-                    <p className="text-xs font-medium leading-tight line-clamp-2 min-h-[2.5rem]">
-                      {sku.title}
-                    </p>
-                    {sku.sku && (
-                      <p className="text-[10px] font-mono text-muted-foreground truncate">{sku.sku}</p>
-                    )}
-                    {sku.vendor && (
-                      <p className="text-[10px] text-muted-foreground truncate">{sku.vendor}</p>
-                    )}
-                    <div className="pt-1 border-t border-border/30 space-y-0.5">
-                      <p className="text-sm font-semibold tabular-nums">{formatCurrency(sku.revenue)}</p>
-                      <p className="text-[10px] text-muted-foreground">{sku.qty} 件</p>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
-        </section>
-
+    <div className="space-y-6 p-4 pb-20">
+      {/* Title + global filter */}
+      <div className="flex flex-col gap-1">
+        <h1 className="text-2xl font-bold tracking-tight">週報 Weekly Review</h1>
+        <p className="text-sm text-muted-foreground">
+          {range.from} → {range.to}（{totalDays} 天）· 對比上一期 {prevRange.from} → {prevRange.to}
+        </p>
       </div>
 
-      {/* ── Brand Detail Modal ──────────────────────────────────────────────── */}
-      <DetailModal
-        open={brandModal.open}
-        onClose={() => setBrandModal({ open: false, brand: '' })}
-        title={`${brandModal.brand} — 產品明細`}
-      >
-        {brandModalLines.length === 0 ? (
-          <p className="text-sm text-muted-foreground text-center py-4">所選日期範圍內無數據</p>
-        ) : (
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-border/40 text-muted-foreground">
-                <th className="text-left py-2 font-medium">產品 Product</th>
-                <th className="text-left py-2 pr-3 font-medium font-mono">SKU</th>
-                <th className="text-right py-2 pr-3 font-medium">件數</th>
-                <th className="text-right py-2 font-medium">銷售額</th>
-              </tr>
-            </thead>
-            <tbody>
-              {brandModalLines.map((line, i) => (
-                <tr key={i} className="border-b border-border/20 hover:bg-accent/30">
-                  <td className="py-2 max-w-[200px] truncate font-medium">{line.title}</td>
-                  <td className="py-2 pr-3 font-mono text-muted-foreground">{line.sku || '—'}</td>
-                  <td className="py-2 pr-3 text-right tabular-nums">{line.qty}</td>
-                  <td className="py-2 text-right tabular-nums">{formatCurrency(line.revenue)}</td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="border-t border-border/40 text-muted-foreground font-medium">
-                <td className="py-2 text-xs" colSpan={2}>總計</td>
-                <td className="py-2 pr-3 text-right tabular-nums text-xs">
-                  {brandModalLines.reduce((s, l) => s + l.qty, 0)}
-                </td>
-                <td className="py-2 text-right tabular-nums text-xs">
-                  {formatCurrency(brandModalLines.reduce((s, l) => s + l.revenue, 0))}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        )}
-      </DetailModal>
+      <DateRangeBar
+        from={range.from}
+        to={range.to}
+        onChange={(f, t) => setRange({ from: f, to: t })}
+      />
 
-      {/* ── Category Detail Modal ───────────────────────────────────────────── */}
-      <DetailModal
-        open={catModal.open}
-        onClose={() => setCatModal({ open: false, cat: '' })}
-        title={`${catModal.cat} — 品牌拆解`}
+      {/* 1. 銷售渠道分析（當月） */}
+      <Card className="border-border/40">
+        <CardHeader>
+          <CardTitle className="text-base">1. 銷售渠道分析（當月）</CardTitle>
+          <p className="text-xs text-muted-foreground">{monthRange.from} → {monthRange.to}</p>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {channelRows.length === 0 && (
+            <div className="text-sm text-muted-foreground col-span-3">本月暫無銷售資料</div>
+          )}
+          {channelRows.map(c => (
+            <div key={c.name} className="border border-border/40 rounded-lg p-4 bg-accent/10">
+              <div className="flex items-center gap-2 mb-2">
+                <ChannelIcon name={c.name} />
+                <span className="text-sm font-medium">{c.name}</span>
+                <Badge variant="secondary" className="ml-auto text-[10px]">
+                  {formatPercent(c.share * 100)}
+                </Badge>
+              </div>
+              <div className="text-xl font-bold">{formatCurrency(c.revenue)}</div>
+              <div className="text-xs text-muted-foreground mt-1">{formatNumber(c.orders)} 張訂單</div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      {/* 2. 本期核心 KPI */}
+      <div>
+        <h2 className="text-base font-semibold mb-3">2. 本期核心 KPI</h2>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <KpiCard
+            title="本期營收"
+            subtitle={`vs 上期 / vs 去年`}
+            value={formatCurrency(cur.revenue)}
+            icon={DollarSign}
+            delta={calcDelta(cur.revenue, prev.revenue)}
+            testId="kpi-revenue"
+          />
+          <KpiCard
+            title="本期訂單"
+            subtitle={`vs 上期 / vs 去年`}
+            value={formatNumber(cur.orders)}
+            icon={ShoppingCart}
+            delta={calcDelta(cur.orders, prev.orders)}
+            testId="kpi-orders"
+          />
+          <KpiCard
+            title="平均單價 AOV"
+            subtitle={`vs 上期 / vs 去年`}
+            value={formatCurrency(cur.aov)}
+            icon={TrendingUp}
+            delta={calcDelta(cur.aov, prev.aov)}
+            testId="kpi-aov"
+          />
+          <button onClick={() => setPromoOpen(true)} className="text-left" data-testid="kpi-promo-button">
+            <KpiCard
+              title="折扣碼數量"
+              subtitle="點擊展開明細"
+              value={formatNumber(cur.promoCount)}
+              icon={Tag}
+              delta={calcDelta(cur.promoCount, prev.promoCount)}
+              testId="kpi-promo"
+            />
+          </button>
+        </div>
+        {/* YoY supplementary line */}
+        <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3 text-[11px] text-muted-foreground">
+          <YoyLine label="vs 去年同期" cur={cur.revenue} ref={yoy.revenue} fmt={formatCurrency} />
+          <YoyLine label="vs 去年同期" cur={cur.orders} ref={yoy.orders} fmt={formatNumber} />
+          <YoyLine label="vs 去年同期" cur={cur.aov} ref={yoy.aov} fmt={formatCurrency} />
+          <YoyLine label="vs 去年同期" cur={cur.promoCount} ref={yoy.promoCount} fmt={formatNumber} />
+        </div>
+      </div>
+
+      {/* 3. Promo Codes 折扣碼使用情況 */}
+      <Card className="border-border/40">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center justify-between">
+            <span>3. Promo Codes 折扣碼使用情況</span>
+            <span className="text-xs font-normal text-muted-foreground">
+              共 {cur.promoCount} 個折扣碼，使用 {formatNumber(promoSummary.totalUses)} 次，
+              折讓 {formatCurrency(promoSummary.totalDisc)}，
+              帶來 {formatCurrency(promoSummary.totalRev)} 營收
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {promoRows.length === 0 ? (
+            <div className="text-sm text-muted-foreground">本期沒有使用折扣碼</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-xs text-muted-foreground border-b border-border/40">
+                  <tr>
+                    <th className="text-left py-2 px-2">折扣碼</th>
+                    <th className="text-right py-2 px-2">使用次數</th>
+                    <th className="text-right py-2 px-2">折讓金額</th>
+                    <th className="text-right py-2 px-2">帶來營收</th>
+                    <th className="text-right py-2 px-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {promoRows.map(r => (
+                    <tr key={r.code} className="border-b border-border/20 hover:bg-accent/20">
+                      <td className="py-2 px-2 font-medium">{r.code}</td>
+                      <td className="py-2 px-2 text-right">{formatNumber(r.uses)}</td>
+                      <td className="py-2 px-2 text-right text-amber-400">
+                        − {formatCurrency(r.discountAmt)}
+                      </td>
+                      <td className="py-2 px-2 text-right">{formatCurrency(r.revenue)}</td>
+                      <td className="py-2 px-2 text-right">
+                        <button
+                          onClick={() => setPromoDetail(r.code)}
+                          className="text-xs text-sky-400 hover:underline"
+                        >
+                          明細
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 4. Top 5 Brands / Categories */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card className="border-border/40">
+          <CardHeader>
+            <CardTitle className="text-base">4a. Top 5 品牌</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <TopList rows={topBrands} />
+          </CardContent>
+        </Card>
+        <Card className="border-border/40">
+          <CardHeader>
+            <CardTitle className="text-base">4b. Top 5 品類</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <TopList rows={topCats} />
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* 5. Brand Performance */}
+      <ChartCard
+        title="5. 品牌表現 Brand Performance"
+        subtitle={`${range.from} → ${range.to}　·　${brandPerfMetric === 'revenue' ? '銷售額' : '件數'}`}
+        note=""
       >
-        {catModalLines.length === 0 ? (
-          <p className="text-sm text-muted-foreground text-center py-4">所選日期範圍內無數據</p>
-        ) : (
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-border/40 text-muted-foreground">
-                <th className="text-left py-2 font-medium">品牌 Brand</th>
-                <th className="text-right py-2 pr-3 font-medium">件數</th>
-                <th className="text-right py-2 font-medium">銷售額</th>
+        <div className="flex items-center gap-2 mb-2">
+          <button
+            className={`text-xs px-2 py-1 rounded border ${brandPerfMetric === 'revenue' ? 'bg-primary text-primary-foreground' : 'bg-accent/30 border-border/40'}`}
+            onClick={() => setBrandPerfMetric('revenue')}
+          >銷售額</button>
+          <button
+            className={`text-xs px-2 py-1 rounded border ${brandPerfMetric === 'qty' ? 'bg-primary text-primary-foreground' : 'bg-accent/30 border-border/40'}`}
+            onClick={() => setBrandPerfMetric('qty')}
+          >件數</button>
+          <button
+            className="text-xs px-2 py-1 rounded border bg-accent/30 border-border/40 ml-auto"
+            onClick={() => setBrandPerfExpand(v => !v)}
+          >
+            {brandPerfExpand ? '收起 (僅顯示 Top10)' : `展開全部 (${Object.keys(cur.brandMap).length})`}
+          </button>
+        </div>
+        <div style={{ height: brandPerfExpand ? Math.max(300, brandPerf.length * 24) : 320 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart
+              data={brandPerf}
+              layout="vertical"
+              margin={{ top: 10, right: 24, bottom: 10, left: 100 }}
+            >
+              <CartesianGrid {...GRID_STYLE} horizontal={false} />
+              <XAxis type="number" {...AXIS_STYLE} />
+              <YAxis dataKey="name" type="category" {...AXIS_STYLE} width={100} />
+              <Tooltip
+                {...TOOLTIP_STYLE}
+                formatter={(v: any) => brandPerfMetric === 'revenue' ? formatCurrency(v as number) : formatNumber(v as number)}
+              />
+              <Bar dataKey={brandPerfMetric} radius={[0, 4, 4, 0]}>
+                {brandPerf.map((_, i) => (
+                  <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-1">
+          {Object.keys(cur.brandMap).map(name => {
+            const hidden = hiddenBrands.has(name);
+            return (
+              <button
+                key={name}
+                onClick={() => {
+                  setHiddenBrands(s => {
+                    const n = new Set(s);
+                    if (n.has(name)) n.delete(name); else n.add(name);
+                    return n;
+                  });
+                }}
+                className={`text-[10px] px-1.5 py-0.5 rounded border ${hidden ? 'bg-muted/30 border-border/30 text-muted-foreground line-through' : 'bg-accent/40 border-border/50'}`}
+              >
+                {name}
+              </button>
+            );
+          })}
+        </div>
+      </ChartCard>
+
+      {/* 6. Brand & Category Performance Details (drill-down) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <PerformanceTable
+          title="6a. 品牌表現明細（點擊展開）"
+          rows={brandTable}
+          onClick={n => setBrandDrill(n)}
+        />
+        <PerformanceTable
+          title="6b. 品類表現明細（點擊展開）"
+          rows={catTable}
+          onClick={n => setCatDrill(n)}
+        />
+      </div>
+
+      {/* 7. Top 5 SKU */}
+      <Card className="border-border/40">
+        <CardHeader>
+          <CardTitle className="text-base">7. 本期最佳產品 Top 5 SKU</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {cur.topSkus.length === 0 ? (
+            <div className="text-sm text-muted-foreground">本期暫無資料</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-xs text-muted-foreground border-b border-border/40">
+                  <tr>
+                    <th className="text-left py-2 px-2">#</th>
+                    <th className="text-left py-2 px-2">品牌</th>
+                    <th className="text-left py-2 px-2">SKU / 產品名稱</th>
+                    <th className="text-right py-2 px-2">件數</th>
+                    <th className="text-right py-2 px-2">銷售額</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cur.topSkus.map((s, i) => (
+                    <tr key={s.sku + i} className="border-b border-border/20 hover:bg-accent/20">
+                      <td className="py-2 px-2 text-muted-foreground">#{i + 1}</td>
+                      <td className="py-2 px-2">{s.vendor}</td>
+                      <td className="py-2 px-2">
+                        <div className="font-medium text-foreground">{s.title}</div>
+                        <div className="text-xs text-muted-foreground">{s.sku}</div>
+                      </td>
+                      <td className="py-2 px-2 text-right">{formatNumber(s.qty)}</td>
+                      <td className="py-2 px-2 text-right">{formatCurrency(s.revenue)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── Modals ─────────────────────────────────────────────────────── */}
+      <Modal
+        open={promoOpen}
+        onClose={() => setPromoOpen(false)}
+        title="折扣碼一覽"
+        subtitle={`${range.from} → ${range.to}（${cur.promoCount} 個碼，${promoSummary.totalUses} 次使用）`}
+      >
+        <PromoTable rows={promoRows} onPick={c => { setPromoOpen(false); setPromoDetail(c); }} />
+      </Modal>
+
+      <Modal
+        open={!!promoDetail}
+        onClose={() => setPromoDetail(null)}
+        title={`折扣碼明細 — ${promoDetail || ''}`}
+        subtitle={`${range.from} → ${range.to}`}
+      >
+        {promoDetailRows && (
+          <table className="w-full text-sm">
+            <thead className="text-xs text-muted-foreground border-b border-border/40">
+              <tr>
+                <th className="text-left py-2 px-2">訂單</th>
+                <th className="text-left py-2 px-2">商品</th>
+                <th className="text-right py-2 px-2">件數</th>
+                <th className="text-right py-2 px-2">銷售額</th>
               </tr>
             </thead>
             <tbody>
-              {catModalLines.map((line, i) => (
-                <tr key={i} className="border-b border-border/20 hover:bg-accent/30">
-                  <td className="py-2 font-medium">{line.brand}</td>
-                  <td className="py-2 pr-3 text-right tabular-nums">{line.qty}</td>
-                  <td className="py-2 text-right tabular-nums">{formatCurrency(line.revenue)}</td>
+              {promoDetailRows.map((r, i) => (
+                <tr key={i} className="border-b border-border/20">
+                  <td className="py-2 px-2">{r.orderName}</td>
+                  <td className="py-2 px-2">
+                    <div>{r.title}</div>
+                    <div className="text-xs text-muted-foreground">{r.sku}</div>
+                  </td>
+                  <td className="py-2 px-2 text-right">{formatNumber(r.qty)}</td>
+                  <td className="py-2 px-2 text-right">{formatCurrency(r.revenue)}</td>
                 </tr>
               ))}
             </tbody>
-            <tfoot>
-              <tr className="border-t border-border/40 text-muted-foreground font-medium">
-                <td className="py-2 text-xs">總計</td>
-                <td className="py-2 pr-3 text-right tabular-nums text-xs">
-                  {catModalLines.reduce((s, l) => s + l.qty, 0)}
-                </td>
-                <td className="py-2 text-right tabular-nums text-xs">
-                  {formatCurrency(catModalLines.reduce((s, l) => s + l.revenue, 0))}
-                </td>
-              </tr>
-            </tfoot>
           </table>
         )}
-      </DetailModal>
+      </Modal>
+
+      <Modal
+        open={!!brandDrill}
+        onClose={() => setBrandDrill(null)}
+        title={`品牌明細 — ${brandDrill || ''}`}
+        subtitle={`${range.from} → ${range.to} · 點擊產品看 SKU 明細`}
+      >
+        {brandDrillData && (
+          <DrillTable variants={brandDrillData} parent={brandDrill || ''} />
+        )}
+      </Modal>
+
+      <Modal
+        open={!!catDrill}
+        onClose={() => setCatDrill(null)}
+        title={`品類明細 — ${catDrill || ''}`}
+        subtitle={`${range.from} → ${range.to} · 點擊產品看 SKU 明細`}
+      >
+        {catDrillData && (
+          <DrillTable variants={catDrillData} parent={catDrill || ''} />
+        )}
+      </Modal>
     </div>
+  );
+}
+
+// ─── Sub components ──────────────────────────────────────────────────────────
+function YoyLine({ label, cur, ref, fmt }: { label: string; cur: number; ref: number; fmt: (v: number) => string }) {
+  const d = calcDelta(cur, ref);
+  if (d == null) {
+    return <div className="px-3">{label}: 去年無數據</div>;
+  }
+  const color = d > 0 ? 'text-emerald-400' : d < 0 ? 'text-red-400' : 'text-muted-foreground';
+  return (
+    <div className="px-3">
+      {label}: {fmt(ref)} <span className={color}>({d > 0 ? '+' : ''}{d.toFixed(1)}%)</span>
+    </div>
+  );
+}
+
+function TopList({ rows }: { rows: { name: string; revenue: number; qty: number }[] }) {
+  if (rows.length === 0) return <div className="text-sm text-muted-foreground">本期暫無資料</div>;
+  const max = Math.max(...rows.map(r => r.revenue));
+  return (
+    <div className="space-y-2">
+      {rows.map((r, i) => (
+        <div key={r.name + i} className="flex items-center gap-3 text-sm">
+          <span className="text-muted-foreground w-5 text-xs">#{i + 1}</span>
+          <div className="flex-1">
+            <div className="flex items-baseline justify-between">
+              <span className="font-medium truncate">{r.name}</span>
+              <span className="text-foreground tabular-nums ml-3">{formatCurrency(r.revenue)}</span>
+            </div>
+            <div className="h-1.5 bg-accent/30 rounded mt-1 overflow-hidden">
+              <div
+                className="h-full bg-primary"
+                style={{ width: max > 0 ? `${(r.revenue / max) * 100}%` : 0 }}
+              />
+            </div>
+            <div className="text-[11px] text-muted-foreground mt-0.5">{formatNumber(r.qty)} 件</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PerformanceTable({
+  title, rows, onClick,
+}: {
+  title: string;
+  rows: { name: string; revenue: number; qty: number }[];
+  onClick: (name: string) => void;
+}) {
+  return (
+    <Card className="border-border/40">
+      <CardHeader>
+        <CardTitle className="text-base">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {rows.length === 0 ? (
+          <div className="text-sm text-muted-foreground">本期暫無資料</div>
+        ) : (
+          <div className="overflow-x-auto max-h-[420px]">
+            <table className="w-full text-sm">
+              <thead className="text-xs text-muted-foreground border-b border-border/40 sticky top-0 bg-card">
+                <tr>
+                  <th className="text-left py-2 px-2">名稱</th>
+                  <th className="text-right py-2 px-2">銷售額</th>
+                  <th className="text-right py-2 px-2">件數</th>
+                  <th className="text-right py-2 px-2">AOV</th>
+                  <th className="w-6"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr
+                    key={r.name}
+                    onClick={() => onClick(r.name)}
+                    className="border-b border-border/20 hover:bg-accent/30 cursor-pointer"
+                  >
+                    <td className="py-2 px-2 font-medium">{r.name}</td>
+                    <td className="py-2 px-2 text-right">{formatCurrency(r.revenue)}</td>
+                    <td className="py-2 px-2 text-right">{formatNumber(r.qty)}</td>
+                    <td className="py-2 px-2 text-right">
+                      {r.qty > 0 ? formatCurrency(r.revenue / r.qty) : '—'}
+                    </td>
+                    <td className="px-2"><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function PromoTable({
+  rows, onPick,
+}: {
+  rows: ReturnType<typeof Object.entries> extends infer R ? any : any;
+  onPick: (code: string) => void;
+}) {
+  const arr = rows as { code: string; uses: number; discountAmt: number; revenue: number }[];
+  if (arr.length === 0) return <div className="text-sm text-muted-foreground">本期沒有使用折扣碼</div>;
+  return (
+    <table className="w-full text-sm">
+      <thead className="text-xs text-muted-foreground border-b border-border/40">
+        <tr>
+          <th className="text-left py-2 px-2">折扣碼</th>
+          <th className="text-right py-2 px-2">使用次數</th>
+          <th className="text-right py-2 px-2">折讓金額</th>
+          <th className="text-right py-2 px-2">帶來營收</th>
+        </tr>
+      </thead>
+      <tbody>
+        {arr.map(r => (
+          <tr
+            key={r.code}
+            onClick={() => onPick(r.code)}
+            className="border-b border-border/20 hover:bg-accent/30 cursor-pointer"
+          >
+            <td className="py-2 px-2 font-medium">{r.code}</td>
+            <td className="py-2 px-2 text-right">{formatNumber(r.uses)}</td>
+            <td className="py-2 px-2 text-right text-amber-400">− {formatCurrency(r.discountAmt)}</td>
+            <td className="py-2 px-2 text-right">{formatCurrency(r.revenue)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function DrillTable({
+  variants, parent,
+}: {
+  variants: { title: string; qty: number; revenue: number; skus: Record<string, { sku: string; title: string; qty: number; revenue: number }> }[];
+  parent: string;
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const totalRev = variants.reduce((s, v) => s + v.revenue, 0);
+
+  return (
+    <table className="w-full text-sm">
+      <thead className="text-xs text-muted-foreground border-b border-border/40">
+        <tr>
+          <th className="text-left py-2 px-2">產品 (Variant)</th>
+          <th className="text-right py-2 px-2">件數</th>
+          <th className="text-right py-2 px-2">銷售額</th>
+          <th className="text-right py-2 px-2">平均單價</th>
+          <th className="text-right py-2 px-2">佔比</th>
+        </tr>
+      </thead>
+      <tbody>
+        {variants.map(v => {
+          const open = expanded.has(v.title);
+          const skuList = Object.values(v.skus).sort((a, b) => b.revenue - a.revenue);
+          return (
+            <Fragment key={v.title}>
+              <tr
+                onClick={() => {
+                  setExpanded(s => {
+                    const n = new Set(s);
+                    if (n.has(v.title)) n.delete(v.title); else n.add(v.title);
+                    return n;
+                  });
+                }}
+                className="border-b border-border/20 hover:bg-accent/30 cursor-pointer"
+              >
+                <td className="py-2 px-2 font-medium">
+                  <span className="inline-flex items-center gap-1">
+                    {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                    {v.title}
+                  </span>
+                </td>
+                <td className="py-2 px-2 text-right">{formatNumber(v.qty)}</td>
+                <td className="py-2 px-2 text-right">{formatCurrency(v.revenue)}</td>
+                <td className="py-2 px-2 text-right">
+                  {v.qty > 0 ? formatCurrency(v.revenue / v.qty) : '—'}
+                </td>
+                <td className="py-2 px-2 text-right text-xs text-muted-foreground">
+                  {totalRev > 0 ? formatPercent((v.revenue / totalRev) * 100) : '—'}
+                </td>
+              </tr>
+              {open && skuList.map(s => (
+                <tr key={v.title + s.sku} className="bg-muted/10 border-b border-border/10">
+                  <td className="py-1.5 pl-10 pr-2 text-xs text-muted-foreground">
+                    SKU: {s.sku}
+                  </td>
+                  <td className="py-1.5 px-2 text-right text-xs">{formatNumber(s.qty)}</td>
+                  <td className="py-1.5 px-2 text-right text-xs">{formatCurrency(s.revenue)}</td>
+                  <td className="py-1.5 px-2 text-right text-xs">
+                    {s.qty > 0 ? formatCurrency(s.revenue / s.qty) : '—'}
+                  </td>
+                  <td></td>
+                </tr>
+              ))}
+            </Fragment>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
