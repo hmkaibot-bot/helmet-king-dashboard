@@ -144,15 +144,17 @@ def sync_shopify_inventory():
 
 # ---------------------------------------------------------------- BC
 def sync_bc_inventory():
-    tenant = os.environ.get("BC_TENANT_ID")
-    client_id = os.environ.get("BC_CLIENT_ID")
-    secret = os.environ.get("BC_CLIENT_SECRET")
-    env = os.environ.get("BC_ENVIRONMENT", "Production")
-    company = os.environ.get("BC_COMPANY_ID")
+    # GitHub Secrets 可能附帶 \n / 空格，統一 strip
+    tenant = (os.environ.get("BC_TENANT_ID") or "").strip()
+    client_id = (os.environ.get("BC_CLIENT_ID") or "").strip()
+    secret = (os.environ.get("BC_CLIENT_SECRET") or "").strip()
+    env = (os.environ.get("BC_ENVIRONMENT") or "Production").strip()
+    company = (os.environ.get("BC_COMPANY_ID") or "").strip()
     if not all([tenant, client_id, secret, company]):
         print("[BC] skipped — missing BC_TENANT_ID/BC_CLIENT_ID/BC_CLIENT_SECRET/BC_COMPANY_ID", flush=True)
         return
     print("=== BC inventory snapshot ===", flush=True)
+    print(f"[BC] tenant={tenant[:8]}… client_id={client_id[:8]}… company={company[:8]}… env={env} secret_len={len(secret)}", flush=True)
 
     # 1. OAuth token
     tok = requests.post(
@@ -165,7 +167,10 @@ def sync_bc_inventory():
         },
         timeout=30,
     )
-    tok.raise_for_status()
+    if tok.status_code != 200:
+        # 列出 AAD 返回的 error_description 方便 debug
+        print(f"[BC] token request failed [{tok.status_code}]: {tok.text[:600]}", flush=True)
+        tok.raise_for_status()
     access = tok.json()["access_token"]
     print("[BC] got access token", flush=True)
 
