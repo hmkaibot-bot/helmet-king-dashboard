@@ -175,17 +175,23 @@ def sync_bc_inventory():
     print("[BC] got access token", flush=True)
 
     # 2. Fetch all items, paginated
+    # 重要：BC API 帶 $top 會關掉 server-side pagination（不會回 @odata.nextLink）
+    # 不指定 $top 才會以 20,000 為一頁以 skiptoken 分頁
     base = f"https://api.businesscentral.dynamics.com/v2.0/{tenant}/{env}/api/v2.0/companies({company})/items"
     auth_h = {"Authorization": f"Bearer {access}"}
     items = []
-    url = f"{base}?$top=5000"
+    url = base
+    page = 0
     while url:
-        r = requests.get(url, headers=auth_h, timeout=120)
+        r = requests.get(url, headers=auth_h, timeout=180)
         r.raise_for_status()
         data = r.json()
-        items.extend(data.get("value", []))
+        batch = data.get("value", [])
+        items.extend(batch)
+        page += 1
+        print(f"[BC] page {page}: +{len(batch)} (running total {len(items)})", flush=True)
         url = data.get("@odata.nextLink")
-    print(f"[BC] fetched {len(items)} items", flush=True)
+    print(f"[BC] fetched {len(items)} items total", flush=True)
 
     # 3. Map to bc_inventory rows
     rows = []
