@@ -5,8 +5,9 @@ name: Daily Inventory Snapshot
 
 on:
   schedule:
-    # 每天 HKT 早上 7:30 = UTC 23:30（前一天）
-    - cron: "30 23 * * *"
+    # 每天 HKT 凌晨 02:30 = UTC 18:30（前一天）
+    # 跟 Shopify backfill (02:00) 同一個 2am batch。
+    - cron: "30 18 * * *"
   workflow_dispatch:
     inputs:
       sync_shopify:
