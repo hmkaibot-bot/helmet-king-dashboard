@@ -438,10 +438,10 @@ export default function WeeklyReview() {
         </div>
         {/* YoY supplementary line */}
         <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3 text-[11px] text-muted-foreground">
-          <YoyLine label="vs 去年同期" cur={cur.revenue} ref={yoy.revenue} fmt={formatCurrency} />
-          <YoyLine label="vs 去年同期" cur={cur.orders} ref={yoy.orders} fmt={formatNumber} />
-          <YoyLine label="vs 去年同期" cur={cur.aov} ref={yoy.aov} fmt={formatCurrency} />
-          <YoyLine label="vs 去年同期" cur={cur.promoCount} ref={yoy.promoCount} fmt={formatNumber} />
+          <YoyLine label="vs 去年同期" cur={cur.revenue} refValue={yoy.revenue} fmt={formatCurrency} />
+          <YoyLine label="vs 去年同期" cur={cur.orders} refValue={yoy.orders} fmt={formatNumber} />
+          <YoyLine label="vs 去年同期" cur={cur.aov} refValue={yoy.aov} fmt={formatCurrency} />
+          <YoyLine label="vs 去年同期" cur={cur.promoCount} refValue={yoy.promoCount} fmt={formatNumber} />
         </div>
       </div>
 
@@ -707,15 +707,15 @@ export default function WeeklyReview() {
 }
 
 // ─── Sub components ──────────────────────────────────────────────────────────
-function YoyLine({ label, cur, ref, fmt }: { label: string; cur: number; ref: number; fmt: (v: number) => string }) {
-  const d = calcDelta(cur, ref);
+function YoyLine({ label, cur, refValue, fmt }: { label: string; cur: number; refValue: number; fmt: (v: number) => string }) {
+  const d = calcDelta(cur, refValue);
   if (d == null) {
     return <div className="px-3">{label}: 去年無數據</div>;
   }
   const color = d > 0 ? 'text-emerald-400' : d < 0 ? 'text-red-400' : 'text-muted-foreground';
   return (
     <div className="px-3">
-      {label}: {fmt(ref)} <span className={color}>({d > 0 ? '+' : ''}{d.toFixed(1)}%)</span>
+      {label}: {fmt(refValue)} <span className={color}>({d > 0 ? '+' : ''}{d.toFixed(1)}%)</span>
     </div>
   );
 }
