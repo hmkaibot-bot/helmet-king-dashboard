@@ -26,6 +26,7 @@ import DailyWeeklyPage from "@/pages/daily-weekly";
 import VelocityPage from "@/pages/velocity";
 import NewProductsPage from "@/pages/new-products";
 import WeeklyReviewPage from "@/pages/weekly-review";
+import { ErrorBoundary } from "@/components/error-boundary";
 import MarselloApprovalPage from "@/pages/marsello-approval";
 import ProductAnalyticsPage from "@/pages/product-analytics";
 import ForecastPage from "@/pages/forecast";
@@ -34,6 +35,7 @@ import NotFound from "@/pages/not-found";
 function AppRouter() {
   return (
     <AppLayout>
+      <ErrorBoundary>
       <Switch>
         <Route path="/" component={OverviewPage} />
         <Route path="/retail/sales" component={RetailSalesPage} />
@@ -57,6 +59,7 @@ function AppRouter() {
         <Route path="/performance/forecast" component={ForecastPage} />
         <Route component={NotFound} />
       </Switch>
+      </ErrorBoundary>
     </AppLayout>
   );
 }

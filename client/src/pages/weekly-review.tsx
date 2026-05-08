@@ -8,7 +8,7 @@ import {
   ResponsiveContainer, Cell, PieChart, Pie,
 } from 'recharts';
 
-import { queryAllPages } from '@/lib/query-helpers';
+import { queryAllPages, queryInBatches } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { DataFreshnessBadge } from '@/components/data-freshness';
@@ -159,26 +159,56 @@ export default function WeeklyReview() {
   const [brandPerfExpand, setBrandPerfExpand] = useState(false);
   const [hiddenBrands, setHiddenBrands] = useState<Set<string>>(new Set());
 
+  // Fetch only the date window we actually need (cur + prev + yoy + month).
+  // Without a date filter the page would pull the entire 35k+ orders table
+  // and crash the browser when running 4 synchronous processOrders passes.
+  const fetchBounds = useMemo(() => {
+    const froms = [range.from, prevRange.from, yoyRange.from, monthRange.from];
+    const tos = [range.to, prevRange.to, yoyRange.to, monthRange.to];
+    return {
+      from: froms.reduce((a, b) => (a < b ? a : b)),
+      to: tos.reduce((a, b) => (a > b ? a : b)),
+    };
+  }, [range, prevRange, yoyRange, monthRange]);
+
   useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
     (async () => {
       try {
-        const [orders, lines] = await Promise.all([
-          queryAllPages(
-            'shopify_orders',
-            'id,order_number,created_at,total_price,total_discounts,financial_status,cancelled_at,discount_codes,source_name'
-          ),
-          queryAllPages(
-            'shopify_order_lines',
-            'order_id,product_id,sku,title,vendor,product_type,quantity,price'
-          ),
-        ]);
+        // 1. Pull orders in the relevant window (server-side filter)
+        const orders = await queryAllPages(
+          'shopify_orders',
+          'id,order_number,created_at,total_price,total_discounts,financial_status,cancelled_at,discount_codes,source_name',
+          [
+            { column: 'created_at', op: 'gte', value: fetchBounds.from },
+            { column: 'created_at', op: 'lte', value: fetchBounds.to + 'T23:59:59.999Z' },
+          ]
+        );
+        if (cancelled) return;
+
+        // 2. Pull lines only for those orders (batched 'in' query)
+        const orderIds = (orders as any[]).map(o => String(o.id));
+        const lines = await queryInBatches(
+          'shopify_order_lines',
+          'order_id,product_id,sku,title,vendor,product_type,quantity,price',
+          'order_id',
+          orderIds
+        );
+        if (cancelled) return;
+
         setOrdersRaw(orders as any);
         setLinesRaw(lines as any);
+      } catch (err) {
+        console.error('weekly-review fetch failed:', err);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchBounds]);
 
   const cur = useMemo(
     () => processOrders(ordersRaw, linesRaw, range.from, range.to),
