@@ -70,22 +70,6 @@ export function mapChannel(src: string | null): string {
 }
 
 /**
- * Garage / repair / service line detection.
- * Excludes Shopify line items whose product_type indicates a garage service
- * (維修 / 服務 / Labour / Service / Repair / 工時).
- * Used to keep the Weekly Review focused purely on retail.
- */
-export function isGarageLine(line: { product_type?: string | null }): boolean {
-  const pt = (line.product_type || '').toLowerCase();
-  if (!pt) return false;
-  // English keywords
-  if (/(labour|labor|service|repair|workshop|maintenance|installation|install)/.test(pt)) return true;
-  // Chinese keywords (繁體 + 簡體)
-  if (/(維修|维修|服務|服务|工時|工錢|安裝|安装|保養|保养|車房|驗車|验车|改裝|改装)/.test(pt)) return true;
-  return false;
-}
-
-/**
  * Loyalty / reward codes are excluded from promo analysis to mirror
  * existing dashboard behaviour:
  *   loyalty: matches ^[A-Z]\d{7}$
@@ -185,69 +169,26 @@ export function processOrders(
   const fromStr = from;
   const toStr = to + '\xff';
 
-  // Step 1: date / status filter
-  const dateOrders = ordersRaw.filter(o => {
+  const orders = ordersRaw.filter(o => {
     if (o.financial_status === 'refunded') return false;
     if (o.cancelled_at) return false;
     const ca = String(o.created_at || '');
     return ca >= fromStr && ca <= toStr;
   });
 
-  const dateOrderIds = new Set(dateOrders.map(o => String(o.id)));
-  const dateLines = linesRaw.filter(l => dateOrderIds.has(String(l.order_id)));
-
-  // Step 2: separate retail vs garage lines
-  const retailLines = dateLines.filter(l => !isGarageLine(l));
-  const garageLines = dateLines.filter(l => isGarageLine(l));
-
-  // Step 3: drop pure-garage orders (every line of the order is garage)
-  const garageOnlyOrderIds = new Set<string>();
-  const linesByOrder: Record<string, { total: number; garage: number }> = {};
-  for (const l of dateLines) {
-    const oid = String(l.order_id);
-    if (!linesByOrder[oid]) linesByOrder[oid] = { total: 0, garage: 0 };
-    linesByOrder[oid].total += 1;
-    if (isGarageLine(l)) linesByOrder[oid].garage += 1;
-  }
-  for (const [oid, c] of Object.entries(linesByOrder)) {
-    if (c.total > 0 && c.total === c.garage) garageOnlyOrderIds.add(oid);
-  }
-
-  // Final order set: keep orders that have at least one retail line, OR have no lines at all (header-only / unmapped)
-  const orders = dateOrders.filter(o => !garageOnlyOrderIds.has(String(o.id)));
   const orderIds = new Set(orders.map(o => String(o.id)));
+  const lines = linesRaw.filter(l => orderIds.has(String(l.order_id)));
 
-  // Final line set: retail lines only, belonging to surviving orders
-  const lines = retailLines.filter(l => orderIds.has(String(l.order_id)));
-
-  // Per-order garage discount/revenue carve-out for mixed orders
-  const garageRevByOrder: Record<string, number> = {};
-  for (const l of garageLines) {
-    const oid = String(l.order_id);
-    if (!orderIds.has(oid)) continue; // skip pure-garage orders, already dropped
-    const qty = parseInt(String(l.quantity || '1'), 10) || 0;
-    const price = parseFloat(String(l.price || '0')) * qty;
-    garageRevByOrder[oid] = (garageRevByOrder[oid] || 0) + price;
-  }
-
-  // Step 4: revenue uses retail-line sum (subtract garage portion from total_price)
-  const revenue = orders.reduce((s, o) => {
-    const total = parseFloat(String(o.total_price || 0));
-    const garageCut = garageRevByOrder[String(o.id)] || 0;
-    return s + Math.max(0, total - garageCut);
-  }, 0);
+  const revenue = orders.reduce((s, o) => s + parseFloat(String(o.total_price || 0)), 0);
   const orderCount = orders.length;
   const aov = orderCount > 0 ? revenue / orderCount : 0;
 
   const channelMap: ProcessResult['channelMap'] = {};
   for (const o of orders) {
     const ch = mapChannel(o.source_name || null);
-    const total = parseFloat(String(o.total_price || 0));
-    const garageCut = garageRevByOrder[String(o.id)] || 0;
-    const retailRev = Math.max(0, total - garageCut);
     if (!channelMap[ch]) channelMap[ch] = { orders: 0, revenue: 0 };
     channelMap[ch].orders += 1;
-    channelMap[ch].revenue += retailRev;
+    channelMap[ch].revenue += parseFloat(String(o.total_price || 0));
   }
 
   const brandMap: ProcessResult['brandMap'] = {};
@@ -321,10 +262,8 @@ export function processOrders(
     } catch {
       // ignore
     }
+    const rev = parseFloat(String(o.total_price || 0));
     const oid = String(o.id);
-    const totalP = parseFloat(String(o.total_price || 0));
-    const garageCut = garageRevByOrder[oid] || 0;
-    const rev = Math.max(0, totalP - garageCut);
     const orderCodes: string[] = [];
     for (const c of codes) {
       const key = String(c.code || '').toUpperCase();
