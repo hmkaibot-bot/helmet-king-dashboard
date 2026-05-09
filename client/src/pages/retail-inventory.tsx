@@ -585,16 +585,23 @@ export default function RetailInventoryPage() {
     return s + (p > 0 && q > 0 ? p * q : 0);
   }, 0);
 
-  // Evergreen vs Seasonal classification
-  const classifyItem = (sku: string) => {
-    const count = purchaseCountByItem[sku] || 0;
-    if (count >= 3) return 'evergreen';
-    if (count >= 1) return 'seasonal';
-    return 'one-time';
+  // 人身部品 vs 車件 classification (by Shopify product_type)
+  // 人身部品 = HELMET - * / RIDER GEARS - *
+  // 車件        = MOTORCYCLE PARTS - * / ACCESSORIES - * / 其餘全部 (General / Workshop / NULL)
+  const classifyByType = (productType: string | null | undefined): 'apparel' | 'parts' => {
+    const t = String(productType || '').trim().toUpperCase();
+    if (t.startsWith('HELMET') || t.startsWith('RIDER GEARS')) return 'apparel';
+    return 'parts';
   };
 
-  const evergreenItems = useMemo(() => filteredInventory.filter((i: any) => classifyItem(i.sku) === 'evergreen'), [filteredInventory, purchaseCountByItem]);
-  const seasonalItems = useMemo(() => filteredInventory.filter((i: any) => classifyItem(i.sku) === 'seasonal'), [filteredInventory, purchaseCountByItem]);
+  const evergreenItems = useMemo(
+    () => filteredInventory.filter((i: any) => classifyByType(i.product_type) === 'parts'),
+    [filteredInventory]
+  );
+  const seasonalItems = useMemo(
+    () => filteredInventory.filter((i: any) => classifyByType(i.product_type) === 'apparel'),
+    [filteredInventory]
+  );
 
   const stockStatus = [
     { name: '有貨 In Stock', value: active.length - low.length },
@@ -603,9 +610,8 @@ export default function RetailInventoryPage() {
   ];
 
   const stockTypeData = [
-    { name: '常規 Evergreen', value: evergreenItems.length },
-    { name: '季節性 Seasonal', value: seasonalItems.length },
-    { name: '一次性 One-time', value: filteredInventory.length - evergreenItems.length - seasonalItems.length },
+    { name: '車件 Parts', value: evergreenItems.length },
+    { name: '人身部品 Apparel', value: seasonalItems.length },
   ];
 
   // Brand grouping
@@ -815,8 +821,8 @@ export default function RetailInventoryPage() {
         <TabsList className="grid w-full grid-cols-7 h-9" data-testid="inventory-tabs">
           <TabsTrigger value="overview" className="text-xs">概覽 Overview</TabsTrigger>
           <TabsTrigger value="products" className="text-xs">產品總覽 Products</TabsTrigger>
-          <TabsTrigger value="evergreen" className="text-xs">車件/消耗品</TabsTrigger>
-          <TabsTrigger value="seasonal" className="text-xs">人身部品</TabsTrigger>
+          <TabsTrigger value="evergreen" className="text-xs">車件 Parts</TabsTrigger>
+          <TabsTrigger value="seasonal" className="text-xs">人身部品 Apparel</TabsTrigger>
           <TabsTrigger value="brand" className="text-xs">按品牌 By Brand</TabsTrigger>
           <TabsTrigger value="value" className="text-xs">按價值 By Value</TabsTrigger>
           <TabsTrigger value="dead" className="text-xs">死貨 Dead Stock</TabsTrigger>
@@ -924,8 +930,8 @@ export default function RetailInventoryPage() {
             <KpiCard title="缺貨" subtitle="Out of Stock" value={formatNumber(oos.length)} icon={XCircle} loading={loading} testId="kpi-oos" />
             <KpiCard title="低庫存 ≤2" subtitle="Low Stock" value={formatNumber(low.length)} icon={AlertTriangle} loading={loading} testId="kpi-low" />
             <KpiCard title="庫存總值" subtitle="Value" value={formatCurrency(totalValue)} icon={DollarSign} loading={loading} testId="kpi-val" />
-            <KpiCard title="常規品" subtitle="Evergreen" value={formatNumber(evergreenItems.length)} icon={RefreshCw} loading={loading} testId="kpi-eg" />
-            <KpiCard title="季節性品" subtitle="Seasonal" value={formatNumber(seasonalItems.length)} icon={Leaf} loading={loading} testId="kpi-seasonal" />
+            <KpiCard title="車件" subtitle="Parts" value={formatNumber(evergreenItems.length)} icon={RefreshCw} loading={loading} testId="kpi-eg" />
+            <KpiCard title="人身部品" subtitle="Apparel" value={formatNumber(seasonalItems.length)} icon={Leaf} loading={loading} testId="kpi-seasonal" />
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1340,32 +1346,54 @@ export default function RetailInventoryPage() {
                             const priceRange = pg.minPrice === pg.maxPrice
                               ? formatCurrency(pg.minPrice)
                               : `${formatCurrency(pg.minPrice)} – ${formatCurrency(pg.maxPrice)}`;
+                            // Product-level totals
+                            const pgValue = pg.items.reduce((s: number, v: any) => {
+                              const p = parseFloat(v.price) || 0;
+                              const q = v.inventory_quantity || 0;
+                              return s + (p > 0 && q > 0 ? p * q : 0);
+                            }, 0);
+                            const pgOos = pg.items.filter((v: any) => (v.inventory_quantity || 0) === 0).length;
                             return (
                               <React.Fragment key={pgKey}>
+                                {/* Product group row — 6 columns aligned with header */}
                                 <tr
                                   className="border-b border-border/10 bg-accent/10 hover:bg-accent/20 transition-colors cursor-pointer"
                                   onClick={(e) => { e.stopPropagation(); setExpandedProduct(isPgExpanded ? null : pgKey); }}
                                 >
-                                  <td className="py-1.5 pl-2">
-                                    {isPgExpanded
-                                      ? <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
-                                      : <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />}
+                                  <td className="py-1.5 pl-4 font-medium max-w-[280px]">
+                                    <div className="flex items-center gap-1.5">
+                                      {isPgExpanded
+                                        ? <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+                                        : <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />}
+                                      <span className="truncate">{pg.title}</span>
+                                    </div>
                                   </td>
-                                  <td className="py-1.5 pl-2 font-medium max-w-[200px] truncate" colSpan={2}>{pg.title}</td>
+                                  <td className="py-1.5 text-right tabular-nums text-[10px] text-muted-foreground">{pg.variantCount}</td>
                                   <td className="py-1.5 text-right tabular-nums">{formatNumber(pg.totalStock)}</td>
-                                  <td className="py-1.5 text-right text-[10px] text-muted-foreground">{pg.variantCount} variants</td>
-                                  <td className="py-1.5 text-right tabular-nums text-[10px]">{priceRange}</td>
+                                  <td className="py-1.5 text-right tabular-nums">{formatCurrency(pgValue)}</td>
+                                  <td className="py-1.5 text-right tabular-nums">{pgOos > 0 ? <span className="text-amber-400">{pgOos}</span> : '0'}</td>
+                                  <td className="py-1.5 text-right text-[10px] text-muted-foreground tabular-nums">{priceRange}</td>
                                 </tr>
                                 {isPgExpanded && pg.items.map((variant: any, vi: number) => {
                                   const vp = parseVariantTitle(variant.variant_title);
+                                  const vQty = variant.inventory_quantity || 0;
+                                  const vPrice = parseFloat(variant.price) || 0;
+                                  const vValue = vPrice > 0 && vQty > 0 ? vPrice * vQty : 0;
                                   return (
-                                    <tr key={variant.sku || `${pgKey}-v${vi}`} className="border-b border-border/10 bg-accent/5">
-                                      <td className="py-1 pl-6"></td>
-                                      <td className="py-1 pl-4 font-mono text-[10px] text-muted-foreground" colSpan={1}>{variant.sku || '—'}</td>
-                                      <td className="py-1 text-muted-foreground text-[10px]">{vp.color || '—'}</td>
-                                      <td className="py-1 text-muted-foreground text-[10px]">{vp.size || '—'}</td>
-                                      <td className="py-1 text-right tabular-nums text-[10px]">{variant.inventory_quantity ?? 0}</td>
-                                      <td className="py-1 text-right tabular-nums text-[10px]">{formatCurrency(parseFloat(variant.price) || 0)}</td>
+                                    <tr key={variant.sku || `${pgKey}-v${vi}`} className="border-b border-border/5 bg-accent/5">
+                                      <td className="py-1 pl-8 font-mono text-[10px] text-muted-foreground truncate max-w-[280px]">
+                                        {variant.sku || '—'}
+                                        {(vp.color || vp.size) && (
+                                          <span className="ml-2 text-muted-foreground/70">
+                                            {vp.color || ''}{vp.color && vp.size ? ' / ' : ''}{vp.size || ''}
+                                          </span>
+                                        )}
+                                      </td>
+                                      <td className="py-1 text-right text-[10px] text-muted-foreground">—</td>
+                                      <td className="py-1 text-right tabular-nums text-[10px]">{vQty}</td>
+                                      <td className="py-1 text-right tabular-nums text-[10px]">{formatCurrency(vValue)}</td>
+                                      <td className="py-1 text-right text-[10px] text-muted-foreground">{vQty === 0 ? <span className="text-amber-400">OOS</span> : '—'}</td>
+                                      <td className="py-1 text-right tabular-nums text-[10px] text-muted-foreground">{formatCurrency(vPrice)}</td>
                                     </tr>
                                   );
                                 })}

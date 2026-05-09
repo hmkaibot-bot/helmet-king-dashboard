@@ -50,6 +50,16 @@ interface ShopifyProductRow {
   created_at: string;
 }
 
+interface BcPurchaseInvoiceRow {
+  id: string;
+  posting_date: string | null;
+}
+
+interface BcPurchaseInvoiceLineRow {
+  invoice_id: string;
+  item_number: string; // = sku
+}
+
 interface BcInventoryRow {
   number: string; // = sku
   unit_cost: number;
@@ -176,7 +186,8 @@ const DEFAULT_FILTERS: FilterState = {
   search: '',
   vendors: [],
   product_types: [],
-  system_statuses: [],
+  // 預設勾齊 4 個 status，讓用戶見到正常貨；user 可以 uncheck「正常」隱藏它
+  system_statuses: ['正常', '慢移貨', '高風險死貨', '真正死貨'],
   manual_statuses: [],
   actions: [],
 };
@@ -305,6 +316,8 @@ export default function DeadStockPage() {
   const [reviews, setReviews] = useState<DeadStockReview[]>([]);
   const [auditLog, setAuditLog] = useState<AuditLogRow[]>([]);
   const [shopifyProducts, setShopifyProducts] = useState<ShopifyProductRow[]>([]);
+  const [purchaseInvoices, setPurchaseInvoices] = useState<BcPurchaseInvoiceRow[]>([]);
+  const [purchaseInvoiceLines, setPurchaseInvoiceLines] = useState<BcPurchaseInvoiceLineRow[]>([]);
 
   // UI state
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
@@ -475,7 +488,7 @@ export default function DeadStockPage() {
     setLoading(true);
     setError(null);
     try {
-      const [invRows, bcRows, linesRows, ordersRows, reviewsResult, auditResult, productsRows] = await Promise.all([
+      const [invRows, bcRows, linesRows, ordersRows, reviewsResult, auditResult, productsRows, piRows, pilRows] = await Promise.all([
         queryAllPages('shopify_inventory', 'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price', [
           { column: 'inventory_quantity', op: 'gte', value: '1' },
         ]),
@@ -485,6 +498,8 @@ export default function DeadStockPage() {
         supabase.from('dead_stock_reviews').select('*'),
         supabase.from('dead_stock_audit_log').select('*').order('changed_at', { ascending: false }),
         queryAllPages('shopify_products', 'id,status,created_at'),
+        queryAllPages('bc_purchase_invoices', 'id,posting_date'),
+        queryAllPages('bc_purchase_invoice_lines', 'invoice_id,item_number'),
       ]);
 
       setShopifyInv(invRows as ShopifyInventoryRow[]);
@@ -494,6 +509,8 @@ export default function DeadStockPage() {
       setReviews((reviewsResult.data ?? []) as DeadStockReview[]);
       setAuditLog((auditResult.data ?? []) as AuditLogRow[]);
       setShopifyProducts(productsRows as ShopifyProductRow[]);
+      setPurchaseInvoices(piRows as BcPurchaseInvoiceRow[]);
+      setPurchaseInvoiceLines(pilRows as BcPurchaseInvoiceLineRow[]);
     } catch (e: any) {
       setError(e?.message ?? 'Failed to load data');
     } finally {
@@ -509,10 +526,29 @@ export default function DeadStockPage() {
     const now = Date.now();
     const MS_PER_DAY = 86400000;
 
-    // Build product lookup: exclude draft products and products created within 90 days
+    // Build product lookup: exclude draft products only
     const productMap = new Map<string, ShopifyProductRow>();
     for (const p of shopifyProducts) productMap.set(String(p.id), p);
-    const ninetyDaysAgo = now - 90 * MS_PER_DAY;
+
+    // Build last-receive-date map by SKU from BC purchase invoices
+    const piDateById = new Map<string, number>();
+    for (const pi of purchaseInvoices) {
+      if (!pi.posting_date) continue;
+      const ts = new Date(pi.posting_date).getTime();
+      if (Number.isFinite(ts)) piDateById.set(String(pi.id), ts);
+    }
+    const lastReceiveBySku = new Map<string, number>();
+    for (const pl of purchaseInvoiceLines) {
+      const sku = String(pl.item_number || '').trim();
+      if (!sku) continue;
+      const ts = piDateById.get(String(pl.invoice_id));
+      if (ts == null) continue;
+      const prev = lastReceiveBySku.get(sku);
+      if (prev == null || ts > prev) lastReceiveBySku.set(sku, ts);
+    }
+    // 60-day new-product protection window (after last receive)
+    const PROTECTION_DAYS = 60;
+    const protectionThreshold = now - PROTECTION_DAYS * MS_PER_DAY;
 
     const bcMap = new Map<string, BcInventoryRow>();
     for (const b of bcInv) bcMap.set(b.number, b);
@@ -557,8 +593,6 @@ export default function DeadStockPage() {
       // Exclude draft products — they are unpublished and cannot be sold
       const product = productMap.get(String(inv.product_id));
       if (product?.status === 'draft') continue;
-      // Exclude products created within the last 90 days — too new to classify as dead stock
-      if (product?.created_at && new Date(product.created_at).getTime() > ninetyDaysAgo) continue;
       const bc = bcMap.get(inv.sku);
       const unitCost = bc?.unit_cost ?? 0;
       const stockCost = inv.inventory_quantity * unitCost;
@@ -576,11 +610,28 @@ export default function DeadStockPage() {
         ? new Date(stats.firstDate).toISOString().slice(0, 10)
         : null;
 
+      // New-product protection: if last receive within 60 days, force 正常
+      const lastReceiveTs = lastReceiveBySku.get(inv.sku) ?? null;
+      const isNewlyReceived = lastReceiveTs != null && lastReceiveTs > protectionThreshold;
+      // Anchor for staleness: count days from the more recent of last sale / last receive.
+      // 如 SKU 入起货後未賣出，那予它一個合理銷售期，不創倪丂丂 9999 那個默認值。
+      const anchorTs = Math.max(lastSoldTs ?? 0, lastReceiveTs ?? 0);
+      const daysSinceEffective = anchorTs > 0
+        ? Math.floor((now - anchorTs) / MS_PER_DAY)
+        : daysSince;
+
       let system_status: SystemStatus;
-      if (daysSince >= 270 && inv.inventory_quantity >= 3) system_status = '真正死貨';
-      else if (daysSince >= 180) system_status = '高風險死貨';
-      else if (daysSince >= 90) system_status = '慢移貨';
-      else system_status = '正常';
+      if (isNewlyReceived) {
+        system_status = '正常';
+      } else if (daysSinceEffective >= 270 && inv.inventory_quantity >= 3) {
+        system_status = '真正死貨';
+      } else if (daysSinceEffective >= 180) {
+        system_status = '高風險死貨';
+      } else if (daysSinceEffective >= 90) {
+        system_status = '慢移貨';
+      } else {
+        system_status = '正常';
+      }
 
       const rev = reviewMap.get(inv.sku);
 
@@ -617,7 +668,7 @@ export default function DeadStockPage() {
     }
 
     return result;
-  }, [shopifyInv, bcInv, orderLines, orders, reviews, shopifyProducts]);
+  }, [shopifyInv, bcInv, orderLines, orders, reviews, shopifyProducts, purchaseInvoices, purchaseInvoiceLines]);
 
   // ── Summary stats ───────────────────────────────────────────────────────────
 
@@ -656,11 +707,8 @@ export default function DeadStockPage() {
   const productGroups = useMemo<ProductGroup[]>(() => {
     let items = computedItems;
 
-    // Default: hide normal
+    // Status filter: show only the selected statuses (default = all 4 預設全 show)
     const hasStatusFilter = filters.system_statuses.length > 0;
-    if (!hasStatusFilter) {
-      items = items.filter(i => i.system_status !== '正常');
-    }
 
     if (filters.search) {
       const q = filters.search.toLowerCase();
@@ -671,7 +719,12 @@ export default function DeadStockPage() {
     }
     if (filters.vendors.length) items = items.filter(i => filters.vendors.includes(i.vendor));
     if (filters.product_types.length) items = items.filter(i => filters.product_types.includes(i.product_type));
-    if (hasStatusFilter) items = items.filter(i => filters.system_statuses.includes(i.system_status));
+    if (hasStatusFilter) {
+      items = items.filter(i => filters.system_statuses.includes(i.system_status));
+    } else {
+      // 什麼 status 都不勾 = 什麼都不 show
+      items = [];
+    }
     if (filters.manual_statuses.length) items = items.filter(i => filters.manual_statuses.includes(i.manual_status ?? ''));
     if (filters.actions.length) items = items.filter(i => filters.actions.includes(i.action ?? ''));
 
