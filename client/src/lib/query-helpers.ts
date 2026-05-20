@@ -105,7 +105,60 @@ export async function queryInBatches(
  * Query ALL records from a table using 1000-per-page pagination.
  * Supabase REST API caps responses at 1000 rows — this loops through all pages.
  */
+// In-memory cache shared across pages so that switching back to a previously
+// viewed page (e.g. inventory → dead-stock → inventory) does not re-fetch the
+// same large tables. Entries auto-expire after TTL_MS.
+const _cache = new Map<string, { ts: number; data: any[]; pending?: Promise<any[]> }>();
+const CACHE_TTL_MS = 5 * 60 * 1000;       // 5 minutes "fresh"
+const CACHE_KEEP_MS = 30 * 60 * 1000;     // serve cached data up to 30 min on error
+
+function _makeKey(table: string, columns: string, extraFilters: any): string {
+  return `${table}|${columns}|${extraFilters ? JSON.stringify(extraFilters) : ''}`;
+}
+
+/** Manually invalidate cache (call after data sync or user clicks refresh). */
+export function clearQueryCache(tablePrefix?: string) {
+  if (!tablePrefix) { _cache.clear(); return; }
+  for (const k of Array.from(_cache.keys())) {
+    if (k.startsWith(`${tablePrefix}|`)) _cache.delete(k);
+  }
+}
+
 export async function queryAllPages(
+  table: string,
+  columns: string,
+  extraFilters?: { column: string; op: 'eq' | 'gte' | 'lte'; value: string }[],
+  maxRows = 200000
+): Promise<any[]> {
+  const cacheKey = _makeKey(table, columns, extraFilters);
+  const cached = _cache.get(cacheKey);
+  const now = Date.now();
+  // Serve fresh cache directly
+  if (cached && !cached.pending && now - cached.ts < CACHE_TTL_MS) {
+    return cached.data;
+  }
+  // De-duplicate concurrent identical requests
+  if (cached?.pending) return cached.pending;
+
+  const promise = _queryAllPagesUncached(table, columns, extraFilters, maxRows);
+  _cache.set(cacheKey, { ts: cached?.ts ?? 0, data: cached?.data ?? [], pending: promise });
+  try {
+    const data = await promise;
+    _cache.set(cacheKey, { ts: Date.now(), data });
+    return data;
+  } catch (err) {
+    // Fall back to stale cache if available (≤ 30 min old)
+    if (cached?.data && now - cached.ts < CACHE_KEEP_MS) {
+      _cache.set(cacheKey, { ts: cached.ts, data: cached.data });
+      console.warn(`queryAllPages(${table}) failed, returning stale cache`, err);
+      return cached.data;
+    }
+    _cache.delete(cacheKey);
+    throw err;
+  }
+}
+
+async function _queryAllPagesUncached(
   table: string,
   columns: string,
   extraFilters?: { column: string; op: 'eq' | 'gte' | 'lte'; value: string }[],

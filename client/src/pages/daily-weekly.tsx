@@ -407,7 +407,8 @@ export default function DailyWeeklyPage() {
   }, [allOrderLines]);
 
   // ── Yesterday orders (截止 18:00 HKT) ─────────────────────
-  const yOrders  = useMemo(() => filterOrders(allOrders, yesterday, yesterday).filter((o: any) => toHKHour(o.created_at) < 18),  [allOrders, yesterday, filterOrders]);
+  // Yesterday 整日 full-day — 未再碌制截 18:00, 最 1 日後復全部 24 小時
+  const yOrders  = useMemo(() => filterOrders(allOrders, yesterday, yesterday),  [allOrders, yesterday, filterOrders]);
   const lwOrders = useMemo(() => filterOrders(allOrders, sameDayLW, sameDayLW),  [allOrders, sameDayLW,  filterOrders]);
   const yRevenue  = useMemo(() => yOrders.reduce( (s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0), [yOrders]);
   const lwRevenue = useMemo(() => lwOrders.reduce((s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0), [lwOrders]);
