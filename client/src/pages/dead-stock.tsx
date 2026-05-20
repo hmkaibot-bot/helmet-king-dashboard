@@ -1005,6 +1005,45 @@ export default function DeadStockPage() {
     if (newAudit.data) setAuditLog(newAudit.data as AuditLogRow[]);
   };
 
+  // ── Group-level inline update (item layer batch) ────────────────────
+  // 代替 product row 上面 dropdown 一次改動 group 下面全部 SKU 的同一 field
+  const handleGroupInlineUpdate = async (
+    items: DeadStockItem[],
+    fieldName: 'manual_status',
+    newValue: string,
+  ) => {
+    if (items.length === 0) return;
+    const stamp = new Date().toISOString();
+
+    const reviewRows = items.map(it => ({
+      sku: it.sku,
+      [fieldName]: newValue || null,
+      updated_at: stamp,
+    }));
+    const auditRows = items
+      .filter(it => (it.manual_status ?? '') !== (newValue ?? ''))
+      .map(it => ({
+        sku: it.sku,
+        field_name: fieldName,
+        old_value: it.manual_status || null,
+        new_value: newValue || null,
+        changed_by: 'user (group)',
+        changed_at: stamp,
+      }));
+
+    await supabase.from('dead_stock_reviews').upsert(reviewRows, { onConflict: 'sku' });
+    if (auditRows.length) {
+      await supabase.from('dead_stock_audit_log').insert(auditRows);
+    }
+
+    const [newReviews, newAudit] = await Promise.all([
+      supabase.from('dead_stock_reviews').select('*'),
+      supabase.from('dead_stock_audit_log').select('*').order('changed_at', { ascending: false }),
+    ]);
+    if (newReviews.data) setReviews(newReviews.data as DeadStockReview[]);
+    if (newAudit.data) setAuditLog(newAudit.data as AuditLogRow[]);
+  };
+
   // ── Checkbox toggle helpers ─────────────────────────────────────────────────
 
   const toggleSelect = (sku: string) => {
@@ -1278,16 +1317,57 @@ export default function DeadStockPage() {
         defaultWidth: 140,
         sortKey: 'worst_system_status' as SortKey,
         filter: 'system_statuses' as const,
-        renderGroup: (group: ProductGroup) => (
-          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${
-            group.worst_system_status === '真正死貨' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
-            group.worst_system_status === '高風險死貨' ? 'bg-orange-500/15 text-orange-400 border-orange-500/30' :
-            group.worst_system_status === '慢移貨' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' :
-            'bg-green-500/15 text-green-400 border-green-500/30'
-          }`}>
-            {group.worst_system_status}
-          </span>
-        ),
+        renderGroup: (group: ProductGroup) => {
+          // Derive group manual_status: all-same -> that value; mixed -> sentinel
+          const distinctManual = new Set(group.skus.map(s => s.manual_status ?? ''));
+          const groupValue = distinctManual.size === 1
+            ? Array.from(distinctManual)[0]
+            : '__mixed__';
+          const isMixed = groupValue === '__mixed__';
+          const isEmpty = groupValue === '';
+          return (
+            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+              <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+                group.worst_system_status === '真正死貨' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
+                group.worst_system_status === '高風險死貨' ? 'bg-orange-500/15 text-orange-400 border-orange-500/30' :
+                group.worst_system_status === '慢移貨' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' :
+                'bg-green-500/15 text-green-400 border-green-500/30'
+              }`}>
+                {group.worst_system_status}
+              </span>
+              <select
+                value={isMixed ? '__mixed__' : groupValue}
+                onChange={async (e) => {
+                  const newVal = e.target.value;
+                  if (newVal === '__mixed__') return; // can't reselect sentinel
+                  if (!isMixed && newVal === groupValue) return;
+                  const confirmMsg = isMixed
+                    ? `該產品下 ${group.skus.length} 個 variants 當前 status 不一致。\n\n確認全部設為「${newVal ? MANUAL_STATUS_LABELS[newVal as keyof typeof MANUAL_STATUS_LABELS] : '清除'}」？`
+                    : `交「${group.product_title}」的 ${group.skus.length} 個 variants 同時設為「${newVal ? MANUAL_STATUS_LABELS[newVal as keyof typeof MANUAL_STATUS_LABELS] : '清除'}」？`;
+                  if (!window.confirm(confirmMsg)) return;
+                  await handleGroupInlineUpdate(group.skus, 'manual_status', newVal);
+                }}
+                className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent ${
+                  isMixed ? 'text-purple-300 border-purple-500/40 italic' :
+                  isEmpty ? 'text-muted-foreground border-border/30' :
+                  groupValue === 'confirmed_dead' ? 'text-red-400 border-red-500/30' :
+                  groupValue === 'revived' ? 'text-green-400 border-green-500/30' :
+                  groupValue === 'promoting' ? 'text-purple-400 border-purple-500/30' :
+                  groupValue === 'pending_review' ? 'text-yellow-400 border-yellow-500/30' :
+                  groupValue === 'observing' ? 'text-blue-400 border-blue-500/30' :
+                  'text-muted-foreground border-border/30'
+                }`}
+                title={isMixed ? `${group.skus.length} 個 variants 不一致 — 選一個值將全部一次 override` : `改變將套用到 ${group.skus.length} 個 variants`}
+              >
+                {isMixed && <option value="__mixed__" disabled>混合 Mixed</option>}
+                <option value="">—</option>
+                {MANUAL_STATUS_OPTIONS.map(s => (
+                  <option key={s} value={s}>{MANUAL_STATUS_LABELS[s]}</option>
+                ))}
+              </select>
+            </div>
+          );
+        },
         renderItem: () => null, // handled separately with inline dropdowns
       },
     ];
