@@ -105,6 +105,33 @@ def main():
         print("No orders fetched. Done.", flush=True)
         return
 
+    # Build a product_id -> product_type map by pulling shopify_products from
+    # Supabase. Shopify Orders API does NOT return product_type on line items;
+    # dashboard needs it, so we backfill here.
+    print("\n=== Fetching product_type map from Supabase ===", flush=True)
+    product_type_map = {}
+    pt_url = f"{SB_URL}/rest/v1/shopify_products?select=id,product_type"
+    pt_offset = 0
+    while True:
+        r = requests.get(
+            pt_url + f"&limit=1000&offset={pt_offset}",
+            headers={**SB_GET_H, "Range-Unit": "items", "Range": f"{pt_offset}-{pt_offset+999}"},
+            timeout=60,
+        )
+        if not r.ok:
+            print(f"  Product fetch ERR {r.status_code}: {r.text[:200]}", flush=True)
+            break
+        batch = r.json()
+        if not batch:
+            break
+        for p in batch:
+            if p.get("id") is not None and p.get("product_type"):
+                product_type_map[str(p["id"])] = p["product_type"]
+        if len(batch) < 1000:
+            break
+        pt_offset += 1000
+    print(f"Loaded {len(product_type_map)} product_type entries", flush=True)
+
     # Build order rows
     order_rows = []
     for o in orders:
@@ -155,7 +182,7 @@ def main():
                 "total_discount": float(li.get("total_discount") or 0),
                 "line_total": float(li.get("price") or 0) * (li.get("quantity") or 0),
                 "vendor": s(li.get("vendor"), 255),
-                "product_type": None,
+                "product_type": s(product_type_map.get(str(li.get("product_id") or "")), 255),
                 "requires_shipping": li.get("requires_shipping") is not False,
                 "fulfillment_status": li.get("fulfillment_status"),
             })
