@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
+import { queryWithDateRange, queryAll, queryInBatches } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
@@ -203,9 +203,13 @@ export default function OverviewPage() {
         hkt.setDate(hkt.getDate() - 1);
         const yesterdayStr = hkt.toISOString().slice(0, 10);
         const yOrders = await queryWithDateRange('shopify_orders', 'id,financial_status,cancelled_at,created_at', 'created_at', { from: yesterdayStr, to: yesterdayStr });
-        const yValidIds = new Set(yOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => o.id));
-        const allLines = await queryAll('shopify_order_lines', 'order_id,product_id,title,vendor,quantity,price', undefined, 50000);
-        const yLines = allLines.filter((l: any) => yValidIds.has(l.order_id));
+        const yValidIds = Array.from(new Set(yOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => String(o.id))));
+        const yLines = await queryInBatches(
+          'shopify_order_lines',
+          'order_id,product_id,title,vendor,quantity,price',
+          'order_id',
+          yValidIds
+        );
         const prodMap: Record<string, { title: string; vendor: string; qty: number; revenue: number }> = {};
         yLines.forEach((l: any) => {
           const key = (l.product_id || '') + '|' + (l.title || '');

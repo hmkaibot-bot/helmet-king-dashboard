@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
+import { queryWithDateRange, queryAll, queryAllPages, queryInBatches, getProductMeta } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
@@ -36,15 +36,30 @@ export default function RetailBrandsPage() {
     async function load() {
       setLoading(true);
       try {
-        const [orders, lines, inv, bcInv, purchaseLines, purchaseInvoices] = await Promise.all([
+        const [orders, inv, bcInv, purchaseLines, purchaseInvoices, productMeta] = await Promise.all([
           queryWithDateRange('shopify_orders', 'id,created_at,financial_status,cancelled_at', 'created_at', bounds),
-          queryAll('shopify_order_lines', 'order_id,title,sku,vendor,product_type,quantity,price,total_discount', undefined, 50000),
-          queryAll('shopify_inventory', 'variant_id,product_title,vendor,price,inventory_quantity,sku', undefined, 50000),
-          queryAll('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code', undefined, 50000),
-          queryAll('bc_purchase_invoice_lines', 'invoice_id,item_number,quantity,direct_unit_cost', undefined, 50000),
-          queryAll('bc_purchase_invoices', 'id,posting_date,vendor_name', undefined, 50000),
+          queryAllPages('shopify_inventory', 'variant_id,product_title,vendor,price,inventory_quantity,sku'),
+          queryAllPages('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code'),
+          queryAllPages('bc_purchase_invoice_lines', 'invoice_id,item_number,quantity,direct_unit_cost'),
+          queryAllPages('bc_purchase_invoices', 'id,posting_date,vendor_name'),
+          getProductMeta(),
         ]);
         if (cancelled) return;
+
+        // Pull lines via batched IN (avoids 1000-row Supabase cap)
+        const orderIdsAll = orders.map((o: any) => String(o.id));
+        const linesRaw = await queryInBatches(
+          'shopify_order_lines',
+          'order_id,product_id,title,sku,vendor,product_type,quantity,price,total_discount',
+          'order_id',
+          orderIdsAll
+        );
+        if (cancelled) return;
+        // Backfill vendor / product_type from products meta
+        const lines = linesRaw.map((l: any) => {
+          const pm = productMeta[String(l.product_id || '')];
+          return { ...l, vendor: l.vendor || pm?.vendor || '', product_type: l.product_type || pm?.product_type || '' };
+        });
 
         const validIds = new Set(orders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => o.id));
         const orderDateMap: Record<string, string> = {};

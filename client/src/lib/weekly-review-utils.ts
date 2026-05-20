@@ -164,7 +164,8 @@ export function processOrders(
   ordersRaw: Order[],
   linesRaw: Line[],
   from: string,
-  to: string
+  to: string,
+  productMeta?: Record<string, { product_type: string; vendor: string }>
 ): ProcessResult {
   const fromStr = from;
   const toStr = to + '\xff';
@@ -198,8 +199,12 @@ export function processOrders(
   const skuMapForTop: Record<string, { title: string; sku: string; vendor: string; qty: number; revenue: number }> = {};
 
   for (const l of lines) {
-    const vendor = (l.vendor || '未知品牌').trim() || '未知品牌';
-    const cat = (l.product_type || '未分類').trim() || '未分類';
+    // Fallback to shopify_products meta when shopify_order_lines fields are null
+    const meta = productMeta?.[String((l as any).product_id || '')];
+    const rawVendor = (l.vendor || meta?.vendor || '').trim();
+    const rawCat = (l.product_type || meta?.product_type || '').trim();
+    const vendor = rawVendor || '未知品牌';
+    const cat = rawCat || '未分類';
     const title = (l.title || '').trim() || (l.sku || 'N/A');
     const sku = (l.sku || '').trim() || title;
     const qty = parseInt(String(l.quantity || '1'), 10) || 0;

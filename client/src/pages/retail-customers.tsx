@@ -8,7 +8,7 @@ import { formatNumber, formatPercent } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
 import { Users, UserCheck, UserPlus, Star, Mail, Repeat, ShoppingBag } from 'lucide-react';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { queryAll as queryAllFull } from '@/lib/query-helpers';
+import { queryAllPages as queryAllFull, queryInBatches } from '@/lib/query-helpers';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
@@ -47,8 +47,8 @@ export default function RetailCustomersPage() {
             if (error) { console.error('Active count error:', error); return 0; }
             return count || 0;
           })(),
-          queryAll('marsello_customers', 'id,email,first_name,last_name,loyalty_points,tier_name,subscribed,last_seen,created_at', undefined, 50000),
-          queryAll('shopify_orders', 'customer_id,customer_email', undefined, 50000),
+          queryAllFull('marsello_customers', 'id,email,first_name,last_name,loyalty_points,tier_name,subscribed,last_seen,created_at'),
+          queryAllFull('shopify_orders', 'customer_id,customer_email'),
         ]);
         if (cancelled) return;
 
@@ -88,7 +88,7 @@ export default function RetailCustomersPage() {
         setTopByPoints([...customers].sort((a: any, b: any) => (b.loyalty_points || 0) - (a.loyalty_points || 0)).slice(0, 20));
 
         // Repeat Purchase Analysis
-        const fullOrders = await queryAllFull('shopify_orders', 'id,customer_id,customer_email,customer_name,financial_status,cancelled_at,total_price', undefined, 50000);
+        const fullOrders = await queryAllFull('shopify_orders', 'id,customer_id,customer_email,customer_name,financial_status,cancelled_at,total_price');
         const validFullOrders = fullOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at);
         const ordersByCustomer: Record<string, { count: number; total: number }> = {};
         validFullOrders.forEach((o: any) => {
@@ -128,7 +128,12 @@ export default function RetailCustomersPage() {
             return repeatCustomerKeys.has(key);
           }).map((o: any) => o.id)
         );
-        const allOrderLines = await queryAllFull('shopify_order_lines', 'order_id,title,vendor,quantity,price', undefined, 50000);
+        const allOrderLines = await queryInBatches(
+          'shopify_order_lines',
+          'order_id,title,vendor,quantity,price',
+          'order_id',
+          fullOrders.map((o: any) => String(o.id))
+        );
         const repeatLines = allOrderLines.filter((l: any) => repeatOrderIds.has(l.order_id));
         const repProdMap: Record<string, { title: string; vendor: string; qty: number; orders: Set<string>; revenue: number }> = {};
         const totalRepeatRev = repeatLines.reduce((s: number, l: any) => s + (parseFloat(l.price) || 0) * (l.quantity || 0), 0);

@@ -190,6 +190,24 @@ async function _queryAllPagesUncached(
 }
 
 /**
+ * Helper: build product_id → { product_type, vendor } map from shopify_products.
+ * Cached via queryAllPages.
+ */
+export async function getProductMeta(): Promise<Record<string, { product_type: string; vendor: string }>> {
+  const rows = await queryAllPages('shopify_products', 'id,product_type,vendor');
+  const map: Record<string, { product_type: string; vendor: string }> = {};
+  for (const r of rows as any[]) {
+    if (r?.id != null) {
+      map[String(r.id)] = {
+        product_type: r.product_type || '',
+        vendor: r.vendor || '',
+      };
+    }
+  }
+  return map;
+}
+
+/**
  * Count records in a table.
  */
 export async function queryCount(

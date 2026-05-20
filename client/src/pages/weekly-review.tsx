@@ -8,7 +8,7 @@ import {
   ResponsiveContainer, Cell, PieChart, Pie,
 } from 'recharts';
 
-import { queryAllPages, queryInBatches } from '@/lib/query-helpers';
+import { queryAllPages, queryInBatches, getProductMeta } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { DataFreshnessBadge } from '@/components/data-freshness';
@@ -142,6 +142,7 @@ export default function WeeklyReview() {
   const [loading, setLoading] = useState(true);
   const [ordersRaw, setOrdersRaw] = useState<Order[]>([]);
   const [linesRaw, setLinesRaw] = useState<Line[]>([]);
+  const [productMeta, setProductMeta] = useState<Record<string, { product_type: string; vendor: string }>>({});
 
   // Global date range
   const initial = useMemo(() => getDefaultWeekRange(), []);
@@ -189,16 +190,20 @@ export default function WeeklyReview() {
 
         // 2. Pull lines only for those orders (batched 'in' query)
         const orderIds = (orders as any[]).map(o => String(o.id));
-        const lines = await queryInBatches(
-          'shopify_order_lines',
-          'order_id,product_id,sku,title,vendor,product_type,quantity,price',
-          'order_id',
-          orderIds
-        );
+        const [lines, pmeta] = await Promise.all([
+          queryInBatches(
+            'shopify_order_lines',
+            'order_id,product_id,sku,title,vendor,product_type,quantity,price',
+            'order_id',
+            orderIds
+          ),
+          getProductMeta(),
+        ]);
         if (cancelled) return;
 
         setOrdersRaw(orders as any);
         setLinesRaw(lines as any);
+        setProductMeta(pmeta);
       } catch (err) {
         console.error('weekly-review fetch failed:', err);
       } finally {
@@ -211,20 +216,20 @@ export default function WeeklyReview() {
   }, [fetchBounds]);
 
   const cur = useMemo(
-    () => processOrders(ordersRaw, linesRaw, range.from, range.to),
-    [ordersRaw, linesRaw, range]
+    () => processOrders(ordersRaw, linesRaw, range.from, range.to, productMeta),
+    [ordersRaw, linesRaw, range, productMeta]
   );
   const prev = useMemo(
-    () => processOrders(ordersRaw, linesRaw, prevRange.from, prevRange.to),
-    [ordersRaw, linesRaw, prevRange]
+    () => processOrders(ordersRaw, linesRaw, prevRange.from, prevRange.to, productMeta),
+    [ordersRaw, linesRaw, prevRange, productMeta]
   );
   const yoy = useMemo(
-    () => processOrders(ordersRaw, linesRaw, yoyRange.from, yoyRange.to),
-    [ordersRaw, linesRaw, yoyRange]
+    () => processOrders(ordersRaw, linesRaw, yoyRange.from, yoyRange.to, productMeta),
+    [ordersRaw, linesRaw, yoyRange, productMeta]
   );
   const monthly = useMemo(
-    () => processOrders(ordersRaw, linesRaw, monthRange.from, monthRange.to),
-    [ordersRaw, linesRaw, monthRange]
+    () => processOrders(ordersRaw, linesRaw, monthRange.from, monthRange.to, productMeta),
+    [ordersRaw, linesRaw, monthRange, productMeta]
   );
 
   // Section 1 — channel rows

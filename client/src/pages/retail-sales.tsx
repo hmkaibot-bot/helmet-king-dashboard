@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange, queryAll, queryAllPages } from '@/lib/query-helpers';
+import { queryWithDateRange, queryAll, queryAllPages, queryInBatches, getProductMeta } from '@/lib/query-helpers';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
@@ -108,13 +108,25 @@ export default function RetailSalesPage() {
       try {
         const ranges = getDateRanges();
 
-        const [ordersData, prevOrdersData, orderLines, mtdOrdersData, prevMtdOrdersData] = await Promise.all([
+        const [ordersData, prevOrdersData, mtdOrdersData, prevMtdOrdersData, productMeta] = await Promise.all([
           queryWithDateRange('shopify_orders', 'id,order_number,created_at,total_price,subtotal_price,total_discounts,financial_status,cancelled_at,customer_name,customer_email,source_name', 'created_at', bounds),
           queryWithDateRange('shopify_orders', 'id,total_price,subtotal_price,total_discounts,financial_status,cancelled_at', 'created_at', prevBounds),
-          queryAll('shopify_order_lines', 'order_id,quantity'),
           queryWithDateRange('shopify_orders', 'id,total_price,financial_status,cancelled_at', 'created_at', { from: ranges.mtd.start, to: ranges.mtd.end }),
           queryWithDateRange('shopify_orders', 'id,total_price,financial_status,cancelled_at', 'created_at', { from: ranges.prevMtd.start, to: ranges.prevMtd.end }),
+          getProductMeta(),
         ]);
+
+        // Pull order lines only for orders we care about (batched IN query, no 1000-row cap)
+        const allInterestingOrderIds = Array.from(new Set([
+          ...ordersData.map((o: any) => String(o.id)),
+          ...prevOrdersData.map((o: any) => String(o.id)),
+        ]));
+        const orderLines = await queryInBatches(
+          'shopify_order_lines',
+          'order_id,product_id,title,sku,vendor,quantity,price,product_type',
+          'order_id',
+          allInterestingOrderIds
+        );
 
         if (cancelled) return;
 
@@ -210,13 +222,15 @@ export default function RetailSalesPage() {
         // Recent 20
         setRecentOrders(ordersData.sort((a: any, b: any) => b.created_at.localeCompare(a.created_at)).slice(0, 20));
 
-        // Category revenue
-        const fullLines = await queryAll('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity,price,product_type', undefined, 50000);
+        // Category revenue — reuse orderLines (already covers selected period orders).
+        // For MTD basket / brand ranking below we'll add an extra pull for MTD-only orders.
+        const fullLines = orderLines;
         const validFullLines = fullLines.filter((l: any) => orderIds.has(l.order_id));
 
         const catMap: Record<string, { units: number; revenue: number; orders: Set<string> }> = {};
         validFullLines.forEach((l: any) => {
-          const cat = l.product_type || 'Uncategorized';
+          const pm = productMeta[String(l.product_id || '')];
+          const cat = l.product_type || pm?.product_type || 'Uncategorized';
           if (!catMap[cat]) catMap[cat] = { units: 0, revenue: 0, orders: new Set() };
           catMap[cat].units += l.quantity || 0;
           catMap[cat].revenue += (parseFloat(l.price) || 0) * (l.quantity || 0);
@@ -264,25 +278,43 @@ export default function RetailSalesPage() {
           'created_at',
           { from: ranges.mtd.start, to: ranges.mtd.end }
         );
-        const mtdOrdIds = new Set(mtdOrd.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => o.id));
-        const mtdLines = fullLines.filter((l: any) => mtdOrdIds.has(l.order_id));
+        const mtdOrdIds = new Set(mtdOrd.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => String(o.id)));
+        const mtdLinesRaw = await queryInBatches(
+          'shopify_order_lines',
+          'order_id,product_id,title,sku,vendor,quantity,price,product_type',
+          'order_id',
+          Array.from(mtdOrdIds)
+        );
+        // Backfill product_type / vendor from products meta
+        const mtdLines = mtdLinesRaw.map((l: any) => {
+          const pm = productMeta[String(l.product_id || '')];
+          return { ...l, product_type: l.product_type || pm?.product_type || '', vendor: l.vendor || pm?.vendor || '' };
+        });
         if (!cancelled) {
           setMtdOrders2(mtdOrd);
           setMtdOrderLines2(mtdLines);
         }
 
-        // ── Basket Analysis: use all available data for stronger signals ──
-        // Use recent 90 days for basket analysis (balance between signal and relevance)
+        // ── Basket Analysis: 90 days ──
         const ninetyDaysAgo = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
         const basketOrders = await queryAllPages(
           'shopify_orders',
           'id,financial_status,cancelled_at',
           [{ column: 'created_at', op: 'gte', value: ninetyDaysAgo }]
         );
-        const basketOrderIds = new Set(
-          basketOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => o.id)
+        const basketValidIds = Array.from(new Set(
+          basketOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => String(o.id))
+        ));
+        const basketLinesRaw = await queryInBatches(
+          'shopify_order_lines',
+          'order_id,product_id,title,sku,vendor,quantity,price,product_type',
+          'order_id',
+          basketValidIds
         );
-        const basketLines = fullLines.filter((l: any) => basketOrderIds.has(l.order_id));
+        const basketLines = basketLinesRaw.map((l: any) => {
+          const pm = productMeta[String(l.product_id || '')];
+          return { ...l, product_type: l.product_type || pm?.product_type || '', vendor: l.vendor || pm?.vendor || '' };
+        });
         if (!cancelled) {
           setAllOrdersForBasket(basketOrders);
           setAllLinesForBasket(basketLines);
