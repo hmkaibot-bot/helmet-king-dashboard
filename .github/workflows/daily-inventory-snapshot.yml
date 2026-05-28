@@ -18,6 +18,18 @@ on:
         description: "Run BC sync (1/0)"
         required: false
         default: "1"
+      sync_bc_purchase_invoices:
+        description: "Run BC purchase invoices sync (1/0)"
+        required: false
+        default: "1"
+      bc_pi_full_backfill:
+        description: "BC PI: full backfill, no $filter (1/0)"
+        required: false
+        default: "0"
+      bc_pi_lookback_days:
+        description: "BC PI: incremental lookback days"
+        required: false
+        default: "7"
 
 permissions:
   contents: read
@@ -50,4 +62,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           SYNC_SHOPIFY: ${{ github.event.inputs.sync_shopify || '1' }}
           SYNC_BC: ${{ github.event.inputs.sync_bc || '1' }}
+          SYNC_BC_PURCHASE_INVOICES: ${{ github.event.inputs.sync_bc_purchase_invoices || '1' }}
+          BC_PI_FULL_BACKFILL: ${{ github.event.inputs.bc_pi_full_backfill || '0' }}
+          BC_PI_LOOKBACK_DAYS: ${{ github.event.inputs.bc_pi_lookback_days || '7' }}
         run: python scripts/daily_inventory_snapshot.py
