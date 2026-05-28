@@ -100,7 +100,8 @@ interface AuditLogRow {
   changed_at: string;
 }
 
-type SystemStatus = '正常' | '慢移貨' | '高風險死貨' | '真正死貨';
+// V2 (2026-05-28): 系統狀態簡化為 3 個 (正常 / 慢移貨 / 死貨)
+type SystemStatus = '正常' | '慢移貨' | '死貨';
 
 interface DeadStockItem {
   sku: string;
@@ -145,15 +146,29 @@ interface ProductGroup {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
+// V2: 「狀態核實」(原 manual_status) — 5 個固定選項
 const MANUAL_STATUS_LABELS: Record<string, string> = {
-  pending_review: '待確認',
-  observing: '觀察中',
-  confirmed_dead: '真死貨',
-  revived: '已翻生',
+  normal: '正常貨',
+  slow: '慢移貨',
+  dead: '死貨',
   promoting: '推廣中',
-  cleared: '已清貨',
-  keep: '保留不清',
+  keep_uncleared: '保留不清',
 };
+
+// Legacy values still possibly in DB (won't appear in dropdown but render gracefully)
+const LEGACY_MANUAL_STATUS_LABELS: Record<string, string> = {
+  pending_review: '待確認 (舊)',
+  observing: '觀察中 (舊)',
+  confirmed_dead: '死貨 (舊)',
+  revived: '已翻生 (舊)',
+  cleared: '已清貨 (舊)',
+  keep: '保留不清 (舊)',
+};
+
+function manualStatusLabel(key: string | null | undefined): string {
+  if (!key) return '';
+  return MANUAL_STATUS_LABELS[key] || LEGACY_MANUAL_STATUS_LABELS[key] || key;
+}
 
 const ACTION_LABELS: Record<string, string> = {
   discount: '減價',
@@ -165,11 +180,11 @@ const ACTION_LABELS: Record<string, string> = {
   clearance: '清倉',
 };
 
-const SYSTEM_STATUS_OPTIONS: SystemStatus[] = ['正常', '慢移貨', '高風險死貨', '真正死貨'];
+const SYSTEM_STATUS_OPTIONS: SystemStatus[] = ['正常', '慢移貨', '死貨'];
 const MANUAL_STATUS_OPTIONS = Object.keys(MANUAL_STATUS_LABELS);
 const ACTION_OPTIONS = Object.keys(ACTION_LABELS);
 
-const STATUS_ORDER: Record<string, number> = { '正常': 0, '慢移貨': 1, '高風險死貨': 2, '真正死貨': 3 };
+const STATUS_ORDER: Record<string, number> = { '正常': 0, '慢移貨': 1, '死貨': 2 };
 
 // ── Filter State ──────────────────────────────────────────────────────────────
 
@@ -186,8 +201,8 @@ const DEFAULT_FILTERS: FilterState = {
   search: '',
   vendors: [],
   product_types: [],
-  // 預設勾齊 4 個 status，讓用戶見到正常貨；user 可以 uncheck「正常」隱藏它
-  system_statuses: ['正常', '慢移貨', '高風險死貨', '真正死貨'],
+  // 預設勾齊 3 個 system status — V2
+  system_statuses: ['正常', '慢移貨', '死貨'],
   manual_statuses: [],
   actions: [],
 };
@@ -341,10 +356,11 @@ export default function DeadStockPage() {
 
   // ── Column order & widths state ─────────────────────────────────────────────
 
+  // V2: 「系統狀態」(read-only badge) + 「狀態核實」(dropdown) 拆為兩個獨立 column
   const DEFAULT_COLUMN_ORDER = [
     'product_title', 'vendor', 'product_type', 'total_qty',
     'compare_price', 'retail_price', 'unit_cost', 'stock_cost',
-    'margin_pct', 'days_since', 'sold_90d', 'system_status',
+    'margin_pct', 'days_since', 'sold_90d', 'system_status', 'status_review',
   ];
 
   const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
@@ -359,7 +375,8 @@ export default function DeadStockPage() {
     margin_pct: 70,
     days_since: 80,
     sold_90d: 70,
-    system_status: 140,
+    system_status: 90,
+    status_review: 130,
   };
 
   const [columnOrder, setColumnOrder] = useState<string[]>(DEFAULT_COLUMN_ORDER);
@@ -538,16 +555,19 @@ export default function DeadStockPage() {
       if (Number.isFinite(ts)) piDateById.set(String(pi.id), ts);
     }
     const lastReceiveBySku = new Map<string, number>();
+    const firstReceiveBySku = new Map<string, number>();
     for (const pl of purchaseInvoiceLines) {
       const sku = String(pl.item_number || '').trim();
       if (!sku) continue;
       const ts = piDateById.get(String(pl.invoice_id));
       if (ts == null) continue;
-      const prev = lastReceiveBySku.get(sku);
-      if (prev == null || ts > prev) lastReceiveBySku.set(sku, ts);
+      const prevLast = lastReceiveBySku.get(sku);
+      if (prevLast == null || ts > prevLast) lastReceiveBySku.set(sku, ts);
+      const prevFirst = firstReceiveBySku.get(sku);
+      if (prevFirst == null || ts < prevFirst) firstReceiveBySku.set(sku, ts);
     }
-    // 60-day new-product protection window (after last receive)
-    const PROTECTION_DAYS = 60;
+    // V2: 30-day new-product protection window (based on first receive)
+    const PROTECTION_DAYS = 30;
     const protectionThreshold = now - PROTECTION_DAYS * MS_PER_DAY;
 
     const bcMap = new Map<string, BcInventoryRow>();
@@ -610,34 +630,54 @@ export default function DeadStockPage() {
         ? new Date(stats.firstDate).toISOString().slice(0, 10)
         : null;
 
-      // New-product protection: if last receive within 60 days, force 正常
+      // V2「系統狀態」計算邏輯：
+      //   1. 正常貨：近 30 日內有銷售紀錄，或「首次返貨日期」在 30 日內（新品寬限）
+      //   2. 慢移貨：非新品且近 31–89 日無銷售
+      //   3. 死貨：≥ 90 日無銷售 且 期間完全無補貨
+      //   「死貨重活」：只要近 90 日內有補貨 (lastReceiveTs)，自動不再評為死貨
       const lastReceiveTs = lastReceiveBySku.get(inv.sku) ?? null;
-      const isNewlyReceived = lastReceiveTs != null && lastReceiveTs > protectionThreshold;
-      // Anchor for staleness: count days from the more recent of last sale / last receive.
-      // 如 SKU 入起货後未賣出，那予它一個合理銷售期，不創倪丂丂 9999 那個默認值。
+      const firstReceiveTs = firstReceiveBySku.get(inv.sku) ?? null;
+
+      const isBrandNew = firstReceiveTs != null && firstReceiveTs > protectionThreshold;
+
+      const daysSinceLastSale = lastSoldTs != null
+        ? Math.floor((now - lastSoldTs) / MS_PER_DAY)
+        : 9999;
+
+      const hasSaleIn30 = lastSoldTs != null && (now - lastSoldTs) <= 30 * MS_PER_DAY;
+      const hasReceiveIn90 = lastReceiveTs != null && (now - lastReceiveTs) <= 90 * MS_PER_DAY;
+
+      let system_status: SystemStatus;
+      if (hasSaleIn30 || isBrandNew) {
+        system_status = '正常';
+      } else if (daysSinceLastSale >= 90 && !hasReceiveIn90) {
+        system_status = '死貨';
+      } else {
+        // 31–89 日無銷售，或 ≥ 90 日無銷售但 90 日內有補貨重活
+        system_status = '慢移貨';
+      }
+
+      // 保留 anchorTs / daysSinceEffective 供舊 UI 使用（例：days_since label）
       const anchorTs = Math.max(lastSoldTs ?? 0, lastReceiveTs ?? 0);
       const daysSinceEffective = anchorTs > 0
         ? Math.floor((now - anchorTs) / MS_PER_DAY)
-        : daysSince;
-
-      let system_status: SystemStatus;
-      if (isNewlyReceived) {
-        system_status = '正常';
-      } else if (daysSinceEffective >= 270 && inv.inventory_quantity >= 3) {
-        system_status = '真正死貨';
-      } else if (daysSinceEffective >= 180) {
-        system_status = '高風險死貨';
-      } else if (daysSinceEffective >= 90) {
-        system_status = '慢移貨';
-      } else {
-        system_status = '正常';
-      }
+        : daysSinceLastSale;
+      void daysSinceEffective;
 
       const rev = reviewMap.get(inv.sku);
 
-      const VALID_SYSTEM_STATUSES: SystemStatus[] = ['正常', '慢移貨', '高風險死貨', '真正死貨'];
-      if (rev?.system_status_override && VALID_SYSTEM_STATUSES.includes(rev.system_status_override as SystemStatus)) {
-        system_status = rev.system_status_override as SystemStatus;
+      // V2: 保留 system_status_override，舊 4 級值自動映射到新 3 級
+      const VALID_SYSTEM_STATUSES: SystemStatus[] = ['正常', '慢移貨', '死貨'];
+      const LEGACY_OVERRIDE_MAP: Record<string, SystemStatus> = {
+        '高風險死貨': '死貨',
+        '真正死貨': '死貨',
+      };
+      const overrideRaw = rev?.system_status_override;
+      if (overrideRaw) {
+        const mapped = (LEGACY_OVERRIDE_MAP[overrideRaw] ?? overrideRaw) as SystemStatus;
+        if (VALID_SYSTEM_STATUSES.includes(mapped)) {
+          system_status = mapped;
+        }
       }
 
       result.push({
@@ -938,22 +978,35 @@ export default function DeadStockPage() {
     }
   };
 
-  // ── Preset filter buttons ───────────────────────────────────────────────────
+  // ── Multi-select filter toggles (V2 雙行) ───────────────────────────────────
 
-  const applyPreset = (preset: string) => {
-    setFilters(() => {
-      const base = { ...DEFAULT_FILTERS };
-      switch (preset) {
-        case 'all_dead': return { ...base };
-        case 'truly_dead': return { ...base, system_statuses: ['真正死貨'] as SystemStatus[] };
-        case 'high_risk': return { ...base, system_statuses: ['高風險死貨'] as SystemStatus[] };
-        case 'revived': return { ...base, manual_statuses: ['revived'] };
-        case 'pending': return { ...base, manual_statuses: ['pending_review', ''] };
-        case 'promotable': return { ...base, actions: ['discount', 'bundle', 'store_promo', 'online_sale'] };
-        default: return base;
-      }
+  const toggleSystemStatus = (s: SystemStatus) => {
+    setFilters(f => {
+      const has = f.system_statuses.includes(s);
+      const next = has ? f.system_statuses.filter(x => x !== s) : [...f.system_statuses, s];
+      return { ...f, system_statuses: next };
     });
   };
+
+  const toggleManualStatus = (key: string) => {
+    setFilters(f => {
+      const has = f.manual_statuses.includes(key);
+      const next = has ? f.manual_statuses.filter(x => x !== key) : [...f.manual_statuses, key];
+      return { ...f, manual_statuses: next };
+    });
+  };
+
+  const setAllSystemStatuses = () => {
+    setFilters(f => ({ ...f, system_statuses: [...SYSTEM_STATUS_OPTIONS] }));
+  };
+
+  const setAllManualStatuses = () => {
+    // 「全部」於狀態核實 = 空 array（即不過濾，包含 null/空值）
+    setFilters(f => ({ ...f, manual_statuses: [] }));
+  };
+
+  const isAllSystemStatuses = filters.system_statuses.length === SYSTEM_STATUS_OPTIONS.length;
+  const isAllManualStatuses = filters.manual_statuses.length === 0;
 
   // ── Audit log for expanded SKU ──────────────────────────────────────────────
 
@@ -1314,11 +1367,36 @@ export default function DeadStockPage() {
         id: 'system_status',
         label: '系統狀態',
         align: 'left' as const,
-        defaultWidth: 140,
+        defaultWidth: 90,
         sortKey: 'worst_system_status' as SortKey,
         filter: 'system_statuses' as const,
+        // V2: 系統狀態 = read-only badge，唔可以手改
+        renderGroup: (group: ProductGroup) => (
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+            group.worst_system_status === '死貨' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
+            group.worst_system_status === '慢移貨' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' :
+            'bg-green-500/15 text-green-400 border-green-500/30'
+          }`}>
+            {group.worst_system_status}
+          </span>
+        ),
+        renderItem: (item: DeadStockItem) => (
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+            item.system_status === '死貨' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
+            item.system_status === '慢移貨' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' :
+            'bg-green-500/15 text-green-400 border-green-500/30'
+          }`}>
+            {item.system_status}
+          </span>
+        ),
+      },
+      {
+        id: 'status_review',
+        label: '狀態核實',
+        align: 'left' as const,
+        defaultWidth: 130,
+        // V2: 狀態核實 = 人手覆核 dropdown，5 個固定選項
         renderGroup: (group: ProductGroup) => {
-          // Derive group manual_status: all-same -> that value; mixed -> sentinel
           const distinctManual = new Set(group.skus.map(s => s.manual_status ?? ''));
           const groupValue = distinctManual.size === 1
             ? Array.from(distinctManual)[0]
@@ -1327,40 +1405,33 @@ export default function DeadStockPage() {
           const isEmpty = groupValue === '';
           return (
             <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-              <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${
-                group.worst_system_status === '真正死貨' ? 'bg-red-500/15 text-red-400 border-red-500/30' :
-                group.worst_system_status === '高風險死貨' ? 'bg-orange-500/15 text-orange-400 border-orange-500/30' :
-                group.worst_system_status === '慢移貨' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' :
-                'bg-green-500/15 text-green-400 border-green-500/30'
-              }`}>
-                {group.worst_system_status}
-              </span>
               <select
                 value={isMixed ? '__mixed__' : groupValue}
                 onChange={async (e) => {
                   const newVal = e.target.value;
-                  if (newVal === '__mixed__') return; // can't reselect sentinel
+                  if (newVal === '__mixed__') return;
                   if (!isMixed && newVal === groupValue) return;
+                  const newLabel = newVal ? manualStatusLabel(newVal) : '清除';
                   const confirmMsg = isMixed
-                    ? `該產品下 ${group.skus.length} 個 variants 當前 status 不一致。\n\n確認全部設為「${newVal ? MANUAL_STATUS_LABELS[newVal as keyof typeof MANUAL_STATUS_LABELS] : '清除'}」？`
-                    : `交「${group.product_title}」的 ${group.skus.length} 個 variants 同時設為「${newVal ? MANUAL_STATUS_LABELS[newVal as keyof typeof MANUAL_STATUS_LABELS] : '清除'}」？`;
+                    ? `該產品下 ${group.skus.length} 個 variants 當前核實狀態不一致。\n\n確認全部設為「${newLabel}」？`
+                    : `把「${group.product_title}」的 ${group.skus.length} 個 variants 同時設為「${newLabel}」？`;
                   if (!window.confirm(confirmMsg)) return;
                   await handleGroupInlineUpdate(group.skus, 'manual_status', newVal);
                 }}
-                className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent ${
+                className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent w-full ${
                   isMixed ? 'text-purple-300 border-purple-500/40 italic' :
                   isEmpty ? 'text-muted-foreground border-border/30' :
-                  groupValue === 'confirmed_dead' ? 'text-red-400 border-red-500/30' :
-                  groupValue === 'revived' ? 'text-green-400 border-green-500/30' :
+                  groupValue === 'dead' ? 'text-red-400 border-red-500/30' :
+                  groupValue === 'slow' ? 'text-amber-400 border-amber-500/30' :
+                  groupValue === 'normal' ? 'text-green-400 border-green-500/30' :
                   groupValue === 'promoting' ? 'text-purple-400 border-purple-500/30' :
-                  groupValue === 'pending_review' ? 'text-yellow-400 border-yellow-500/30' :
-                  groupValue === 'observing' ? 'text-blue-400 border-blue-500/30' :
+                  groupValue === 'keep_uncleared' ? 'text-blue-400 border-blue-500/30' :
                   'text-muted-foreground border-border/30'
                 }`}
-                title={isMixed ? `${group.skus.length} 個 variants 不一致 — 選一個值將全部一次 override` : `改變將套用到 ${group.skus.length} 個 variants`}
+                title={isMixed ? `${group.skus.length} 個 variants 不一致 — 選一個值會全部 override` : `改變將套用到 ${group.skus.length} 個 variants`}
               >
                 {isMixed && <option value="__mixed__" disabled>混合 Mixed</option>}
-                <option value="">—</option>
+                <option value="">— 未核實 —</option>
                 {MANUAL_STATUS_OPTIONS.map(s => (
                   <option key={s} value={s}>{MANUAL_STATUS_LABELS[s]}</option>
                 ))}
@@ -1368,7 +1439,38 @@ export default function DeadStockPage() {
             </div>
           );
         },
-        renderItem: () => null, // handled separately with inline dropdowns
+        renderItem: (item: DeadStockItem) => {
+          const v = item.manual_status ?? '';
+          return (
+            <select
+              value={v}
+              onChange={async (e) => {
+                const newVal = e.target.value;
+                if (newVal === v) return;
+                await handleInlineUpdate(item.sku, 'manual_status', newVal);
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent w-full ${
+                !v ? 'text-muted-foreground border-border/30' :
+                v === 'dead' ? 'text-red-400 border-red-500/30' :
+                v === 'slow' ? 'text-amber-400 border-amber-500/30' :
+                v === 'normal' ? 'text-green-400 border-green-500/30' :
+                v === 'promoting' ? 'text-purple-400 border-purple-500/30' :
+                v === 'keep_uncleared' ? 'text-blue-400 border-blue-500/30' :
+                'text-muted-foreground border-border/30'
+              }`}
+            >
+              <option value="">— 未核實 —</option>
+              {MANUAL_STATUS_OPTIONS.map(s => (
+                <option key={s} value={s}>{MANUAL_STATUS_LABELS[s]}</option>
+              ))}
+              {/* legacy values render with suffix so user can clear them */}
+              {v && !MANUAL_STATUS_OPTIONS.includes(v) && (
+                <option value={v}>{manualStatusLabel(v)}</option>
+              )}
+            </select>
+          );
+        },
       },
     ];
   }, []);
@@ -1706,25 +1808,84 @@ export default function DeadStockPage() {
         </Card>
       </div>
 
-      {/* ── Quick Preset + Search ── */}
-      <div className="space-y-2">
+      {/* ── V2 雙行 Multi-select Filter (AND) + Search ── */}
+      <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
+        {/* Row 1: 系統狀態 */}
         <div className="flex flex-wrap items-center gap-1.5">
-          {[
-            { key: 'all_dead', label: '全部死貨/慢移貨' },
-            { key: 'truly_dead', label: '真正死貨' },
-            { key: 'high_risk', label: '高風險死貨' },
-            { key: 'revived', label: '已翻生' },
-            { key: 'pending', label: '待確認/未覆核' },
-            { key: 'promotable', label: '可促銷' },
-          ].map(p => (
-            <button
-              key={p.key}
-              onClick={() => applyPreset(p.key)}
-              className="px-2.5 py-1 rounded-md text-xs border border-border/60 bg-muted/40 hover:bg-accent hover:text-accent-foreground transition-colors"
-            >
-              {p.label}
-            </button>
-          ))}
+          <span className="text-[11px] font-medium text-muted-foreground w-20 shrink-0">系統狀態</span>
+          <button
+            onClick={setAllSystemStatuses}
+            className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+              isAllSystemStatuses
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'border-border/60 bg-background hover:bg-accent'
+            }`}
+          >
+            全部
+          </button>
+          {SYSTEM_STATUS_OPTIONS.map(s => {
+            const active = filters.system_statuses.includes(s);
+            return (
+              <button
+                key={s}
+                onClick={() => toggleSystemStatus(s)}
+                className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+                  active
+                    ? 'bg-primary/90 text-primary-foreground border-primary'
+                    : 'border-border/60 bg-background hover:bg-accent'
+                }`}
+              >
+                <span className="inline-block w-3 mr-1 text-center">{active ? '✓' : ''}</span>
+                {s}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Row 2: 狀態核實 */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] font-medium text-muted-foreground w-20 shrink-0">狀態核實</span>
+          <button
+            onClick={setAllManualStatuses}
+            className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+              isAllManualStatuses
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'border-border/60 bg-background hover:bg-accent'
+            }`}
+          >
+            全部
+          </button>
+          {Object.entries(MANUAL_STATUS_LABELS).map(([key, label]) => {
+            const active = filters.manual_statuses.includes(key);
+            return (
+              <button
+                key={key}
+                onClick={() => toggleManualStatus(key)}
+                className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+                  active
+                    ? 'bg-primary/90 text-primary-foreground border-primary'
+                    : 'border-border/60 bg-background hover:bg-accent'
+                }`}
+              >
+                <span className="inline-block w-3 mr-1 text-center">{active ? '✓' : ''}</span>
+                {label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Row 3: Search + Clear */}
+        <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border/40">
+          <div className="relative flex-1 min-w-[200px] max-w-md">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="搜尋 SKU / 產品名稱..."
+              value={filters.search}
+              onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
+              className="w-full pl-8 pr-3 py-1.5 rounded-md border border-border bg-background text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
           <button
             onClick={() => setFilters(DEFAULT_FILTERS)}
             className="px-2.5 py-1 rounded-md text-xs border border-border/60 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
@@ -1732,18 +1893,6 @@ export default function DeadStockPage() {
             <X className="h-3 w-3 inline mr-0.5" />
             清除篩選
           </button>
-        </div>
-
-        {/* Search bar */}
-        <div className="relative max-w-md">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="搜尋 SKU / 產品名稱..."
-            value={filters.search}
-            onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
-            className="w-full pl-8 pr-3 py-1.5 rounded-md border border-border bg-background text-xs focus:outline-none focus:ring-1 focus:ring-primary"
-          />
         </div>
       </div>
 
