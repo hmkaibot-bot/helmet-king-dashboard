@@ -12,9 +12,11 @@ Daily inventory snapshot — 補回 n8n 沒有處理的庫存同步。
   SHOPIFY_TOKEN, SHOPIFY_STORE
   BC_TENANT_ID, BC_CLIENT_ID, BC_CLIENT_SECRET, BC_ENVIRONMENT, BC_COMPANY_ID
   SUPABASE_URL, SUPABASE_SERVICE_KEY
-  SYNC_SHOPIFY=1 / SYNC_BC=1 / SYNC_BC_PURCHASE_INVOICES=1  (預設都開，缺認證會自動跳過)
+  SYNC_SHOPIFY=1 / SYNC_BC=1 / SYNC_BC_PURCHASE_INVOICES=1 / SYNC_BC_SALES_INVOICES=1  (預設都開，缺認證會自動跳過)
   BC_PI_FULL_BACKFILL=1  (購貨單忽略 lastModifiedDateTime filter，做完整 backfill)
   BC_PI_LOOKBACK_DAYS=7  (增量同步回溯日數，預設 7)
+  BC_SI_FULL_BACKFILL=1  (銷售單忽略 lastModifiedDateTime filter，做完整 backfill)
+  BC_SI_LOOKBACK_DAYS=7  (銷售單增量回溯日數，預設 7)
 """
 import os, sys, time, json
 from datetime import datetime, timezone, timedelta
@@ -338,6 +340,136 @@ def sync_bc_purchase_invoices():
     print(f"[BC-PI] lines: {ok} ok, {err} err", flush=True)
 
 
+# ---------------------------------------------------------------- BC Sales Invoices
+def sync_bc_sales_invoices():
+    """同步 BC 銷售發票（含 lines）到 bc_sales_invoices / bc_invoice_lines。
+
+    與 n8n v3 workflow mapping 一致，但用 $expand=salesInvoiceLines 一次抓所有 lines
+    （比 n8n 逐張别叫 fast 很多）。
+
+    Dimension filter 保留 CARSHOP + GARAGE（與 n8n 同步）。
+    增加 lastModifiedDateTime 增量 filter（n8n 原本全拽 10000 條，這裡更高效）。
+    """
+    tenant = (os.environ.get("BC_TENANT_ID") or "").strip()
+    client_id = (os.environ.get("BC_CLIENT_ID") or "").strip()
+    secret = (os.environ.get("BC_CLIENT_SECRET") or "").strip()
+    env = (os.environ.get("BC_ENVIRONMENT") or "Production").strip()
+    company = (os.environ.get("BC_COMPANY_ID") or "").strip()
+    if not all([tenant, client_id, secret, company]):
+        print("[BC-SI] skipped — missing BC_TENANT_ID/BC_CLIENT_ID/BC_CLIENT_SECRET/BC_COMPANY_ID", flush=True)
+        return
+    print("=== BC sales invoices sync ===", flush=True)
+
+    full_backfill = os.environ.get("BC_SI_FULL_BACKFILL", "0") == "1"
+    lookback_days = int(os.environ.get("BC_SI_LOOKBACK_DAYS", "7") or "7")
+    if full_backfill:
+        since = None
+        print("[BC-SI] mode=FULL_BACKFILL (only dimension filter)", flush=True)
+    else:
+        since_dt = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        since = since_dt.strftime("%Y-%m-%dT00:00:00Z")
+        print(f"[BC-SI] mode=incremental since={since} (lookback={lookback_days}d)", flush=True)
+
+    # 1. OAuth
+    tok = requests.post(
+        f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+        data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": secret,
+            "scope": "https://api.businesscentral.dynamics.com/.default",
+        },
+        timeout=30,
+    )
+    if tok.status_code != 200:
+        print(f"[BC-SI] token request failed [{tok.status_code}]: {tok.text[:600]}", flush=True)
+        tok.raise_for_status()
+    access = tok.json()["access_token"]
+    print("[BC-SI] got access token", flush=True)
+
+    # 2. Fetch invoices + expand lines
+    base = f"https://api.businesscentral.dynamics.com/v2.0/{tenant}/{env}/api/v2.0/companies({company})/salesInvoices"
+    dim_filter = "(shortcutDimension1Code eq 'CARSHOP' or shortcutDimension1Code eq 'GARAGE')"
+    filters = [dim_filter]
+    if since:
+        filters.append(f"lastModifiedDateTime ge {since}")
+    params = [
+        "$expand=salesInvoiceLines",
+        "$filter=" + " and ".join(filters),
+    ]
+    url = base + "?" + "&".join(params)
+    auth_h = {"Authorization": f"Bearer {access}"}
+
+    invoices = []
+    page = 0
+    while url:
+        r = requests.get(url, headers=auth_h, timeout=180)
+        if r.status_code != 200:
+            print(f"[BC-SI] fetch failed [{r.status_code}]: {r.text[:500]}", flush=True)
+            r.raise_for_status()
+        data = r.json()
+        batch = data.get("value", [])
+        invoices.extend(batch)
+        page += 1
+        print(f"[BC-SI] page {page}: +{len(batch)} (running total {len(invoices)})", flush=True)
+        url = data.get("@odata.nextLink")
+    print(f"[BC-SI] fetched {len(invoices)} sales invoices total", flush=True)
+
+    # 3. Map invoices + lines (保持與 n8n mapping 一致)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    inv_rows = []
+    line_rows = []
+    zero_uuid = "00000000-0000-0000-0000-000000000000"
+    for inv in invoices:
+        inv_id = inv.get("id")
+        inv_number = inv.get("number")
+        cust_id = inv.get("customerId")
+        inv_rows.append({
+            "id": inv_id,
+            "number": s(inv_number, 99),
+            "invoice_date": inv.get("invoiceDate") or None,
+            "customer_id": cust_id if cust_id and cust_id != zero_uuid else None,
+            "customer_number": s(inv.get("customerNumber"), 99),
+            "customer_name": s(inv.get("customerName"), 500),
+            "status": s(inv.get("status"), 50),
+            "total_amount_excl_tax": float(inv.get("totalAmountExcludingTax") or 0),
+            "total_amount_incl_tax": float(inv.get("totalAmountIncludingTax") or 0),
+            "currency_code": s(inv.get("currencyCode") or "HKD", 10),
+            "dimension1_code": s(inv.get("shortcutDimension1Code"), 50),
+            "dimension2_code": s(inv.get("shortcutDimension2Code"), 50),
+            "salesperson_code": s(inv.get("salesperson"), 99),
+            "payment_terms": s(inv.get("paymentTermsId") or inv.get("paymentTerms"), 99),
+            "due_date": inv.get("dueDate") or None,
+            "last_modified_datetime": inv.get("lastModifiedDateTime"),
+            "updated_at": now_iso,
+        })
+        for ln in (inv.get("salesInvoiceLines") or []):
+            item_id = ln.get("itemId")
+            line_rows.append({
+                "id": ln.get("id"),
+                "invoice_id": ln.get("documentId") or inv_id,
+                "invoice_number": s(ln.get("documentNumber") or inv_number, 99),
+                "sequence": ln.get("sequence") or 0,
+                "item_id": item_id if item_id and item_id != zero_uuid else None,
+                "item_number": s(ln.get("lineObjectNumber"), 99),
+                "description": s(ln.get("description"), 500),
+                "unit_of_measure": s(ln.get("unitOfMeasureCode"), 50),
+                "quantity": float(ln.get("quantity") or 0),
+                "unit_price": float(ln.get("unitPrice") or 0),
+                "discount_percent": float(ln.get("discountPercent") or 0),
+                "discount_amount": float(ln.get("discountAmount") or 0),
+                "amount_excl_tax": float(ln.get("netAmount") or 0),
+                "amount_incl_tax": float(ln.get("netAmountIncludingTax") or 0),
+                "item_category_code": s(ln.get("itemCategoryCode"), 99),
+            })
+
+    print(f"[BC-SI] upserting {len(inv_rows)} invoices + {len(line_rows)} lines", flush=True)
+    ok, err = upsert_batch("bc_sales_invoices", "id", inv_rows)
+    print(f"[BC-SI] invoices: {ok} ok, {err} err", flush=True)
+    ok, err = upsert_batch("bc_invoice_lines", "id", line_rows)
+    print(f"[BC-SI] lines: {ok} ok, {err} err", flush=True)
+
+
 def verify():
     print("\n=== Verification ===", flush=True)
     for t, col in [
@@ -345,6 +477,8 @@ def verify():
         ("bc_inventory", "updated_at"),
         ("bc_purchase_invoices", "updated_at"),
         ("bc_purchase_invoice_lines", "created_at"),
+        ("bc_sales_invoices", "updated_at"),
+        ("bc_invoice_lines", "created_at"),
     ]:
         r = requests.get(
             f"{SB_URL}/rest/v1/{t}?select={col}&order={col}.desc&limit=1",
@@ -375,6 +509,11 @@ def main():
             sync_bc_purchase_invoices()
         except Exception as e:
             print(f"[BC-PI] ERROR: {e}", flush=True)
+    if os.environ.get("SYNC_BC_SALES_INVOICES", "1") != "0":
+        try:
+            sync_bc_sales_invoices()
+        except Exception as e:
+            print(f"[BC-SI] ERROR: {e}", flush=True)
     verify()
     print("\nDone.", flush=True)
 

@@ -30,6 +30,18 @@ on:
         description: "BC PI: incremental lookback days"
         required: false
         default: "7"
+      sync_bc_sales_invoices:
+        description: "Run BC sales invoices sync (1/0)"
+        required: false
+        default: "1"
+      bc_si_full_backfill:
+        description: "BC SI: full backfill, no date filter (1/0)"
+        required: false
+        default: "0"
+      bc_si_lookback_days:
+        description: "BC SI: incremental lookback days"
+        required: false
+        default: "7"
 
 permissions:
   contents: read
@@ -65,4 +77,7 @@ jobs:
           SYNC_BC_PURCHASE_INVOICES: ${{ github.event.inputs.sync_bc_purchase_invoices || '1' }}
           BC_PI_FULL_BACKFILL: ${{ github.event.inputs.bc_pi_full_backfill || '0' }}
           BC_PI_LOOKBACK_DAYS: ${{ github.event.inputs.bc_pi_lookback_days || '7' }}
+          SYNC_BC_SALES_INVOICES: ${{ github.event.inputs.sync_bc_sales_invoices || '1' }}
+          BC_SI_FULL_BACKFILL: ${{ github.event.inputs.bc_si_full_backfill || '0' }}
+          BC_SI_LOOKBACK_DAYS: ${{ github.event.inputs.bc_si_lookback_days || '7' }}
         run: python scripts/daily_inventory_snapshot.py
