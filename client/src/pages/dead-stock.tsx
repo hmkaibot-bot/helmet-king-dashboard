@@ -638,7 +638,14 @@ export default function DeadStockPage() {
       const lastReceiveTs = lastReceiveBySku.get(inv.sku) ?? null;
       const firstReceiveTs = firstReceiveBySku.get(inv.sku) ?? null;
 
-      const isBrandNew = firstReceiveTs != null && firstReceiveTs > protectionThreshold;
+      // V2 新品寬限：考慮 BC purchase invoice sync 可能有延遲/同步漏洞，
+      // 並同時參考 Shopify product.created_at 作 secondary 新品信號。
+      const productCreatedTs = product?.created_at
+        ? new Date(product.created_at).getTime()
+        : null;
+      const isBrandNew =
+        (firstReceiveTs != null && firstReceiveTs > protectionThreshold) ||
+        (productCreatedTs != null && Number.isFinite(productCreatedTs) && productCreatedTs > protectionThreshold);
 
       const daysSinceLastSale = lastSoldTs != null
         ? Math.floor((now - lastSoldTs) / MS_PER_DAY)
@@ -1007,6 +1014,19 @@ export default function DeadStockPage() {
 
   const isAllSystemStatuses = filters.system_statuses.length === SYSTEM_STATUS_OPTIONS.length;
   const isAllManualStatuses = filters.manual_statuses.length === 0;
+
+  // BC purchase invoice sync 落後檢測（超過 30 日 → 新品判斷可能不準）
+  const bcSyncLagDays = useMemo(() => {
+    if (!purchaseInvoices.length) return null;
+    let maxTs = 0;
+    for (const pi of purchaseInvoices) {
+      if (!pi.posting_date) continue;
+      const ts = new Date(pi.posting_date).getTime();
+      if (Number.isFinite(ts) && ts > maxTs) maxTs = ts;
+    }
+    if (!maxTs) return null;
+    return Math.floor((Date.now() - maxTs) / 86400000);
+  }, [purchaseInvoices]);
 
   // ── Audit log for expanded SKU ──────────────────────────────────────────────
 
@@ -1732,6 +1752,20 @@ export default function DeadStockPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ── BC purchase invoice sync 落後提示 ── */}
+      {bcSyncLagDays != null && bcSyncLagDays > 30 && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-medium">BC 補貨資料 sync 已落後 {bcSyncLagDays} 日</div>
+            <div className="text-amber-200/80">
+              最近一筆 bc_purchase_invoices 为 {purchaseInvoices.reduce((m, p) => p.posting_date && p.posting_date > m ? p.posting_date : m, '0000-00-00')}。
+              為避免新貨被誤判為死貨，現已 fallback 參考 Shopify product.created_at 作新品信號。請檢查 BC sync pipeline。
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── V2 雙行 Multi-select Filter (AND) + Search ── */}
       <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 p-2.5">
