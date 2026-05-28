@@ -787,7 +787,7 @@ export default function DeadStockPage() {
       for (const s of skus) {
         if ((STATUS_ORDER[s.system_status] ?? 0) > worstIdx) worstIdx = STATUS_ORDER[s.system_status] ?? 0;
       }
-      const worst_system_status = (['正常', '慢移貨', '高風險死貨', '真正死貨'] as SystemStatus[])[worstIdx];
+      const worst_system_status = (['正常', '慢移貨', '死貨'] as SystemStatus[])[worstIdx] ?? '正常';
 
       // Weighted average margin (weight by price * qty, fallback to simple average)
       let totalRevenue = 0;
@@ -1517,67 +1517,6 @@ export default function DeadStockPage() {
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
-  /** Render the system_status column for a variant SKU row (with inline dropdowns) */
-  const renderSystemStatusCell = (item: DeadStockItem) => (
-    <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-      <select
-        value={item.system_status}
-        onChange={async (e) => {
-          const newVal = e.target.value as SystemStatus;
-          if (newVal === item.system_status) return;
-          await handleInlineUpdate(item.sku, 'system_status_override', newVal, item.system_status);
-        }}
-        className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent ${
-          item.system_status === '真正死貨' ? 'text-red-400 border-red-500/30' :
-          item.system_status === '高風險死貨' ? 'text-orange-400 border-orange-500/30' :
-          item.system_status === '慢移貨' ? 'text-amber-400 border-amber-500/30' :
-          'text-green-400 border-green-500/30'
-        }`}
-      >
-        <option value="正常">正常</option>
-        <option value="慢移貨">慢移貨</option>
-        <option value="高風險死貨">高風險死貨</option>
-        <option value="真正死貨">真正死貨</option>
-      </select>
-      <select
-        value={item.manual_status ?? ''}
-        onChange={async (e) => {
-          const newVal = e.target.value;
-          if (newVal === (item.manual_status ?? '')) return;
-          await handleInlineUpdate(item.sku, 'manual_status', newVal, item.manual_status);
-        }}
-        className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent ${
-          !item.manual_status ? 'text-muted-foreground border-border/30' :
-          item.manual_status === 'confirmed_dead' ? 'text-red-400 border-red-500/30' :
-          item.manual_status === 'revived' ? 'text-green-400 border-green-500/30' :
-          item.manual_status === 'promoting' ? 'text-purple-400 border-purple-500/30' :
-          item.manual_status === 'pending_review' ? 'text-yellow-400 border-yellow-500/30' :
-          item.manual_status === 'observing' ? 'text-blue-400 border-blue-500/30' :
-          'text-muted-foreground border-border/30'
-        }`}
-      >
-        <option value="">—</option>
-        {MANUAL_STATUS_OPTIONS.map(s => (
-          <option key={s} value={s}>{MANUAL_STATUS_LABELS[s]}</option>
-        ))}
-      </select>
-      <select
-        value={item.action ?? ''}
-        onChange={async (e) => {
-          const newVal = e.target.value;
-          if (newVal === (item.action ?? '')) return;
-          await handleInlineUpdate(item.sku, 'action', newVal, item.action);
-        }}
-        className="text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent text-muted-foreground border-border/30"
-      >
-        <option value="">—</option>
-        {ACTION_OPTIONS.map(a => (
-          <option key={a} value={a}>{ACTION_LABELS[a]}</option>
-        ))}
-      </select>
-    </div>
-  );
-
   /** Render a header cell for a column def */
   const renderHeaderCell = (col: ColumnDef) => {
     const width = columnWidths[col.id] ?? col.defaultWidth;
@@ -1694,20 +1633,6 @@ export default function DeadStockPage() {
   /** Render a data cell for a variant SKU row */
   const renderItemCell = (col: ColumnDef, item: DeadStockItem) => {
     const width = columnWidths[col.id] ?? col.defaultWidth;
-
-    // Special handling for system_status column (inline dropdowns)
-    if (col.id === 'system_status') {
-      return (
-        <td
-          key={col.id}
-          className="px-2 py-1.5"
-          style={{ width: width, minWidth: width }}
-          onClick={e => e.stopPropagation()}
-        >
-          {renderSystemStatusCell(item)}
-        </td>
-      );
-    }
 
     return (
       <td
