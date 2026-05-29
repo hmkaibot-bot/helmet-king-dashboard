@@ -197,6 +197,7 @@ interface FilterState {
   system_statuses: SystemStatus[];
   manual_statuses: string[];
   actions: string[];
+  hide_zero_stock: boolean;
 }
 
 // 預設分類（用戶指定 24 個）
@@ -237,6 +238,8 @@ const DEFAULT_FILTERS: FilterState = {
   system_statuses: ['正常', '慢移貨', '死貨'],
   manual_statuses: [],
   actions: [],
+  // 預設隱藏 0 庫存母 ITEM（focus 喺仲有貨嘅 SKU）
+  hide_zero_stock: true,
 };
 
 type SortKey = 'stock_cost' | 'total_qty' | 'worst_days_since' | 'total_sold_90d' | 'worst_system_status';
@@ -1045,8 +1048,14 @@ export default function DeadStockPage() {
       });
     }
 
+    // 隱藏 0 庫存母 ITEM（filter 之後 group 之後先 apply）
+    let visibleGroups = groups;
+    if (filters.hide_zero_stock) {
+      visibleGroups = groups.filter(g => g.total_qty > 0);
+    }
+
     // Sort groups
-    groups.sort((a, b) => {
+    visibleGroups.sort((a, b) => {
       const mul = sortDir === 'asc' ? 1 : -1;
       if (sortKey === 'worst_system_status') {
         return ((STATUS_ORDER[a.worst_system_status] ?? 0) - (STATUS_ORDER[b.worst_system_status] ?? 0)) * mul;
@@ -1054,7 +1063,7 @@ export default function DeadStockPage() {
       return ((a as any)[sortKey] - (b as any)[sortKey]) * mul;
     });
 
-    return groups;
+    return visibleGroups;
   }, [computedItems, filters, sortKey, sortDir]);
 
   const totalFilteredSkus = useMemo(() => productGroups.reduce((s, g) => s + g.skus.length, 0), [productGroups]);
@@ -2014,7 +2023,7 @@ export default function DeadStockPage() {
           placeholder="搜尋品牌…"
         />
 
-        {/* Row 5: Search + Clear */}
+        {/* Row 5: Search + Hide-zero-stock + Clear */}
         <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border/40">
           <div className="relative flex-1 min-w-[200px] max-w-md">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
@@ -2026,6 +2035,15 @@ export default function DeadStockPage() {
               className="w-full pl-8 pr-3 py-1.5 rounded-md border border-border bg-background text-xs focus:outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
+          <label className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs border border-border/60 cursor-pointer hover:bg-accent/50 transition-colors select-none">
+            <input
+              type="checkbox"
+              checked={filters.hide_zero_stock}
+              onChange={e => setFilters(f => ({ ...f, hide_zero_stock: e.target.checked }))}
+              className="h-3 w-3 cursor-pointer"
+            />
+            <span>隱藏 0 庫存</span>
+          </label>
           <button
             onClick={() => setFilters(DEFAULT_FILTERS)}
             className="px-2.5 py-1 rounded-md text-xs border border-border/60 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
