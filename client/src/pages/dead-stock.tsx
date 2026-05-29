@@ -1722,7 +1722,7 @@ export default function DeadStockPage() {
     return (
       <th
         key={col.id}
-        className={`px-2 py-2 relative select-none ${col.align === 'right' ? 'text-right' : 'text-left'}`}
+        className={`px-2 py-2 relative select-none bg-card ${col.align === 'right' ? 'text-right' : 'text-left'}`}
         style={{ width: width, minWidth: width }}
         draggable
         onDragStart={(e) => handleDragStart(e, col.id)}
@@ -2058,10 +2058,10 @@ export default function DeadStockPage() {
         <div className="overflow-x-auto overflow-y-auto" style={{ maxHeight: 'calc(100vh - 280px)' }}>
           <table className="w-full text-xs" style={{ tableLayout: 'fixed' }}>
             {/* ── Header row with integrated filters ── */}
-            <thead className="bg-muted/30 border-b border-border/50" style={{ position: 'sticky', top: 0, zIndex: 10 }}>
+            <thead className="bg-card border-b border-border/50" style={{ position: 'sticky', top: 0, zIndex: 10 }}>
               <tr className="bg-muted/30">
                 {/* Fixed: Checkbox */}
-                <th className="px-2 py-2 bg-muted/30" style={{ width: 32, minWidth: 32 }}>
+                <th className="px-2 py-2 bg-card" style={{ width: 32, minWidth: 32 }}>
                   <input
                     type="checkbox"
                     checked={totalFilteredSkus > 0 && selectedSkus.size === totalFilteredSkus}
@@ -2071,7 +2071,7 @@ export default function DeadStockPage() {
                   />
                 </th>
                 {/* Fixed: Expand arrow */}
-                <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground bg-muted/30" style={{ width: 32, minWidth: 32 }}></th>
+                <th className="text-left px-2 py-2 text-[10px] font-medium text-muted-foreground bg-card" style={{ width: 32, minWidth: 32 }}></th>
                 {/* Dynamic data columns */}
                 {orderedColumns.map(col => renderHeaderCell(col))}
               </tr>
