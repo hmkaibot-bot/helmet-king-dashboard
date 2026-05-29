@@ -2035,15 +2035,18 @@ export default function DeadStockPage() {
               className="w-full pl-8 pr-3 py-1.5 rounded-md border border-border bg-background text-xs focus:outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
-          <label className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs border border-border/60 cursor-pointer hover:bg-accent/50 transition-colors select-none">
-            <input
-              type="checkbox"
-              checked={filters.hide_zero_stock}
-              onChange={e => setFilters(f => ({ ...f, hide_zero_stock: e.target.checked }))}
-              className="h-3 w-3 cursor-pointer"
-            />
-            <span>隱藏 0 庫存</span>
-          </label>
+          <button
+            onClick={() => setFilters(f => ({ ...f, hide_zero_stock: !f.hide_zero_stock }))}
+            className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+              filters.hide_zero_stock
+                ? 'bg-primary/90 text-primary-foreground border-primary'
+                : 'border-border/60 bg-background hover:bg-accent'
+            }`}
+            title="隱藏總庫存為 0 嘅母 ITEM"
+          >
+            <span className="inline-block w-3 mr-1 text-center">{filters.hide_zero_stock ? '✓' : ''}</span>
+            隱藏 0 庫存
+          </button>
           <button
             onClick={() => setFilters(DEFAULT_FILTERS)}
             className="px-2.5 py-1 rounded-md text-xs border border-border/60 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
