@@ -391,38 +391,8 @@ function MultiSelectChipFilter({
     <div className="flex flex-wrap items-center gap-1.5">
       <span className="text-[11px] font-medium text-muted-foreground w-20 shrink-0">{label}</span>
 
-      {/* 「全部」 chip = 清空 selection */}
-      <button
-        onClick={clearAll}
-        className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
-          selected.length === 0
-            ? 'bg-primary text-primary-foreground border-primary'
-            : 'border-border/60 bg-background hover:bg-accent'
-        }`}
-      >
-        {emptyLabel}
-      </button>
-
-      {/* 已選 chips */}
-      {visibleChips.map(v => (
-        <button
-          key={v}
-          onClick={() => toggle(v)}
-          className="group inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs border bg-primary/90 text-primary-foreground border-primary hover:bg-primary"
-          title={`移除：${v}`}
-        >
-          <span className="truncate max-w-[180px]">{v}</span>
-          <X className="h-3 w-3 opacity-70 group-hover:opacity-100" />
-        </button>
-      ))}
-      {hiddenCount > 0 && (
-        <span className="text-[11px] text-muted-foreground px-1">
-          +{hiddenCount}
-        </span>
-      )}
-
-      {/* + 加選項 button + popover */}
-      <div className="relative" ref={popRef}>
+      {/* + 加選項 button + popover — 釘定位置，不受已選 chip 推動 */}
+      <div className="relative shrink-0" ref={popRef}>
         <button
           onClick={() => { setOpen(o => !o); setQuery(''); }}
           className="px-2.5 py-1 rounded-md text-xs border border-dashed border-border/60 bg-background hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
@@ -487,6 +457,36 @@ function MultiSelectChipFilter({
           </div>
         )}
       </div>
+
+      {/* 「全部」 chip = 清空 selection */}
+      <button
+        onClick={clearAll}
+        className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+          selected.length === 0
+            ? 'bg-primary text-primary-foreground border-primary'
+            : 'border-border/60 bg-background hover:bg-accent'
+        }`}
+      >
+        {emptyLabel}
+      </button>
+
+      {/* 已選 chips — 在右邊增長，不影響 button 位置 */}
+      {visibleChips.map(v => (
+        <button
+          key={v}
+          onClick={() => toggle(v)}
+          className="group inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs border bg-primary/90 text-primary-foreground border-primary hover:bg-primary"
+          title={`移除：${v}`}
+        >
+          <span className="truncate max-w-[180px]">{v}</span>
+          <X className="h-3 w-3 opacity-70 group-hover:opacity-100" />
+        </button>
+      ))}
+      {hiddenCount > 0 && (
+        <span className="text-[11px] text-muted-foreground px-1">
+          +{hiddenCount}
+        </span>
+      )}
     </div>
   );
 }
