@@ -199,10 +199,40 @@ interface FilterState {
   actions: string[];
 }
 
+// 預設分類（用戶指定 24 個）
+// 讀物件計「常見商品」常見分類，排除表中不需要 default 選的類別
+// （例如 MOTORCYCLE PARTS 中高專業類、Workshop、langify）
+const DEFAULT_PRODUCT_TYPES: string[] = [
+  'HELMET - FULL FACE',
+  'RIDER GEARS - GLOVES',
+  'HELMET - OPEN FACE(3/4)',
+  'ACCESSORIES - OTHER MOTORCYCLE GOODS',
+  'RIDER GEARS - JACKETS',
+  'HELMET - VISOR',
+  'RIDER GEARS - CASUAL T-SHIRT',
+  'General',
+  'ACCESSORIES - LUGGAGE & BAG',
+  'RIDER GEARS - BOOTS/SHOES',
+  'RIDER GEARS - OTHER CLOTHING/WEAR',
+  'HELMET - MODULAR',
+  'ACCESSORIES - BIKE CLEANING & CARE',
+  'HELMET - OTHER ACCESSORIES',
+  'ACCESSORIES - PHONE ACCESSORIES',
+  'HELMET - BLUETOOTH COMMUNICATORS & INTERCOMS',
+  'HELMET - DIRT',
+  'RIDER GEARS - PANTS/JEANS',
+  'RIDER GEARS - PROTECTION',
+  'ACCESSORIES - LOCK & SECURITY',
+  'ACCESSORIES - PHONE MOUNTS',
+  'RIDER GEARS - RAIN GEAR',
+  'HELMET - LINERS',
+  'HELMET - DUAL SPORT',
+];
+
 const DEFAULT_FILTERS: FilterState = {
   search: '',
   vendors: [],
-  product_types: [],
+  product_types: DEFAULT_PRODUCT_TYPES,
   // 預設勾齊 3 個 system status — V2
   system_statuses: ['正常', '慢移貨', '死貨'],
   manual_statuses: [],
