@@ -1616,11 +1616,6 @@ export default function DeadStockPage() {
                   const newVal = e.target.value;
                   if (newVal === '__mixed__') return;
                   if (!isMixed && newVal === groupValue) return;
-                  const newLabel = newVal ? manualStatusLabel(newVal) : '清除';
-                  const confirmMsg = isMixed
-                    ? `該產品下 ${group.skus.length} 個 variants 當前核實狀態不一致。\n\n確認全部設為「${newLabel}」？`
-                    : `把「${group.product_title}」的 ${group.skus.length} 個 variants 同時設為「${newLabel}」？`;
-                  if (!window.confirm(confirmMsg)) return;
                   await handleGroupInlineUpdate(group.skus, 'manual_status', newVal);
                 }}
                 className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent w-full ${
