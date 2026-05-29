@@ -319,6 +319,160 @@ function FilterDropdown({
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MultiSelectChipFilter — 頂部 chip-style 多選 filter，帶搜尋 popover
+// 用於品牌 / 分類這類 options 多但需要快選取的場景
+// ─────────────────────────────────────────────────────────────────────────────
+interface MultiSelectChipFilterProps {
+  label: string;            // 左邊標題（例：品牌）
+  options: string[];        // 所有可選項
+  selected: string[];       // 現時已選
+  onChange: (next: string[]) => void;
+  placeholder?: string;     // 搜尋框 placeholder
+  emptyLabel?: string;      // 0 選 時 chip 顯示（預設「全部」）
+  maxChips?: number;        // 現時已選動 chip 最多顯示几個，剩下收為 +N
+}
+function MultiSelectChipFilter({
+  label, options, selected, onChange,
+  placeholder = '搜尋…',
+  emptyLabel = '全部',
+  maxChips = 5,
+}: MultiSelectChipFilterProps) {
+  const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState('');
+  const popRef = React.useRef<HTMLDivElement>(null);
+
+  // Click outside to close
+  React.useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (popRef.current && !popRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open]);
+
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? options.filter(o => o.toLowerCase().includes(q))
+    : options;
+
+  const toggle = (v: string) => {
+    onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v]);
+  };
+  const clearAll = () => onChange([]);
+  const selectAllVisible = () => {
+    const merged = Array.from(new Set([...selected, ...filtered]));
+    onChange(merged);
+  };
+
+  const visibleChips = selected.slice(0, maxChips);
+  const hiddenCount = Math.max(0, selected.length - maxChips);
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-[11px] font-medium text-muted-foreground w-20 shrink-0">{label}</span>
+
+      {/* 「全部」 chip = 清空 selection */}
+      <button
+        onClick={clearAll}
+        className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+          selected.length === 0
+            ? 'bg-primary text-primary-foreground border-primary'
+            : 'border-border/60 bg-background hover:bg-accent'
+        }`}
+      >
+        {emptyLabel}
+      </button>
+
+      {/* 已選 chips */}
+      {visibleChips.map(v => (
+        <button
+          key={v}
+          onClick={() => toggle(v)}
+          className="group inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs border bg-primary/90 text-primary-foreground border-primary hover:bg-primary"
+          title={`移除：${v}`}
+        >
+          <span className="truncate max-w-[180px]">{v}</span>
+          <X className="h-3 w-3 opacity-70 group-hover:opacity-100" />
+        </button>
+      ))}
+      {hiddenCount > 0 && (
+        <span className="text-[11px] text-muted-foreground px-1">
+          +{hiddenCount}
+        </span>
+      )}
+
+      {/* + 加選項 button + popover */}
+      <div className="relative" ref={popRef}>
+        <button
+          onClick={() => { setOpen(o => !o); setQuery(''); }}
+          className="px-2.5 py-1 rounded-md text-xs border border-dashed border-border/60 bg-background hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+        >
+          + 加{label}
+        </button>
+        {open && (
+          <div className="absolute z-50 mt-1 left-0 w-72 rounded-md border border-border bg-popover shadow-lg p-2">
+            <div className="relative mb-2">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <input
+                autoFocus
+                type="text"
+                placeholder={placeholder}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                className="w-full pl-7 pr-2 py-1.5 rounded-md border border-border bg-background text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+            <div className="max-h-64 overflow-y-auto -mx-1 px-1">
+              {filtered.length === 0 && (
+                <div className="text-xs text-muted-foreground text-center py-4">沒有符合結果</div>
+              )}
+              {filtered.map(opt => {
+                const checked = selected.includes(opt);
+                return (
+                  <button
+                    key={opt}
+                    onClick={() => toggle(opt)}
+                    className="flex items-center gap-2 w-full px-2 py-1.5 rounded text-xs text-left hover:bg-accent"
+                  >
+                    <span className={`inline-flex items-center justify-center w-4 h-4 rounded border ${
+                      checked
+                        ? 'bg-primary border-primary text-primary-foreground'
+                        : 'border-border bg-background'
+                    }`}>
+                      {checked && <CheckCircle2 className="h-3 w-3" />}
+                    </span>
+                    <span className="flex-1 truncate">{opt}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {filtered.length > 1 && (
+              <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-border/60">
+                <button
+                  onClick={selectAllVisible}
+                  className="text-[11px] text-primary hover:underline"
+                >
+                  全選符合（{filtered.length}）
+                </button>
+                {selected.length > 0 && (
+                  <button
+                    onClick={clearAll}
+                    className="text-[11px] text-muted-foreground hover:text-foreground"
+                  >
+                    清空已選
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function DeadStockPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1801,7 +1955,25 @@ export default function DeadStockPage() {
           })}
         </div>
 
-        {/* Row 2: 狀態核實 */}
+        {/* Row 2: 品牌 (多選帶搜尋) */}
+        <MultiSelectChipFilter
+          label="品牌"
+          options={filterOptions.vendors}
+          selected={filters.vendors}
+          onChange={next => setFilters(f => ({ ...f, vendors: next }))}
+          placeholder="搜尋品牌…"
+        />
+
+        {/* Row 3: 分類 (多選帶搜尋) */}
+        <MultiSelectChipFilter
+          label="分類"
+          options={filterOptions.product_types}
+          selected={filters.product_types}
+          onChange={next => setFilters(f => ({ ...f, product_types: next }))}
+          placeholder="搜尋分類…"
+        />
+
+        {/* Row 4: 狀態核實 */}
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] font-medium text-muted-foreground w-20 shrink-0">狀態核實</span>
           <button
