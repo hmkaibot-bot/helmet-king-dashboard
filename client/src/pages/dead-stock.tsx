@@ -892,11 +892,12 @@ export default function DeadStockPage() {
   // ── Summary stats ───────────────────────────────────────────────────────────
 
   const summaryStats = useMemo(() => {
-    const nonNormal = computedItems.filter(i => i.system_status !== '正常');
-    const totalCost = nonNormal.reduce((s, i) => s + i.stock_cost, 0);
+    // 只計「狀態核實 = 死貨」的 SKU（人手認定）
+    const dead = computedItems.filter(i => i.manual_status === 'dead');
+    const totalCost = dead.reduce((s, i) => s + i.stock_cost, 0);
 
     const brandCost = new Map<string, number>();
-    for (const i of nonNormal) {
+    for (const i of dead) {
       brandCost.set(i.vendor, (brandCost.get(i.vendor) ?? 0) + i.stock_cost);
     }
     const topBrands = Array.from(brandCost.entries())
@@ -904,13 +905,13 @@ export default function DeadStockPage() {
       .slice(0, 5);
 
     const aging = {
-      '0-90d': nonNormal.filter(i => i.days_since_last_sale < 90).length,
-      '91-180d': nonNormal.filter(i => i.days_since_last_sale >= 90 && i.days_since_last_sale < 180).length,
-      '181-270d': nonNormal.filter(i => i.days_since_last_sale >= 180 && i.days_since_last_sale < 270).length,
-      '270d+': nonNormal.filter(i => i.days_since_last_sale >= 270).length,
+      '0-90d': dead.filter(i => i.days_since_last_sale < 90).length,
+      '91-180d': dead.filter(i => i.days_since_last_sale >= 90 && i.days_since_last_sale < 180).length,
+      '181-270d': dead.filter(i => i.days_since_last_sale >= 180 && i.days_since_last_sale < 270).length,
+      '270d+': dead.filter(i => i.days_since_last_sale >= 270).length,
     };
 
-    return { count: nonNormal.length, totalCost, topBrands, aging };
+    return { count: dead.length, totalCost, topBrands, aging };
   }, [computedItems]);
 
   // ── Distinct filter options ─────────────────────────────────────────────────
@@ -1849,7 +1850,7 @@ export default function DeadStockPage() {
           </CardHeader>
           <CardContent className="px-4 pb-3">
             <div className="text-2xl font-bold">{formatNumber(summaryStats.count)}</div>
-            <p className="text-[10px] text-muted-foreground mt-0.5">非正常庫存品項</p>
+            <p className="text-[10px] text-muted-foreground mt-0.5">狀態核實 = 死貨 的 SKU</p>
           </CardContent>
         </Card>
 
