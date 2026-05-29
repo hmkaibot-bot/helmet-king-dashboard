@@ -542,7 +542,9 @@ export default function DeadStockPage() {
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
-  const [zeroStockVariants, setZeroStockVariants] = useState<Map<string, DeadStockItem[]>>(new Map());
+  // V2.2: 0-stock SKU 不再需 lazy fetch，以下 state 保留為了向後兼容（現時未使用）
+  const [zeroStockVariants] = useState<Map<string, DeadStockItem[]>>(new Map());
+  void zeroStockVariants;
 
   // form state for expanded SKU detail
   const [formState, setFormState] = useState<Partial<DeadStockReview>>({});
@@ -708,9 +710,9 @@ export default function DeadStockPage() {
     setError(null);
     try {
       const [invRows, bcRows, linesRows, ordersRows, reviewsResult, auditResult, productsRows, piRows, pilRows] = await Promise.all([
-        queryAllPages('shopify_inventory', 'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price', [
-          { column: 'inventory_quantity', op: 'gte', value: '1' },
-        ]),
+        // V2.2: 一次 load 全部 SKU（包括 0-stock），令母行 best-of 全面正確
+        // 不再需要 lazy-load 0-stock variants
+        queryAllPages('shopify_inventory', 'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price'),
         queryAllPages('bc_inventory', 'number,unit_cost,unit_price'),
         queryAllPages('shopify_order_lines', 'sku,quantity,order_id'),
         queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
@@ -1066,55 +1068,12 @@ export default function DeadStockPage() {
 
   // ── Product group expand ───────────────────────────────────────────────────
 
-  const toggleProduct = async (title: string) => {
+  const toggleProduct = (title: string) => {
+    // V2.2: 0-stock SKU 已在主 query 一次 load 齊，不再需要 lazy fetch
     if (expandedProduct === title) {
       setExpandedProduct(null);
     } else {
       setExpandedProduct(title);
-      // Fetch 0-stock variants on demand if not already cached
-      if (!zeroStockVariants.has(title)) {
-        const { data } = await supabase
-          .from('shopify_inventory')
-          .select('sku,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price')
-          .eq('product_title', title)
-          .eq('inventory_quantity', 0);
-        if (data && data.length > 0) {
-          const bcMap = new Map<string, BcInventoryRow>();
-          for (const b of bcInv) bcMap.set(b.number, b);
-          const zeroItems: DeadStockItem[] = data.map((inv: any) => {
-            const bc = bcMap.get(inv.sku);
-            const unitCost = bc?.unit_cost ?? 0;
-            return {
-              sku: inv.sku,
-              product_title: inv.product_title,
-              variant_title: inv.variant_title ?? null,
-              vendor: inv.vendor,
-              product_type: inv.product_type,
-              inventory_quantity: 0,
-              price: inv.price ?? 0,
-              compare_at_price: inv.compare_at_price ?? null,
-              unit_cost: unitCost,
-              stock_cost: 0,
-              last_sold_date: null,
-              first_sold_date: null,
-              sold_30d: 0,
-              sold_90d: 0,
-              days_since_last_sale: 9999,
-              system_status: '正常' as SystemStatus,
-              manual_status: null,
-              action: null,
-              notes: null,
-              reviewer: null,
-              last_review_date: null,
-              next_review_date: null,
-              revived: false,
-            };
-          });
-          setZeroStockVariants(prev => new Map(prev).set(title, zeroItems));
-        } else {
-          setZeroStockVariants(prev => new Map(prev).set(title, []));
-        }
-      }
     }
     setExpandedSku(null);
     setSaveSuccess(false);
@@ -2169,9 +2128,8 @@ export default function DeadStockPage() {
               )}
               {productGroups.map(group => {
                 const isProductExpanded = expandedProduct === group.product_title;
-                const extraZero = zeroStockVariants.get(group.product_title) ?? [];
-                const existingSkuSet = new Set(group.skus.map(s => s.sku));
-                const mergedSkus = [...group.skus, ...extraZero.filter(z => !existingSkuSet.has(z.sku))];
+                // V2.2: 0-stock SKU 已在主 query 一次 load 齊，直接用 group.skus
+                const mergedSkus = group.skus;
                 const skuCount = mergedSkus.length;
                 const allGroupSkus = mergedSkus.map(s => s.sku);
                 const allGroupSelected = allGroupSkus.every(s => selectedSkus.has(s));
