@@ -1956,25 +1956,7 @@ export default function DeadStockPage() {
           })}
         </div>
 
-        {/* Row 2: 品牌 (多選帶搜尋) */}
-        <MultiSelectChipFilter
-          label="品牌"
-          options={filterOptions.vendors}
-          selected={filters.vendors}
-          onChange={next => setFilters(f => ({ ...f, vendors: next }))}
-          placeholder="搜尋品牌…"
-        />
-
-        {/* Row 3: 分類 (多選帶搜尋) */}
-        <MultiSelectChipFilter
-          label="分類"
-          options={filterOptions.product_types}
-          selected={filters.product_types}
-          onChange={next => setFilters(f => ({ ...f, product_types: next }))}
-          placeholder="搜尋分類…"
-        />
-
-        {/* Row 4: 狀態核實 */}
+        {/* Row 2: 狀態核實 */}
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] font-medium text-muted-foreground w-20 shrink-0">狀態核實</span>
           <button
@@ -2024,7 +2006,25 @@ export default function DeadStockPage() {
           })()}
         </div>
 
-        {/* Row 3: Search + Clear */}
+        {/* Row 3: 分類 (多選帶搜尋) */}
+        <MultiSelectChipFilter
+          label="分類"
+          options={filterOptions.product_types}
+          selected={filters.product_types}
+          onChange={next => setFilters(f => ({ ...f, product_types: next }))}
+          placeholder="搜尋分類…"
+        />
+
+        {/* Row 4: 品牌 (多選帶搜尋) */}
+        <MultiSelectChipFilter
+          label="品牌"
+          options={filterOptions.vendors}
+          selected={filters.vendors}
+          onChange={next => setFilters(f => ({ ...f, vendors: next }))}
+          placeholder="搜尋品牌…"
+        />
+
+        {/* Row 5: Search + Clear */}
         <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border/40">
           <div className="relative flex-1 min-w-[200px] max-w-md">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
