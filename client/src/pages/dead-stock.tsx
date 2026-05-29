@@ -182,6 +182,8 @@ const ACTION_LABELS: Record<string, string> = {
 
 const SYSTEM_STATUS_OPTIONS: SystemStatus[] = ['正常', '慢移貨', '死貨'];
 const MANUAL_STATUS_OPTIONS = Object.keys(MANUAL_STATUS_LABELS);
+// Sentinel key for filtering rows with no manual_status (null / empty)
+const UNREVIEWED_KEY = '__unreviewed__';
 const ACTION_OPTIONS = Object.keys(ACTION_LABELS);
 
 const STATUS_ORDER: Record<string, number> = { '正常': 0, '慢移貨': 1, '死貨': 2 };
@@ -926,7 +928,14 @@ export default function DeadStockPage() {
       // 什麼 status 都不勾 = 什麼都不 show
       items = [];
     }
-    if (filters.manual_statuses.length) items = items.filter(i => filters.manual_statuses.includes(i.manual_status ?? ''));
+    if (filters.manual_statuses.length) {
+      items = items.filter(i => {
+        const ms = i.manual_status ?? '';
+        // Sentinel 「未核實」 匹配 null / 空字串
+        if (ms === '' && filters.manual_statuses.includes(UNREVIEWED_KEY)) return true;
+        return filters.manual_statuses.includes(ms);
+      });
+    }
     if (filters.actions.length) items = items.filter(i => filters.actions.includes(i.action ?? ''));
 
     // Group by product_title
@@ -1979,6 +1988,24 @@ export default function DeadStockPage() {
               </button>
             );
           })}
+          {/* 「未核實」 = null / 空字串 */}
+          {(() => {
+            const active = filters.manual_statuses.includes(UNREVIEWED_KEY);
+            return (
+              <button
+                onClick={() => toggleManualStatus(UNREVIEWED_KEY)}
+                className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+                  active
+                    ? 'bg-primary/90 text-primary-foreground border-primary'
+                    : 'border-dashed border-border/60 bg-background hover:bg-accent text-muted-foreground'
+                }`}
+                title="顯示尚未人手核實狀態的項目"
+              >
+                <span className="inline-block w-3 mr-1 text-center">{active ? '✓' : ''}</span>
+                未核實
+              </button>
+            );
+          })()}
         </div>
 
         {/* Row 3: Search + Clear */}
