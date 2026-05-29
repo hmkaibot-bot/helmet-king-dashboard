@@ -944,11 +944,18 @@ export default function DeadStockPage() {
       const total_stock_cost = skus.reduce((s, i) => s + i.stock_cost, 0);
       const total_sold_90d = skus.reduce((s, i) => s + i.sold_90d, 0);
       const worst_days_since = Math.max(...skus.map(i => i.days_since_last_sale));
-      let worstIdx = 0;
+
+      // V2.1 (2026-05-29): 改為「最佳子 SKU」邏輯 (best-of)。
+      //   只要群組內有任何一個子 SKU = 正常 → 母 item 正常
+      //   全部子 SKU 均為慢移或死貨，但有慢移 → 母 item 慢移貨
+      //   全部子 SKU 都死貨 → 母 item 死貨
+      // 變數名保留 worst_system_status 以免帿動太多 downstream code，但含義已反轉。
+      let bestIdx = 2;
       for (const s of skus) {
-        if ((STATUS_ORDER[s.system_status] ?? 0) > worstIdx) worstIdx = STATUS_ORDER[s.system_status] ?? 0;
+        const idx = STATUS_ORDER[s.system_status] ?? 0;
+        if (idx < bestIdx) bestIdx = idx;
       }
-      const worst_system_status = (['正常', '慢移貨', '死貨'] as SystemStatus[])[worstIdx] ?? '正常';
+      const worst_system_status = (['正常', '慢移貨', '死貨'] as SystemStatus[])[bestIdx] ?? '正常';
 
       // Weighted average margin (weight by price * qty, fallback to simple average)
       let totalRevenue = 0;
