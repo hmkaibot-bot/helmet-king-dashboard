@@ -1700,40 +1700,9 @@ export default function DeadStockPage() {
     // Determine content
     let content: React.ReactNode;
 
-    if (col.filter && col.id === 'vendor') {
-      content = (
-        <FilterDropdown
-          label={col.label}
-          options={filterOptions.vendors}
-          selected={filters.vendors}
-          onToggle={v => setFilters(f => ({ ...f, vendors: toggleFilter(f.vendors, v) }))}
-        />
-      );
-    } else if (col.filter && col.id === 'product_type') {
-      content = (
-        <FilterDropdown
-          label={col.label}
-          options={filterOptions.product_types}
-          selected={filters.product_types}
-          onToggle={v => setFilters(f => ({ ...f, product_types: toggleFilter(f.product_types, v) }))}
-        />
-      );
-    } else if (col.filter && col.id === 'system_status') {
-      content = (
-        <span
-          className="cursor-pointer hover:text-foreground select-none"
-          onClick={() => col.sortKey && handleSort(col.sortKey)}
-        >
-          <FilterDropdown
-            label={col.label}
-            options={SYSTEM_STATUS_OPTIONS}
-            selected={filters.system_statuses}
-            onToggle={v => setFilters(f => ({ ...f, system_statuses: toggleFilter(f.system_statuses, v as SystemStatus) }))}
-          />
-          {col.sortKey && <SortIcon col={col.sortKey} />}
-        </span>
-      );
-    } else if (col.sortKey) {
+    // V2: 品牌 / 分類 / 系統狀態 filter 已提升到頂部 chip filter，
+    // 表頭只保留排序箭嘴，避免重複 + dropdown 遮住表格。
+    if (col.sortKey) {
       content = (
         <span
           className="cursor-pointer hover:text-foreground select-none text-[10px] font-medium text-muted-foreground whitespace-nowrap"
