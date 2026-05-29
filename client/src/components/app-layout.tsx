@@ -139,6 +139,21 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true, '/procurement': true, '/performance': true, '/crm': true });
   const [location] = useLocation();
   const { dateRange, setDateRange, customFrom, customTo, setCustomFrom, setCustomTo } = useDateRange();
+
+  // 呢啲頁面冇 subscribe date filter (見 useDateRange / bounds usage)，所以隱藏 dropdown 避免誤導
+  const PAGES_WITHOUT_DATE_FILTER = [
+    '/retail/dead-stock',
+    '/retail/inventory',
+    '/retail/restock',
+    '/performance/daily',
+    '/performance/velocity',
+    '/performance/new-products',
+    '/performance/weekly-review',
+    '/performance/product-analytics',
+    '/performance/forecast',
+    '/crm/marsello-approval',
+  ];
+  const showDateFilter = !PAGES_WITHOUT_DATE_FILTER.includes(location);
   const { logout } = useAuth();
   const { theme, toggle: toggleTheme } = useTheme();
 
@@ -295,7 +310,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 : <Moon className="h-4 w-4" />
               }
             </button>
-            {dateRange === 'custom' && (
+            {showDateFilter && dateRange === 'custom' && (
               <div className="flex items-center gap-1.5">
                 <input
                   type="date"
@@ -314,19 +329,23 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 />
               </div>
             )}
-            <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-            <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRange)}>
-              <SelectTrigger className="w-[130px] h-8 text-xs" data-testid="select-date-range">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(DATE_RANGE_LABELS).map(([key, label]) => (
-                  <SelectItem key={key} value={key} className="text-xs">
-                    {label.zh} {label.en}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {showDateFilter && (
+              <>
+                <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+                <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRange)}>
+                  <SelectTrigger className="w-[130px] h-8 text-xs" data-testid="select-date-range">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(DATE_RANGE_LABELS).map(([key, label]) => (
+                      <SelectItem key={key} value={key} className="text-xs">
+                        {label.zh} {label.en}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </>
+            )}
           </div>
         </header>
 
