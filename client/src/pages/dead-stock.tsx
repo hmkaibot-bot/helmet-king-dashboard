@@ -1997,7 +1997,7 @@ export default function DeadStockPage() {
                 className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
                   active
                     ? 'bg-primary/90 text-primary-foreground border-primary'
-                    : 'border-dashed border-border/60 bg-background hover:bg-accent text-muted-foreground'
+                    : 'border-border/60 bg-background hover:bg-accent'
                 }`}
                 title="顯示尚未人手核實狀態的項目"
               >
