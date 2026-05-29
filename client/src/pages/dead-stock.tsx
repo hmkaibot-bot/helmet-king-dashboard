@@ -344,6 +344,10 @@ function MultiSelectChipFilter({
   const [query, setQuery] = React.useState('');
   const popRef = React.useRef<HTMLDivElement>(null);
 
+  // 打開 popover 噠那個 moment snapshot 一次項目順序
+  // 連續 toggle 期間清單不重排，防止這個選完這個跳動
+  const [snapshot, setSnapshot] = React.useState<string[]>([]);
+
   // Click outside to close
   React.useEffect(() => {
     if (!open) return;
@@ -354,10 +358,22 @@ function MultiSelectChipFilter({
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [open]);
 
+  // 開 popover 時重新 snapshot：已選 → alphabetical 在最頂，其餘 → alphabetical 跟後
+  React.useEffect(() => {
+    if (!open) return;
+    const sel = new Set(selected);
+    const top = options.filter(o => sel.has(o));
+    const rest = options.filter(o => !sel.has(o));
+    setSnapshot([...top, ...rest]);
+    // 有意不依賴 selected：snapshot 一旦設了就凍住，直到重新打開
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, options]);
+
   const q = query.trim().toLowerCase();
+  const baseList = snapshot.length > 0 ? snapshot : options;
   const filtered = q
-    ? options.filter(o => o.toLowerCase().includes(q))
-    : options;
+    ? baseList.filter(o => o.toLowerCase().includes(q))
+    : baseList;
 
   const toggle = (v: string) => {
     onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v]);
