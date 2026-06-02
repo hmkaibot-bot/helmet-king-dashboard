@@ -1240,6 +1240,16 @@ export default function DeadStockPage() {
     const dbField = fieldName === 'system_status_override' ? 'system_status_override' : fieldName;
     const auditField = fieldName === 'system_status_override' ? 'system_status' : fieldName;
 
+    // Optimistic update: 即刻 update local reviews state，UI 唔會閃返舊 value
+    setReviews(prev => {
+      const existing = prev.find(r => r.sku === sku);
+      const updatedAt = new Date().toISOString();
+      if (existing) {
+        return prev.map(r => r.sku === sku ? { ...r, [dbField]: newValue || null, updated_at: updatedAt } : r);
+      }
+      return [...prev, { sku, [dbField]: newValue || null, updated_at: updatedAt } as DeadStockReview];
+    });
+
     await supabase.from('dead_stock_reviews').upsert({
       sku,
       [dbField]: newValue || null,
@@ -1272,6 +1282,20 @@ export default function DeadStockPage() {
   ) => {
     if (items.length === 0) return;
     const stamp = new Date().toISOString();
+
+    // Optimistic update: 即刻 update local reviews state，UI 唔會閃返舊 value
+    const skuSet = new Set(items.map(it => it.sku));
+    setReviews(prev => {
+      const updated = prev.map(r => skuSet.has(r.sku) ? { ...r, [fieldName]: newValue || null, updated_at: stamp } : r);
+      const existingSkus = new Set(prev.map(r => r.sku));
+      const newRows: DeadStockReview[] = [];
+      for (const it of items) {
+        if (!existingSkus.has(it.sku)) {
+          newRows.push({ sku: it.sku, [fieldName]: newValue || null, updated_at: stamp } as DeadStockReview);
+        }
+      }
+      return [...updated, ...newRows];
+    });
 
     const reviewRows = items.map(it => ({
       sku: it.sku,
