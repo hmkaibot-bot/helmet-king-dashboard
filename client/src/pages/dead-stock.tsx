@@ -242,7 +242,7 @@ const DEFAULT_FILTERS: FilterState = {
   hide_zero_stock: true,
 };
 
-type SortKey = 'stock_cost' | 'total_qty' | 'worst_days_since' | 'total_sold_90d' | 'worst_system_status';
+type SortKey = 'stock_cost' | 'total_qty' | 'worst_days_since' | 'total_sold_90d' | 'worst_system_status' | 'product_title';
 type SortDir = 'asc' | 'desc';
 
 // ── Column Configuration ─────────────────────────────────────────────────────
@@ -1084,6 +1084,9 @@ export default function DeadStockPage() {
       if (sortKey === 'worst_system_status') {
         return ((STATUS_ORDER[a.worst_system_status] ?? 0) - (STATUS_ORDER[b.worst_system_status] ?? 0)) * mul;
       }
+      if (sortKey === 'product_title') {
+        return (a.product_title ?? '').localeCompare(b.product_title ?? '', 'en', { sensitivity: 'base' }) * mul;
+      }
       return ((a as any)[sortKey] - (b as any)[sortKey]) * mul;
     });
 
@@ -1443,6 +1446,7 @@ export default function DeadStockPage() {
         label: '產品名稱',
         align: 'left' as const,
         defaultWidth: 220,
+        sortKey: 'product_title' as SortKey,
         renderGroup: (group: ProductGroup) => (
           <div className="flex items-center gap-1.5">
             <span className="truncate font-medium" title={group.product_title}>
