@@ -708,19 +708,39 @@ export default function DeadStockPage() {
 
   // ── Data Loading ────────────────────────────────────────────────────────────
 
+  // V2.3: Paginate any Supabase select to bypass 1000-row default cap.
+  // Used by inline-update re-fetch (NOT cached, always fresh).
+  const fetchAllRows = async <T,>(table: string, orderBy?: { column: string; ascending: boolean }): Promise<T[]> => {
+    const PAGE = 1000;
+    let all: T[] = [];
+    let from = 0;
+    while (true) {
+      let q = supabase.from(table).select('*').range(from, from + PAGE - 1);
+      if (orderBy) q = q.order(orderBy.column, { ascending: orderBy.ascending });
+      const { data, error } = await q;
+      if (error) throw error;
+      const rows = (data ?? []) as T[];
+      all = all.concat(rows);
+      if (rows.length < PAGE) break;
+      from += PAGE;
+    }
+    return all;
+  };
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [invRows, bcRows, linesRows, ordersRows, reviewsResult, auditResult, productsRows, piRows, pilRows] = await Promise.all([
+      const [invRows, bcRows, linesRows, ordersRows, reviewsRows, auditRows, productsRows, piRows, pilRows] = await Promise.all([
         // V2.2: 一次 load 全部 SKU（包括 0-stock），令母行 best-of 全面正確
         // 不再需要 lazy-load 0-stock variants
         queryAllPages('shopify_inventory', 'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price'),
         queryAllPages('bc_inventory', 'number,unit_cost,unit_price'),
         queryAllPages('shopify_order_lines', 'sku,quantity,order_id'),
         queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
-        supabase.from('dead_stock_reviews').select('*'),
-        supabase.from('dead_stock_audit_log').select('*').order('changed_at', { ascending: false }),
+        // V2.3: 用 queryAllPages 避免 Supabase 1000-row default cap (reviews 表已過 1k 行)
+        queryAllPages('dead_stock_reviews', '*'),
+        queryAllPages('dead_stock_audit_log', '*'),
         queryAllPages('shopify_products', 'id,status,created_at'),
         queryAllPages('bc_purchase_invoices', 'id,posting_date'),
         queryAllPages('bc_purchase_invoice_lines', 'invoice_id,item_number'),
@@ -730,8 +750,12 @@ export default function DeadStockPage() {
       setBcInv(bcRows as BcInventoryRow[]);
       setOrderLines(linesRows as OrderLineRow[]);
       setOrders(ordersRows as OrderRow[]);
-      setReviews((reviewsResult.data ?? []) as DeadStockReview[]);
-      setAuditLog((auditResult.data ?? []) as AuditLogRow[]);
+      setReviews(reviewsRows as DeadStockReview[]);
+      // Client-side sort audit log by changed_at desc (since queryAllPages doesn't accept orderBy)
+      const sortedAudit = (auditRows as AuditLogRow[]).slice().sort((a, b) =>
+        new Date(b.changed_at).getTime() - new Date(a.changed_at).getTime()
+      );
+      setAuditLog(sortedAudit);
       setShopifyProducts(productsRows as ShopifyProductRow[]);
       setPurchaseInvoices(piRows as BcPurchaseInvoiceRow[]);
       setPurchaseInvoiceLines(pilRows as BcPurchaseInvoiceLineRow[]);
@@ -1155,11 +1179,11 @@ export default function DeadStockPage() {
       }
 
       const [newReviews, newAudit] = await Promise.all([
-        supabase.from('dead_stock_reviews').select('*'),
-        supabase.from('dead_stock_audit_log').select('*').order('changed_at', { ascending: false }),
+        fetchAllRows<DeadStockReview>('dead_stock_reviews'),
+        fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
       ]);
-      if (newReviews.data) setReviews(newReviews.data as DeadStockReview[]);
-      if (newAudit.data) setAuditLog(newAudit.data as AuditLogRow[]);
+      setReviews(newReviews);
+      setAuditLog(newAudit);
 
       setFormOriginal({ ...formState });
       setSaveSuccess(true);
@@ -1266,11 +1290,11 @@ export default function DeadStockPage() {
     });
 
     const [newReviews, newAudit] = await Promise.all([
-      supabase.from('dead_stock_reviews').select('*'),
-      supabase.from('dead_stock_audit_log').select('*').order('changed_at', { ascending: false }),
+      fetchAllRows<DeadStockReview>('dead_stock_reviews'),
+      fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
     ]);
-    if (newReviews.data) setReviews(newReviews.data as DeadStockReview[]);
-    if (newAudit.data) setAuditLog(newAudit.data as AuditLogRow[]);
+    setReviews(newReviews);
+    setAuditLog(newAudit);
   };
 
   // ── Group-level inline update (item layer batch) ────────────────────
@@ -1319,11 +1343,11 @@ export default function DeadStockPage() {
     }
 
     const [newReviews, newAudit] = await Promise.all([
-      supabase.from('dead_stock_reviews').select('*'),
-      supabase.from('dead_stock_audit_log').select('*').order('changed_at', { ascending: false }),
+      fetchAllRows<DeadStockReview>('dead_stock_reviews'),
+      fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
     ]);
-    if (newReviews.data) setReviews(newReviews.data as DeadStockReview[]);
-    if (newAudit.data) setAuditLog(newAudit.data as AuditLogRow[]);
+    setReviews(newReviews);
+    setAuditLog(newAudit);
   };
 
   // ── Checkbox toggle helpers ─────────────────────────────────────────────────
@@ -1374,11 +1398,11 @@ export default function DeadStockPage() {
       }
 
       const [newReviews, newAudit] = await Promise.all([
-        supabase.from('dead_stock_reviews').select('*'),
-        supabase.from('dead_stock_audit_log').select('*').order('changed_at', { ascending: false }),
+        fetchAllRows<DeadStockReview>('dead_stock_reviews'),
+        fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
       ]);
-      if (newReviews.data) setReviews(newReviews.data as DeadStockReview[]);
-      if (newAudit.data) setAuditLog(newAudit.data as AuditLogRow[]);
+      setReviews(newReviews);
+      setAuditLog(newAudit);
 
       setSelectedSkus(new Set());
       setBatchValue('');
