@@ -68,6 +68,7 @@ const NAV_ITEMS: NavItem[] = [
       { path: '/retail/brands', label: '品牌分析', sublabel: 'Brands', icon: Tag },
       { path: '/retail/restock', label: '補貨管理', sublabel: 'Restock', icon: PackageSearch },
       { path: '/retail/dead-stock', label: '死貨管理', sublabel: 'Dead Stock', icon: Archive },
+      { path: '/retail/promotions', label: '推廣成效', sublabel: 'Promotions', icon: Megaphone },
       { path: '/retail/returns', label: '退貨', sublabel: 'Returns', icon: RotateCcw },
     ],
   },
@@ -143,6 +144,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   // 呢啲頁面冇 subscribe date filter (見 useDateRange / bounds usage)，所以隱藏 dropdown 避免誤導
   const PAGES_WITHOUT_DATE_FILTER = [
     '/retail/dead-stock',
+    '/retail/promotions',
     '/retail/inventory',
     '/retail/restock',
     '/performance/daily',
