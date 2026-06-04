@@ -418,7 +418,7 @@ function MultiSelectChipFilter({
   const q = query.trim().toLowerCase();
   const baseList = snapshot.length > 0 ? snapshot : options;
   const filtered = q
-    ? baseList.filter(o => o.toLowerCase().includes(q))
+    ? baseList.filter(o => (o ?? '').toLowerCase().includes(q))
     : baseList;
 
   const toggle = (v: string) => {
@@ -1005,8 +1005,8 @@ export default function DeadStockPage() {
     if (filters.search) {
       const q = filters.search.toLowerCase();
       items = items.filter(i =>
-        i.sku.toLowerCase().includes(q) ||
-        i.product_title.toLowerCase().includes(q)
+        (i.sku ?? '').toLowerCase().includes(q) ||
+        (i.product_title ?? '').toLowerCase().includes(q)
       );
     }
     if (filters.vendors.length) items = items.filter(i => filters.vendors.includes(i.vendor));
