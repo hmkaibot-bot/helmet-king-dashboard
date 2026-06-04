@@ -1995,18 +1995,31 @@ export default function DeadStockPage() {
                     key={brand}
                     type="button"
                     onClick={() => {
-                      setFilters(f => ({
-                        ...f,
-                        // toggle: 已選相同 brand → 清空; 否則 set 為單選
-                        vendors: active ? [] : [brand],
-                      }));
+                      if (active) {
+                        // toggle off: 只清 vendor + manual_status，保留 sort 讓用戶手動調
+                        setFilters(f => ({
+                          ...f,
+                          vendors: [],
+                          manual_statuses: [],
+                        }));
+                      } else {
+                        // 揀 brand → vendor 單選 + 狀態核實鎖定死貨
+                        setFilters(f => ({
+                          ...f,
+                          vendors: [brand],
+                          manual_statuses: ['dead'],
+                        }));
+                        // sort by 成本 desc（成本最高嘅死貨排頭）
+                        setSortKey('stock_cost');
+                        setSortDir('desc');
+                      }
                     }}
                     className={`w-full flex items-center justify-between text-[10px] px-1.5 py-0.5 rounded transition-colors text-left ${
                       active
                         ? 'bg-emerald-500/20 text-emerald-200'
                         : 'hover:bg-accent/60'
                     }`}
-                    title={active ? '再次點擊清除篩選' : `篩選品牌：${brand || '未知'}`}
+                    title={active ? '再次點擊清除篩選' : `篩選品牌：${brand || '未知'}，狀態核實=死貨，按成本排序`}
                   >
                     <span className="truncate max-w-[100px]">{brand || '未知'}</span>
                     <span className="font-medium tabular-nums">{formatCurrency(cost)}</span>
