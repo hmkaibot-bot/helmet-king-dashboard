@@ -558,6 +558,7 @@ export default function DeadStockPage() {
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
+  const [brandCardExpanded, setBrandCardExpanded] = useState(false);
   // V2.2: 0-stock SKU 不再需 lazy fetch，以下 state 保留為了向後兼容（現時未使用）
   const [zeroStockVariants] = useState<Map<string, DeadStockItem[]>>(new Map());
   void zeroStockVariants;
@@ -972,9 +973,9 @@ export default function DeadStockPage() {
     for (const i of dead) {
       brandCost.set(i.vendor, (brandCost.get(i.vendor) ?? 0) + i.stock_cost);
     }
+    // 所有品牌按死貨金額 desc 排（topBrands 名沿用，實際係全部）
     const topBrands = Array.from(brandCost.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
+      .sort((a, b) => b[1] - a[1]);
 
     const aging = {
       '0-90d': dead.filter(i => i.days_since_last_sale < 90).length,
@@ -1981,14 +1982,31 @@ export default function DeadStockPage() {
 
         <Card className="border-border/50">
           <CardHeader className="pb-1 pt-3 px-4">
-            <CardTitle className="text-xs text-muted-foreground font-normal flex items-center gap-1.5">
-              <Archive className="h-3.5 w-3.5" />
-              各品牌死貨分布 (Top 5)
+            <CardTitle className="text-xs text-muted-foreground font-normal flex items-center justify-between gap-1.5">
+              <span className="flex items-center gap-1.5">
+                <Archive className="h-3.5 w-3.5" />
+                各品牌死貨分布 
+                <span className="text-[10px] opacity-70">
+                  {brandCardExpanded
+                    ? `(全部 ${summaryStats.topBrands.length})`
+                    : `(Top 5 / ${summaryStats.topBrands.length})`}
+                </span>
+              </span>
+              {summaryStats.topBrands.length > 5 && (
+                <button
+                  type="button"
+                  onClick={() => setBrandCardExpanded(v => !v)}
+                  className="text-[10px] text-primary hover:text-primary/80 transition-colors px-1.5 py-0.5 rounded hover:bg-accent/60"
+                  title={brandCardExpanded ? '收起' : '展開所有品牌'}
+                >
+                  {brandCardExpanded ? '收起' : '展開'}
+                </button>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-3">
-            <div className="space-y-0.5">
-              {summaryStats.topBrands.map(([brand, cost]) => {
+            <div className={`space-y-0.5 ${brandCardExpanded ? 'max-h-[280px] overflow-y-auto pr-1' : ''}`}>
+              {(brandCardExpanded ? summaryStats.topBrands : summaryStats.topBrands.slice(0, 5)).map(([brand, cost]) => {
                 const active = filters.vendors.length === 1 && filters.vendors[0] === brand;
                 return (
                   <button
