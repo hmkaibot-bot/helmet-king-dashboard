@@ -191,6 +191,8 @@ const STATUS_ORDER: Record<string, number> = { '正常': 0, '慢移貨': 1, '死
 
 // ── Filter State ──────────────────────────────────────────────────────────────
 
+type AgingBucket = '0-90d' | '91-180d' | '181-270d' | '270d+';
+
 interface FilterState {
   search: string;
   vendors: string[];
@@ -199,6 +201,7 @@ interface FilterState {
   manual_statuses: string[];
   actions: string[];
   hide_zero_stock: boolean;
+  aging_bucket: AgingBucket | null;
 }
 
 // 預設分類（用戶指定 24 個）
@@ -241,7 +244,16 @@ const DEFAULT_FILTERS: FilterState = {
   actions: [],
   // 預設隱藏 0 庫存母 ITEM（focus 喺仲有貨嘅 SKU）
   hide_zero_stock: true,
+  aging_bucket: null,
 };
+
+// 老化區間 bucket 判斷（同 summaryStats.aging 同步）
+function matchAgingBucket(days: number, bucket: AgingBucket): boolean {
+  if (bucket === '0-90d') return days < 90;
+  if (bucket === '91-180d') return days >= 90 && days < 180;
+  if (bucket === '181-270d') return days >= 180 && days < 270;
+  return days >= 270; // 270d+
+}
 
 type SortKey = 'stock_cost' | 'total_qty' | 'worst_days_since' | 'total_sold_90d' | 'worst_system_status' | 'product_title';
 type SortDir = 'asc' | 'desc';
@@ -1014,6 +1026,10 @@ export default function DeadStockPage() {
       });
     }
     if (filters.actions.length) items = items.filter(i => filters.actions.includes(i.action ?? ''));
+    if (filters.aging_bucket) {
+      const b = filters.aging_bucket;
+      items = items.filter(i => matchAgingBucket(i.days_since_last_sale, b));
+    }
 
     // Group by product_title
     const groupMap = new Map<string, DeadStockItem[]>();
@@ -1558,7 +1574,7 @@ export default function DeadStockPage() {
       },
       {
         id: 'compare_price',
-        label: '比較價',
+        label: '建議零售價',
         align: 'right' as const,
         defaultWidth: 90,
         renderGroup: (group: ProductGroup) => {
@@ -1972,12 +1988,31 @@ export default function DeadStockPage() {
           </CardHeader>
           <CardContent className="px-4 pb-3">
             <div className="space-y-0.5">
-              {summaryStats.topBrands.map(([brand, cost]) => (
-                <div key={brand} className="flex items-center justify-between text-[10px]">
-                  <span className="truncate text-muted-foreground max-w-[100px]">{brand || '未知'}</span>
-                  <span className="font-medium tabular-nums">{formatCurrency(cost)}</span>
-                </div>
-              ))}
+              {summaryStats.topBrands.map(([brand, cost]) => {
+                const active = filters.vendors.length === 1 && filters.vendors[0] === brand;
+                return (
+                  <button
+                    key={brand}
+                    type="button"
+                    onClick={() => {
+                      setFilters(f => ({
+                        ...f,
+                        // toggle: 已選相同 brand → 清空; 否則 set 為單選
+                        vendors: active ? [] : [brand],
+                      }));
+                    }}
+                    className={`w-full flex items-center justify-between text-[10px] px-1.5 py-0.5 rounded transition-colors text-left ${
+                      active
+                        ? 'bg-emerald-500/20 text-emerald-200'
+                        : 'hover:bg-accent/60'
+                    }`}
+                    title={active ? '再次點擊清除篩選' : `篩選品牌：${brand || '未知'}`}
+                  >
+                    <span className="truncate max-w-[100px]">{brand || '未知'}</span>
+                    <span className="font-medium tabular-nums">{formatCurrency(cost)}</span>
+                  </button>
+                );
+              })}
               {summaryStats.topBrands.length === 0 && (
                 <span className="text-[10px] text-muted-foreground">無資料</span>
               )}
@@ -1994,12 +2029,32 @@ export default function DeadStockPage() {
           </CardHeader>
           <CardContent className="px-4 pb-3">
             <div className="space-y-0.5">
-              {Object.entries(summaryStats.aging).map(([label, count]) => (
-                <div key={label} className="flex items-center justify-between text-[10px]">
-                  <span className="text-muted-foreground">{label}</span>
-                  <span className="font-medium tabular-nums">{count} SKU</span>
-                </div>
-              ))}
+              {(Object.entries(summaryStats.aging) as [AgingBucket, number][]).map(([label, count]) => {
+                const active = filters.aging_bucket === label;
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => {
+                      setFilters(f => ({
+                        ...f,
+                        aging_bucket: active ? null : label,
+                        // 揀老化區間 → 自動 force system_status=死貨（bucket 定義上係死貨先有意思）
+                        system_statuses: active ? f.system_statuses : ['死貨'],
+                      }));
+                    }}
+                    className={`w-full flex items-center justify-between text-[10px] px-1.5 py-0.5 rounded transition-colors text-left ${
+                      active
+                        ? 'bg-emerald-500/20 text-emerald-200'
+                        : 'hover:bg-accent/60'
+                    }`}
+                    title={active ? '再次點擊清除篩選' : `篩選老化區間：${label}（自動鎖定死貨）`}
+                  >
+                    <span>{label}</span>
+                    <span className="font-medium tabular-nums">{count} SKU</span>
+                  </button>
+                );
+              })}
             </div>
           </CardContent>
         </Card>
@@ -2120,6 +2175,21 @@ export default function DeadStockPage() {
           onChange={next => setFilters(f => ({ ...f, vendors: next }))}
           placeholder="搜尋品牌…"
         />
+
+        {/* Row 4.5: 老化區間 chip（只有揀了才顯示）*/}
+        {filters.aging_bucket && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground shrink-0">老化區間</span>
+            <button
+              onClick={() => setFilters(f => ({ ...f, aging_bucket: null }))}
+              className="px-2.5 py-1 rounded-md text-xs border border-primary bg-primary/90 text-primary-foreground transition-colors hover:bg-primary inline-flex items-center gap-1"
+              title="點擊清除老化區間篩選"
+            >
+              {filters.aging_bucket}
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        )}
 
         {/* Row 5: Search + Hide-zero-stock + Clear */}
         <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border/40">
@@ -2353,7 +2423,7 @@ export default function DeadStockPage() {
                                         <span className="tabular-nums">{item.inventory_quantity}</span>
                                       </div>
                                       <div className="flex justify-between">
-                                        <span className="text-muted-foreground">比較價</span>
+                                        <span className="text-muted-foreground">建議零售價</span>
                                         <span className="tabular-nums">{item.compare_at_price != null ? formatCurrency(item.compare_at_price) : '—'}</span>
                                       </div>
                                       <div className="flex justify-between">
