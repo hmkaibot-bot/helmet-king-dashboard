@@ -1515,9 +1515,9 @@ export default function DeadStockPage() {
         defaultWidth: 220,
         sortKey: 'product_title' as SortKey,
         renderGroup: (group: ProductGroup) => (
-          <div className="flex items-center gap-1.5">
-            <span className="truncate font-medium" title={group.product_title}>
-              {group.product_title?.slice(0, 40)}{(group.product_title?.length ?? 0) > 40 ? '…' : ''}
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="truncate font-medium min-w-0" title={group.product_title}>
+              {group.product_title}
             </span>
             <span className="shrink-0 px-1.5 py-0 rounded bg-muted text-muted-foreground text-[9px] border border-border/40">
               {group.skus.length} SKU
@@ -1897,9 +1897,9 @@ export default function DeadStockPage() {
     let content = col.renderGroup(group);
     if (col.id === 'product_title' && mergedSkuCount != null) {
       content = (
-        <div className="flex items-center gap-1.5">
-          <span className="truncate font-medium" title={group.product_title}>
-            {group.product_title?.slice(0, 40)}{(group.product_title?.length ?? 0) > 40 ? '…' : ''}
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="truncate font-medium min-w-0" title={group.product_title}>
+            {group.product_title}
           </span>
           <span className="shrink-0 px-1.5 py-0 rounded bg-muted text-muted-foreground text-[9px] border border-border/40">
             {mergedSkuCount} SKU
