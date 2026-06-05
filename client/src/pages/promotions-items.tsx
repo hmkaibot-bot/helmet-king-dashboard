@@ -22,7 +22,8 @@ import {
 
 interface InventoryRow {
   sku: string;
-  product_id: string | null;
+  // DB 係 bigint, Supabase 可能 return number/string
+  product_id: number | string | null;
   product_title: string | null;
   vendor: string | null;
   product_type: string | null;
@@ -76,20 +77,22 @@ export default function PromotionsItemsPage() {
       const reviewBySku = new Map<string, ReviewRow>();
       for (const r of reviews) reviewBySku.set(r.sku, r);
 
+      // 用 String(product_id) 作 key 避免 number/string 雙模 hash 衝突
       const byProduct = new Map<string, InventoryRow[]>();
       for (const i of inv) {
-        if (!i.product_id) continue;
-        const arr = byProduct.get(i.product_id) ?? [];
+        if (i.product_id == null) continue;
+        const key = String(i.product_id);
+        const arr = byProduct.get(key) ?? [];
         arr.push(i);
-        byProduct.set(i.product_id, arr);
+        byProduct.set(key, arr);
       }
 
       // Determine if a product is "promoting" — use first SKU's manual_status as proxy
       // (in dead-stock V2, parent's manual_status is replicated to all child SKUs)
       const activeItems = items.filter(it => !it.is_archived);
-      const assignedProductIds = new Map<string, string>(); // product_id -> promo_id
+      const assignedProductIds = new Map<string, string>(); // product_id (string) -> promo_id
       for (const it of activeItems) {
-        assignedProductIds.set(it.product_id, it.promotion_id);
+        assignedProductIds.set(String(it.product_id), it.promotion_id);
       }
       const promoById = new Map<string, Promotion>(promos.map(p => [p.id, p]));
 
@@ -168,23 +171,27 @@ export default function PromotionsItemsPage() {
       const product = products.find(p => p.product_id === productId);
       if (!product) return;
 
+      // product_id 喺 DB 係 bigint, 需要 cast 為 number
+      const productIdNum = Number(productId);
+      if (!Number.isFinite(productIdNum)) {
+        throw new Error(`Invalid product_id: ${productId}`);
+      }
+
       // Step 1: remove existing assignment (if any) for this product
       if (product.assigned_promo) {
         const { error: delErr } = await supabase
           .from('promotion_items')
           .delete()
-          .eq('product_id', productId)
+          .eq('product_id', productIdNum)
           .eq('is_archived', false);
         if (delErr) throw delErr;
       }
 
       // Step 2: insert new assignment if promoId provided
       if (promoId) {
-        // Find previous manual_status for restore (the status BEFORE promoting)
-        // We don't have history — store 'dead' as default (most likely case)
         const { error: insErr } = await supabase.from('promotion_items').insert({
           promotion_id: promoId,
-          product_id: productId,
+          product_id: productIdNum,
           previous_manual_status: 'dead',
           is_archived: false,
         });

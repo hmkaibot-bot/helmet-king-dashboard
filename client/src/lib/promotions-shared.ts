@@ -24,7 +24,8 @@ export interface Promotion {
 
 export interface PromotionItem {
   promotion_id: string;
-  product_id: string;
+  // DB type 係 bigint, Supabase JS 可能 return number 或 string 視乎數值大小
+  product_id: number | string;
   previous_manual_status: string | null;
   assigned_at: string;
   is_archived: boolean;

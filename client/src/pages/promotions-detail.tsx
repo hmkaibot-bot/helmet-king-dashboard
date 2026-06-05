@@ -28,7 +28,7 @@ import {
 
 interface InventoryRow {
   sku: string;
-  product_id: string | null;
+  product_id: number | string | null;
   product_title: string | null;
   variant_title: string | null;
   vendor: string | null;
@@ -110,14 +110,17 @@ export default function PromotionDetailPage() {
       const myItems = pItems.filter(i => i.promotion_id === promoId);
       setItems(myItems);
 
-      const productIds = new Set(myItems.map(i => i.product_id));
+      // 統一用 string 作為比對 key、避免 number/string 兩邊不一致
+      const productIds = new Set(myItems.map(i => String(i.product_id)));
 
       // 2. Inventory (all SKUs belonging to these products)
       const inv = await fetchAllRows<InventoryRow>(
         'shopify_inventory',
         'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price'
       );
-      const filteredInv = inv.filter(i => i.product_id && productIds.has(i.product_id));
+      const filteredInv = inv.filter(
+        i => i.product_id != null && productIds.has(String(i.product_id))
+      );
       setInventory(filteredInv);
 
       const skuSet = new Set(filteredInv.map(i => i.sku));
@@ -183,13 +186,14 @@ export default function PromotionDetailPage() {
       }
     }
 
-    // Group by product_id
+    // Group by product_id (同一用 String key)
     const byProduct = new Map<string, InventoryRow[]>();
     for (const inv of inventory) {
-      if (!inv.product_id) continue;
-      const arr = byProduct.get(inv.product_id) ?? [];
+      if (inv.product_id == null) continue;
+      const key = String(inv.product_id);
+      const arr = byProduct.get(key) ?? [];
       arr.push(inv);
-      byProduct.set(inv.product_id, arr);
+      byProduct.set(key, arr);
     }
 
     const today = new Date();
