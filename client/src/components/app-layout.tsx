@@ -35,6 +35,8 @@ import {
   Moon,
   LineChart,
   Archive,
+  History,
+  Package,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useTheme } from '@/lib/theme';
@@ -68,7 +70,9 @@ const NAV_ITEMS: NavItem[] = [
       { path: '/retail/brands', label: '品牌分析', sublabel: 'Brands', icon: Tag },
       { path: '/retail/restock', label: '補貨管理', sublabel: 'Restock', icon: PackageSearch },
       { path: '/retail/dead-stock', label: '死貨管理', sublabel: 'Dead Stock', icon: Archive },
-      { path: '/retail/promotions', label: '推廣成效', sublabel: 'Promotions', icon: Megaphone },
+      { path: '/retail/promotions', label: '推廣活動', sublabel: 'Promotions', icon: Megaphone },
+      { path: '/retail/promotions/items', label: '推廣商品', sublabel: 'Promo Items', icon: Package },
+      { path: '/retail/promotions/history', label: '推廣歷史', sublabel: 'Promo History', icon: History },
       { path: '/retail/returns', label: '退貨', sublabel: 'Returns', icon: RotateCcw },
     ],
   },
@@ -145,6 +149,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const PAGES_WITHOUT_DATE_FILTER = [
     '/retail/dead-stock',
     '/retail/promotions',
+    '/retail/promotions/items',
+    '/retail/promotions/history',
     '/retail/inventory',
     '/retail/restock',
     '/performance/daily',

@@ -1,496 +1,455 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
+import { Link } from 'wouter';
 import { supabase } from '@/lib/supabase';
-import { queryAllPages } from '@/lib/query-helpers';
 import { formatCurrency, formatNumber } from '@/lib/format';
-import { ChevronDown, ChevronRight, Megaphone, RefreshCw, AlertCircle } from 'lucide-react';
+import {
+  Megaphone,
+  RefreshCw,
+  AlertCircle,
+  Plus,
+  Edit3,
+  Trash2,
+  Calendar,
+  Package,
+  TrendingUp,
+  ExternalLink,
+  X,
+  History,
+} from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
-
-// ── Types ────────────────────────────────────────────────────────────────────
-
-interface InventoryRow {
-  sku: string;
-  product_id: string | null;
-  product_title: string | null;
-  variant_title: string | null;
-  vendor: string | null;
-  product_type: string | null;
-  inventory_quantity: number | null;
-  price: number | null;
-  compare_at_price: number | null;
-}
-
-interface ReviewRow {
-  sku: string;
-  manual_status: string | null;
-  promo_start_date: string | null;
-  updated_at: string | null;
-}
-
-interface OrderLineRow {
-  sku: string | null;
-  quantity: number | null;
-  price: number | null;
-  total_discount: number | null;
-  line_total: number | null;
-  order_id: string | number | null;
-}
-
-interface OrderRow {
-  id: string | number;
-  created_at: string;
-  cancelled_at: string | null;
-}
-
-interface SkuRow {
-  sku: string;
-  variant_title: string;
-  inventory_quantity: number;
-  price: number;
-  promo_qty: number;
-  promo_revenue: number;
-  pre_promo_daily: number; // avg daily qty in 90 days before promo
-  last_sold_at: string | null;
-}
-
-interface PromoGroup {
-  product_id: string;
-  product_title: string;
-  vendor: string;
-  product_type: string;
-  promo_start_date: string;
-  days_in_promo: number;
-  total_inventory: number;
-  num_skus: number;
-  promo_qty: number;
-  promo_revenue: number;
-  pre_promo_qty_90d: number;
-  promo_daily_avg: number;
-  pre_promo_daily_avg: number;
-  lift_ratio: number; // promo_daily / pre_promo_daily
-  rating: 'effective' | 'ok' | 'ineffective';
-  skus: SkuRow[];
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-const dayMs = 86_400_000;
-
-function daysBetween(a: Date, b: Date): number {
-  return Math.max(0, Math.floor((b.getTime() - a.getTime()) / dayMs));
-}
-
-function ratingFromLift(lift: number): PromoGroup['rating'] {
-  if (lift >= 2) return 'effective';
-  if (lift >= 1.2) return 'ok';
-  return 'ineffective';
-}
-
-const RATING_LABEL: Record<PromoGroup['rating'], string> = {
-  effective: '有效',
-  ok: '一般',
-  ineffective: '無效',
-};
-
-const RATING_COLOR: Record<PromoGroup['rating'], string> = {
-  effective: 'text-emerald-400 border-emerald-500/40 bg-emerald-500/10',
-  ok: 'text-amber-400 border-amber-500/40 bg-amber-500/10',
-  ineffective: 'text-rose-400 border-rose-500/40 bg-rose-500/10',
-};
+import {
+  Promotion,
+  PromotionItem,
+  STATUS_LABEL,
+  STATUS_COLOR,
+  fetchAllRows,
+  todayISO,
+  addDays,
+  deriveStatusFromDates,
+} from '@/lib/promotions-shared';
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-export default function PromotionsPage() {
+export default function PromotionsListPage() {
+  const [promotions, setPromotions] = useState<Promotion[]>([]);
+  const [items, setItems] = useState<PromotionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [inventory, setInventory] = useState<InventoryRow[]>([]);
-  const [reviews, setReviews] = useState<ReviewRow[]>([]);
-  const [orderLines, setOrderLines] = useState<OrderLineRow[]>([]);
-  const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [showModal, setShowModal] = useState(false);
+  const [editingPromo, setEditingPromo] = useState<Promotion | null>(null);
 
-  const fetchAllRows = async <T,>(table: string, columns = '*'): Promise<T[]> => {
-    const PAGE = 1000;
-    let all: T[] = [];
-    let from = 0;
-    while (true) {
-      const { data, error } = await supabase
-        .from(table)
-        .select(columns)
-        .range(from, from + PAGE - 1);
-      if (error) throw error;
-      const rows = (data ?? []) as T[];
-      all = all.concat(rows);
-      if (rows.length < PAGE) break;
-      from += PAGE;
-    }
-    return all;
-  };
-
-  const loadData = useCallback(async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [invRows, reviewRows, lineRows, orderRows] = await Promise.all([
-        queryAllPages(
-          'shopify_inventory',
-          'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price',
-        ),
-        fetchAllRows<ReviewRow>('dead_stock_reviews', 'sku,manual_status,promo_start_date,updated_at'),
-        queryAllPages('shopify_order_lines', 'sku,quantity,price,total_discount,line_total,order_id'),
-        queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
+      const [promos, pItems] = await Promise.all([
+        fetchAllRows<Promotion>('promotions'),
+        fetchAllRows<PromotionItem>('promotion_items'),
       ]);
-      setInventory(invRows as InventoryRow[]);
-      setReviews(reviewRows);
-      setOrderLines(lineRows as OrderLineRow[]);
-      setOrders(orderRows as OrderRow[]);
-    } catch (e: any) {
-      setError(e?.message ?? 'Load failed');
+      setPromotions(promos);
+      setItems(pItems);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    load();
+  }, [load]);
 
-  // ── Compute promo groups ───────────────────────────────────────────────────
+  // ── Filter: only show active + planned (not ended) ───────────────────────
+  const activePromos = useMemo(() => {
+    return promotions
+      .filter(p => p.status === 'active' || p.status === 'planned')
+      .sort((a, b) => a.start_date.localeCompare(b.start_date));
+  }, [promotions]);
 
-  const groups = useMemo<PromoGroup[]>(() => {
-    if (loading) return [];
-    const reviewBySku = new Map<string, ReviewRow>();
-    for (const r of reviews) reviewBySku.set(r.sku, r);
-
-    // Promoting SKUs only
-    const promoSkus: Array<InventoryRow & { promo_start_date: string }> = [];
-    for (const inv of inventory) {
-      const r = reviewBySku.get(inv.sku);
-      if (!r || r.manual_status !== 'promoting') continue;
-      if (!r.promo_start_date) continue;
-      promoSkus.push({ ...inv, promo_start_date: r.promo_start_date });
+  const itemCountByPromo = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const it of items) {
+      if (it.is_archived) continue;
+      m.set(it.promotion_id, (m.get(it.promotion_id) ?? 0) + 1);
     }
+    return m;
+  }, [items]);
 
-    if (promoSkus.length === 0) return [];
-
-    // Order date map
-    const orderDate = new Map<string, Date>();
-    for (const o of orders) {
-      if (o.cancelled_at) continue;
-      orderDate.set(String(o.id), new Date(o.created_at));
-    }
-
-    // Index order_lines by sku
-    const linesBySku = new Map<string, Array<{ date: Date; qty: number; revenue: number }>>();
-    for (const l of orderLines) {
-      if (!l.sku || !l.order_id) continue;
-      const d = orderDate.get(String(l.order_id));
-      if (!d) continue;
-      const qty = Number(l.quantity ?? 0);
-      const rev = Number(l.line_total ?? (Number(l.price ?? 0) * qty - Number(l.total_discount ?? 0)));
-      const arr = linesBySku.get(l.sku) ?? [];
-      arr.push({ date: d, qty, revenue: rev });
-      linesBySku.set(l.sku, arr);
-    }
-
-    // Group by product_id
-    const byProduct = new Map<string, typeof promoSkus>();
-    for (const s of promoSkus) {
-      const pid = s.product_id ?? `__no_pid__${s.sku}`;
-      const arr = byProduct.get(pid) ?? [];
-      arr.push(s);
-      byProduct.set(pid, arr);
-    }
-
-    const now = new Date();
-    const result: PromoGroup[] = [];
-
-    for (const [pid, skus] of byProduct.entries()) {
-      // Earliest promo_start_date among variants (group level)
-      const earliestPromo = skus.reduce<string>((acc, s) =>
-        !acc || s.promo_start_date < acc ? s.promo_start_date : acc, '');
-      const promoStart = new Date(earliestPromo + 'T00:00:00');
-      const daysInPromo = Math.max(1, daysBetween(promoStart, now));
-      const prePromoStart = new Date(promoStart.getTime() - 90 * dayMs);
-
-      let totalPromoQty = 0;
-      let totalPromoRev = 0;
-      let totalPrePromoQty = 0;
-      let totalInv = 0;
-      const skuRows: SkuRow[] = [];
-
-      for (const s of skus) {
-        const lines = linesBySku.get(s.sku) ?? [];
-        let pq = 0, pr = 0, prq = 0;
-        let lastSold: Date | null = null;
-        for (const l of lines) {
-          if (l.date >= promoStart) {
-            pq += l.qty;
-            pr += l.revenue;
-            if (!lastSold || l.date > lastSold) lastSold = l.date;
-          } else if (l.date >= prePromoStart && l.date < promoStart) {
-            prq += l.qty;
-          }
-        }
-        totalPromoQty += pq;
-        totalPromoRev += pr;
-        totalPrePromoQty += prq;
-        totalInv += Number(s.inventory_quantity ?? 0);
-        skuRows.push({
-          sku: s.sku,
-          variant_title: s.variant_title ?? '',
-          inventory_quantity: Number(s.inventory_quantity ?? 0),
-          price: Number(s.price ?? 0),
-          promo_qty: pq,
-          promo_revenue: pr,
-          pre_promo_daily: prq / 90,
-          last_sold_at: lastSold ? lastSold.toISOString().slice(0, 10) : null,
+  const handleSave = async (data: PromoFormData) => {
+    try {
+      if (editingPromo) {
+        const { error } = await supabase
+          .from('promotions')
+          .update({
+            name: data.name,
+            start_date: data.start_date,
+            end_date: data.end_date,
+            status: deriveStatusFromDates(data.start_date, data.end_date),
+            discount_type: data.discount_type || null,
+            notes: data.notes || null,
+          })
+          .eq('id', editingPromo.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from('promotions').insert({
+          name: data.name,
+          start_date: data.start_date,
+          end_date: data.end_date,
+          status: deriveStatusFromDates(data.start_date, data.end_date),
+          discount_type: data.discount_type || null,
+          notes: data.notes || null,
         });
+        if (error) throw error;
       }
-
-      const promoDailyAvg = totalPromoQty / daysInPromo;
-      const prePromoDailyAvg = totalPrePromoQty / 90;
-      const lift = prePromoDailyAvg > 0 ? promoDailyAvg / prePromoDailyAvg : (promoDailyAvg > 0 ? 999 : 0);
-
-      result.push({
-        product_id: pid,
-        product_title: skus[0].product_title ?? '(unknown)',
-        vendor: skus[0].vendor ?? '',
-        product_type: skus[0].product_type ?? '',
-        promo_start_date: earliestPromo,
-        days_in_promo: daysInPromo,
-        total_inventory: totalInv,
-        num_skus: skus.length,
-        promo_qty: totalPromoQty,
-        promo_revenue: totalPromoRev,
-        pre_promo_qty_90d: totalPrePromoQty,
-        promo_daily_avg: promoDailyAvg,
-        pre_promo_daily_avg: prePromoDailyAvg,
-        lift_ratio: lift,
-        rating: ratingFromLift(lift),
-        skus: skuRows.sort((a, b) => b.promo_qty - a.promo_qty),
-      });
+      setShowModal(false);
+      setEditingPromo(null);
+      await load();
+    } catch (e) {
+      alert(`儲存失敗：${e instanceof Error ? e.message : String(e)}`);
     }
-
-    // Sort: 推廣中、近開始嘅排前；可改
-    return result.sort((a, b) => (b.promo_start_date > a.promo_start_date ? 1 : -1));
-  }, [inventory, reviews, orderLines, orders, loading]);
-
-  // ── KPIs ───────────────────────────────────────────────────────────────────
-
-  const kpis = useMemo(() => {
-    const totalProducts = groups.length;
-    const totalSkus = groups.reduce((s, g) => s + g.num_skus, 0);
-    const totalRev = groups.reduce((s, g) => s + g.promo_revenue, 0);
-    const totalQty = groups.reduce((s, g) => s + g.promo_qty, 0);
-    const effective = groups.filter(g => g.rating === 'effective').length;
-    const ok = groups.filter(g => g.rating === 'ok').length;
-    const ineffective = groups.filter(g => g.rating === 'ineffective').length;
-    return { totalProducts, totalSkus, totalRev, totalQty, effective, ok, ineffective };
-  }, [groups]);
-
-  const toggleExpand = (pid: string) => {
-    setExpanded(prev => {
-      const next = new Set(prev);
-      if (next.has(pid)) next.delete(pid); else next.add(pid);
-      return next;
-    });
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  const handleDelete = async (promo: Promotion) => {
+    if (!confirm(`確認刪除推廣「${promo.name}」？\n所有分派將被取消（不會自動還原狀態）。`)) return;
+    try {
+      const { error } = await supabase.from('promotions').delete().eq('id', promo.id);
+      if (error) throw error;
+      await load();
+    } catch (e) {
+      alert(`刪除失敗：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
-  if (loading) {
-    return (
-      <div className="space-y-3 p-4">
-        <Skeleton className="h-8 w-40" />
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-96 w-full" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="p-4 text-rose-400 flex items-center gap-2">
-        <AlertCircle className="h-4 w-4" /> {error}
-      </div>
-    );
-  }
-
+  // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold flex items-center gap-2">
-            <Megaphone className="h-5 w-5" /> 推廣中商品成效
-          </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            列出狀態核實標記為「推廣中」嘅母 ITEM，並計算推廣期銷售與成效評級
-          </p>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Megaphone className="h-5 w-5 text-primary" />
+          <h1 className="text-lg font-semibold">推廣活動</h1>
+          <span className="text-xs text-muted-foreground">
+            （進行中 + 計劃中 · 共 {activePromos.length}）
+          </span>
         </div>
-        <button
-          onClick={loadData}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs border border-border/60 hover:bg-accent/50"
-        >
-          <RefreshCw className="h-3 w-3" /> 重新整理
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/retail/promotions/items"
+            className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 transition-colors inline-flex items-center gap-1"
+          >
+            <Package className="h-3.5 w-3.5" />
+            推廣商品池
+          </Link>
+          <Link
+            to="/retail/promotions/history"
+            className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 transition-colors inline-flex items-center gap-1"
+          >
+            <History className="h-3.5 w-3.5" />
+            推廣歷史
+          </Link>
+          <button
+            onClick={load}
+            className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 transition-colors inline-flex items-center gap-1"
+            disabled={loading}
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            重新整理
+          </button>
+          <button
+            onClick={() => {
+              setEditingPromo(null);
+              setShowModal(true);
+            }}
+            className="text-xs px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors inline-flex items-center gap-1"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            新增推廣
+          </button>
+        </div>
       </div>
 
-      {/* KPI strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-        <KpiBlock label="推廣產品" value={formatNumber(kpis.totalProducts)} unit="個" />
-        <KpiBlock label="SKU 總數" value={formatNumber(kpis.totalSkus)} unit="個" />
-        <KpiBlock label="推廣期銷量" value={formatNumber(kpis.totalQty)} unit="件" />
-        <KpiBlock label="推廣期營收" value={formatCurrency(kpis.totalRev)} />
-        <KpiBlock label="有效" value={formatNumber(kpis.effective)} tone="effective" />
-        <KpiBlock label="一般" value={formatNumber(kpis.ok)} tone="ok" />
-        <KpiBlock label="無效" value={formatNumber(kpis.ineffective)} tone="ineffective" />
-      </div>
-
-      {/* Table */}
-      {groups.length === 0 ? (
-        <div className="rounded-md border border-border/60 p-8 text-center text-sm text-muted-foreground">
-          目前沒有狀態為「推廣中」嘅母 ITEM。
-          <br />
-          喺死貨報表將母 ITEM 嘅狀態核實改為「推廣中」並輸入開始日期後，就會喺度顯示。
-        </div>
-      ) : (
-        <div className="rounded-md border border-border/60 overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead className="bg-muted/30 text-muted-foreground">
-              <tr className="border-b border-border/60">
-                <th className="px-2 py-2 text-left w-6"></th>
-                <th className="px-2 py-2 text-left">產品名稱</th>
-                <th className="px-2 py-2 text-left">品牌</th>
-                <th className="px-2 py-2 text-left">分類</th>
-                <th className="px-2 py-2 text-right">SKU 數</th>
-                <th className="px-2 py-2 text-right">現庫存</th>
-                <th className="px-2 py-2 text-left">推廣開始</th>
-                <th className="px-2 py-2 text-right">推廣日數</th>
-                <th className="px-2 py-2 text-right">推廣期銷量</th>
-                <th className="px-2 py-2 text-right">推廣期營收</th>
-                <th className="px-2 py-2 text-right">推廣前 90 日銷量</th>
-                <th className="px-2 py-2 text-right">日均比較 (推/前)</th>
-                <th className="px-2 py-2 text-center">成效評級</th>
-              </tr>
-            </thead>
-            <tbody>
-              {groups.map(g => {
-                const isOpen = expanded.has(g.product_id);
-                return (
-                  <>
-                    <tr
-                      key={g.product_id}
-                      className="border-b border-border/40 hover:bg-accent/20 cursor-pointer"
-                      onClick={() => toggleExpand(g.product_id)}
-                    >
-                      <td className="px-2 py-1.5">
-                        {isOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                      </td>
-                      <td className="px-2 py-1.5 font-medium" title={g.product_title}>
-                        {g.product_title.length > 45 ? g.product_title.slice(0, 45) + '…' : g.product_title}
-                      </td>
-                      <td className="px-2 py-1.5 text-muted-foreground">{g.vendor}</td>
-                      <td className="px-2 py-1.5 text-muted-foreground">{g.product_type}</td>
-                      <td className="px-2 py-1.5 text-right">{g.num_skus}</td>
-                      <td className="px-2 py-1.5 text-right">{formatNumber(g.total_inventory)}</td>
-                      <td className="px-2 py-1.5 font-mono">{g.promo_start_date}</td>
-                      <td className="px-2 py-1.5 text-right">{g.days_in_promo}</td>
-                      <td className="px-2 py-1.5 text-right font-medium">{formatNumber(g.promo_qty)}</td>
-                      <td className="px-2 py-1.5 text-right">{formatCurrency(g.promo_revenue)}</td>
-                      <td className="px-2 py-1.5 text-right text-muted-foreground">{formatNumber(g.pre_promo_qty_90d)}</td>
-                      <td className="px-2 py-1.5 text-right">
-                        <span className="font-mono">
-                          {g.promo_daily_avg.toFixed(2)} / {g.pre_promo_daily_avg.toFixed(2)}
-                        </span>
-                        {g.pre_promo_daily_avg > 0 && (
-                          <span className="ml-1 text-muted-foreground">({g.lift_ratio.toFixed(1)}×)</span>
-                        )}
-                      </td>
-                      <td className="px-2 py-1.5 text-center">
-                        <span className={`inline-block px-1.5 py-0.5 rounded border text-[10px] font-medium ${RATING_COLOR[g.rating]}`}>
-                          {RATING_LABEL[g.rating]}
-                        </span>
-                      </td>
-                    </tr>
-                    {isOpen && (
-                      <tr key={`${g.product_id}-detail`} className="bg-muted/10">
-                        <td colSpan={13} className="px-4 py-3">
-                          <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
-                            SKU 銷售明細
-                          </div>
-                          <table className="w-full text-[11px]">
-                            <thead className="text-muted-foreground">
-                              <tr>
-                                <th className="px-2 py-1 text-left">SKU</th>
-                                <th className="px-2 py-1 text-left">Variant</th>
-                                <th className="px-2 py-1 text-right">現庫存</th>
-                                <th className="px-2 py-1 text-right">售價</th>
-                                <th className="px-2 py-1 text-right">推廣期銷量</th>
-                                <th className="px-2 py-1 text-right">推廣期營收</th>
-                                <th className="px-2 py-1 text-right">推廣前日均</th>
-                                <th className="px-2 py-1 text-left">最後銷售日</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {g.skus.map(s => (
-                                <tr key={s.sku} className="border-t border-border/30">
-                                  <td className="px-2 py-1 font-mono">{s.sku}</td>
-                                  <td className="px-2 py-1 text-muted-foreground">{s.variant_title}</td>
-                                  <td className="px-2 py-1 text-right">{formatNumber(s.inventory_quantity)}</td>
-                                  <td className="px-2 py-1 text-right">{formatCurrency(s.price)}</td>
-                                  <td className="px-2 py-1 text-right">{formatNumber(s.promo_qty)}</td>
-                                  <td className="px-2 py-1 text-right">{formatCurrency(s.promo_revenue)}</td>
-                                  <td className="px-2 py-1 text-right font-mono">{s.pre_promo_daily.toFixed(2)}</td>
-                                  <td className="px-2 py-1 font-mono text-muted-foreground">
-                                    {s.last_sold_at ?? '—'}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </td>
-                      </tr>
-                    )}
-                  </>
-                );
-              })}
-            </tbody>
-          </table>
+      {error && (
+        <div className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-rose-200 text-sm flex items-center gap-2">
+          <AlertCircle className="h-4 w-4" />
+          {error}
         </div>
       )}
 
-      {/* Methodology note */}
-      <div className="text-[10px] text-muted-foreground border-t border-border/40 pt-2">
-        推廣期 = 由 promo_start_date 至今日。推廣前 90 日 = promo_start_date 之前 90 日。
-        成效評級基於 (推廣期日均銷量 ÷ 推廣前日均銷量)：≥2× 有效、1.2-2× 一般、&lt;1.2× 無效。
-        如推廣前無銷量但推廣期有，計為「有效」。
-      </div>
+      {/* List */}
+      {loading ? (
+        <div className="space-y-2">
+          {[...Array(3)].map((_, i) => (
+            <Skeleton key={i} className="h-24 w-full" />
+          ))}
+        </div>
+      ) : activePromos.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border/60 p-12 text-center">
+          <Megaphone className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
+          <p className="text-sm text-muted-foreground mb-3">未有進行中或計劃中嘅推廣</p>
+          <button
+            onClick={() => {
+              setEditingPromo(null);
+              setShowModal(true);
+            }}
+            className="text-xs px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors inline-flex items-center gap-1"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            新增第一個推廣
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+          {activePromos.map(promo => {
+            const itemCount = itemCountByPromo.get(promo.id) ?? 0;
+            const days = Math.max(
+              1,
+              Math.ceil(
+                (new Date(promo.end_date + 'T23:59:59').getTime() -
+                  new Date(promo.start_date + 'T00:00:00').getTime()) /
+                  86_400_000
+              )
+            );
+            return (
+              <div
+                key={promo.id}
+                className="rounded-md border border-border/60 bg-card p-4 hover:border-border transition-colors"
+              >
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="flex-1 min-w-0">
+                    <Link
+                      to={`/retail/promotions/${promo.id}`}
+                      className="text-sm font-semibold hover:underline truncate block"
+                    >
+                      {promo.name}
+                    </Link>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[10px] border ${STATUS_COLOR[promo.status]}`}
+                      >
+                        {STATUS_LABEL[promo.status]}
+                      </span>
+                      {promo.discount_type && (
+                        <span className="text-[10px] text-muted-foreground">
+                          {promo.discount_type}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => {
+                        setEditingPromo(promo);
+                        setShowModal(true);
+                      }}
+                      className="p-1 rounded hover:bg-accent/60 transition-colors text-muted-foreground hover:text-foreground"
+                      title="編輯"
+                    >
+                      <Edit3 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(promo)}
+                      className="p-1 rounded hover:bg-rose-500/20 transition-colors text-muted-foreground hover:text-rose-400"
+                      title="刪除"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground inline-flex items-center gap-1">
+                      <Calendar className="h-3 w-3" /> 期間
+                    </span>
+                    <span className="tabular-nums">
+                      {promo.start_date} → {promo.end_date}{' '}
+                      <span className="text-muted-foreground">({days}天)</span>
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground inline-flex items-center gap-1">
+                      <Package className="h-3 w-3" /> 推廣商品
+                    </span>
+                    <span className="tabular-nums font-medium">
+                      {formatNumber(itemCount)} 個
+                    </span>
+                  </div>
+                </div>
+
+                {promo.notes && (
+                  <div className="mt-2 pt-2 border-t border-border/40 text-[10px] text-muted-foreground line-clamp-2">
+                    {promo.notes}
+                  </div>
+                )}
+
+                <Link
+                  to={`/retail/promotions/${promo.id}`}
+                  className="mt-3 inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
+                >
+                  睇成效分析 <ExternalLink className="h-2.5 w-2.5" />
+                </Link>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Modal */}
+      {showModal && (
+        <PromoModal
+          initial={editingPromo}
+          onClose={() => {
+            setShowModal(false);
+            setEditingPromo(null);
+          }}
+          onSave={handleSave}
+        />
+      )}
     </div>
   );
 }
 
-// ── KPI block ────────────────────────────────────────────────────────────────
+// ── Modal ────────────────────────────────────────────────────────────────────
 
-function KpiBlock({
-  label,
-  value,
-  unit,
-  tone,
+interface PromoFormData {
+  name: string;
+  start_date: string;
+  end_date: string;
+  discount_type: string;
+  notes: string;
+}
+
+function PromoModal({
+  initial,
+  onClose,
+  onSave,
 }: {
-  label: string;
-  value: string;
-  unit?: string;
-  tone?: PromoGroup['rating'];
+  initial: Promotion | null;
+  onClose: () => void;
+  onSave: (data: PromoFormData) => Promise<void>;
 }) {
-  const toneCls = tone ? RATING_COLOR[tone] : 'border-border/60 text-foreground';
+  const [name, setName] = useState(initial?.name ?? '');
+  const [startDate, setStartDate] = useState(initial?.start_date ?? todayISO());
+  const [endDate, setEndDate] = useState(initial?.end_date ?? addDays(todayISO(), 14));
+  const [discountType, setDiscountType] = useState(initial?.discount_type ?? '');
+  const [notes, setNotes] = useState(initial?.notes ?? '');
+  const [saving, setSaving] = useState(false);
+
+  const valid = name.trim().length > 0 && startDate <= endDate;
+
   return (
-    <div className={`rounded-md border px-3 py-2 ${toneCls}`}>
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
-      <div className="text-base font-semibold mt-0.5">
-        {value}
-        {unit && <span className="text-[10px] text-muted-foreground ml-0.5">{unit}</span>}
+    <div
+      className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-card border border-border rounded-lg shadow-xl w-full max-w-md p-5"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-semibold">
+            {initial ? '編輯推廣' : '新增推廣'}
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-accent/60 transition-colors text-muted-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-muted-foreground block mb-1">名稱 *</label>
+            <input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="例：6 月雨季 Bundle"
+              className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background"
+              autoFocus
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">開始日期</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={e => setStartDate(e.target.value)}
+                className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background tabular-nums"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">結束日期</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={e => setEndDate(e.target.value)}
+                className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background tabular-nums"
+              />
+            </div>
+          </div>
+
+          {startDate > endDate && (
+            <p className="text-[10px] text-rose-400">結束日期必須 ≥ 開始日期</p>
+          )}
+
+          <div>
+            <label className="text-xs text-muted-foreground block mb-1">折扣類型（可選）</label>
+            <input
+              value={discountType}
+              onChange={e => setDiscountType(e.target.value)}
+              placeholder="例：85折、Bundle、買 2 送 1"
+              className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs text-muted-foreground block mb-1">備註（可選）</label>
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              rows={3}
+              placeholder="目標、策略、宣傳渠道…"
+              className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background resize-none"
+            />
+          </div>
+        </div>
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="text-xs px-3 py-1.5 rounded-md border border-border hover:bg-accent/60 transition-colors"
+            disabled={saving}
+          >
+            取消
+          </button>
+          <button
+            onClick={async () => {
+              if (!valid) return;
+              setSaving(true);
+              await onSave({
+                name: name.trim(),
+                start_date: startDate,
+                end_date: endDate,
+                discount_type: discountType.trim(),
+                notes: notes.trim(),
+              });
+              setSaving(false);
+            }}
+            disabled={!valid || saving}
+            className="text-xs px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1"
+          >
+            {saving && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+            {initial ? '儲存' : '建立'}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
+
+// Suppress unused warnings for icons we may use later
+void TrendingUp;
+void formatCurrency;

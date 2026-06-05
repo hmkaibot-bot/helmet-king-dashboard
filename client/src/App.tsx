@@ -21,6 +21,9 @@ import FinancePage from "@/pages/finance";
 import RestockPage from "@/pages/restock";
 import DeadStockPage from "@/pages/dead-stock";
 import PromotionsPage from "@/pages/promotions";
+import PromotionsItemsPage from "@/pages/promotions-items";
+import PromotionsHistoryPage from "@/pages/promotions-history";
+import PromotionDetailPage from "@/pages/promotions-detail";
 import VendorsPage from "@/pages/vendors";
 import ReturnsPage from "@/pages/returns";
 import DailyWeeklyPage from "@/pages/daily-weekly";
@@ -50,6 +53,9 @@ function AppRouter() {
         <Route path="/retail/restock" component={RestockPage} />
         <Route path="/retail/dead-stock" component={DeadStockPage} />
         <Route path="/retail/promotions" component={PromotionsPage} />
+        <Route path="/retail/promotions/items" component={PromotionsItemsPage} />
+        <Route path="/retail/promotions/history" component={PromotionsHistoryPage} />
+        <Route path="/retail/promotions/:id" component={PromotionDetailPage} />
         <Route path="/retail/returns" component={ReturnsPage} />
         <Route path="/procurement/vendors" component={VendorsPage} />
         <Route path="/performance/daily" component={DailyWeeklyPage} />
