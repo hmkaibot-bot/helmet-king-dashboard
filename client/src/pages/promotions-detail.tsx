@@ -11,6 +11,8 @@ import {
   Calendar,
   ChevronDown,
   ChevronRight,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -91,6 +93,17 @@ export default function PromotionDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<'promo_qty' | 'promo_revenue'>('promo_qty');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+
+  const toggleSort = (col: 'promo_qty' | 'promo_revenue') => {
+    if (sortBy === col) {
+      setSortDir(d => (d === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setSortBy(col);
+      setSortDir('desc');
+    }
+  };
 
   const load = useCallback(async () => {
     if (!promoId) return;
@@ -245,8 +258,19 @@ export default function PromotionDetailPage() {
       });
     }
 
-    return results.sort((a, b) => b.promo_revenue - a.promo_revenue);
+    return results;
   }, [promo, items, inventory, orderLines, orders]);
+
+  // Sorted view (default: promo_qty desc)
+  const sortedStats = useMemo(() => {
+    const arr = [...stats];
+    arr.sort((a, b) => {
+      const av = a[sortBy];
+      const bv = b[sortBy];
+      return sortDir === 'desc' ? bv - av : av - bv;
+    });
+    return arr;
+  }, [stats, sortBy, sortDir]);
 
   // ── KPI roll-up ──────────────────────────────────────────────────────────
   const kpi = useMemo(() => {
@@ -439,15 +463,41 @@ export default function PromotionDetailPage() {
                 <th className="text-left px-2 py-2 font-normal text-muted-foreground">品牌</th>
                 <th className="text-right px-2 py-2 font-normal text-muted-foreground">SKU</th>
                 <th className="text-right px-2 py-2 font-normal text-muted-foreground">現庫存</th>
-                <th className="text-right px-2 py-2 font-normal text-muted-foreground">推廣期銷量</th>
-                <th className="text-right px-2 py-2 font-normal text-muted-foreground">推廣期營收</th>
+                <th
+                  className="text-right px-2 py-2 font-normal text-muted-foreground cursor-pointer hover:text-foreground select-none"
+                  onClick={() => toggleSort('promo_qty')}
+                >
+                  <span className="inline-flex items-center gap-0.5">
+                    推廣期銷量
+                    {sortBy === 'promo_qty' &&
+                      (sortDir === 'desc' ? (
+                        <ArrowDown className="h-3 w-3" />
+                      ) : (
+                        <ArrowUp className="h-3 w-3" />
+                      ))}
+                  </span>
+                </th>
+                <th
+                  className="text-right px-2 py-2 font-normal text-muted-foreground cursor-pointer hover:text-foreground select-none"
+                  onClick={() => toggleSort('promo_revenue')}
+                >
+                  <span className="inline-flex items-center gap-0.5">
+                    推廣期營收
+                    {sortBy === 'promo_revenue' &&
+                      (sortDir === 'desc' ? (
+                        <ArrowDown className="h-3 w-3" />
+                      ) : (
+                        <ArrowUp className="h-3 w-3" />
+                      ))}
+                  </span>
+                </th>
                 <th className="text-right px-2 py-2 font-normal text-muted-foreground">推廣前 90d 銷量</th>
                 <th className="text-right px-2 py-2 font-normal text-muted-foreground">日均比較</th>
                 <th className="text-left px-2 py-2 font-normal text-muted-foreground">評級</th>
               </tr>
             </thead>
             <tbody>
-              {stats.map(g => {
+              {sortedStats.map(g => {
                 const isExpanded = expandedProduct === g.product_id;
                 return (
                   <>
