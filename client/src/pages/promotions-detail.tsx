@@ -148,10 +148,10 @@ export default function PromotionDetailPage() {
       // 統一用 string 作為比對 key、避免 number/string 兩邊不一致
       const productIds = new Set(myItems.map(i => String(i.product_id)));
 
-      // 2. Inventory (all SKUs belonging to these products)
+      // 2. Inventory (all SKUs belonging to these products) — include compare_at_price for 建議零售價
       const inv = await fetchAllRows<InventoryRow>(
         'shopify_inventory',
-        'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price'
+        'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price'
       );
       const filteredInv = inv.filter(
         i => i.product_id != null && productIds.has(String(i.product_id))
@@ -160,13 +160,15 @@ export default function PromotionDetailPage() {
 
       const skuSet = new Set(filteredInv.map(i => i.sku));
 
-      // 3. Orders / order_lines (full set — we filter client-side by date)
-      const [ol, os] = await Promise.all([
+      // 3. Orders / order_lines / BC cost (full set — we filter client-side)
+      const [ol, os, bc] = await Promise.all([
         queryAllPages('shopify_order_lines', 'sku,quantity,price,order_id'),
         queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
+        queryAllPages('bc_inventory', 'number,unit_cost'),
       ]);
       setOrderLines((ol as OrderLineRow[]).filter(l => l.sku && skuSet.has(l.sku)));
       setOrders(os as OrderRow[]);
+      setBcInv((bc as BcInvRow[]).filter(b => b.number && skuSet.has(b.number)));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
