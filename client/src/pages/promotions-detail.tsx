@@ -95,6 +95,25 @@ export default function PromotionDetailPage() {
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<'promo_qty' | 'promo_revenue'>('promo_qty');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
+  const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
+
+  const toggleType = (t: string) => {
+    setSelectedTypes(prev => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
+  };
+  const toggleVendor = (v: string) => {
+    setSelectedVendors(prev => {
+      const next = new Set(prev);
+      if (next.has(v)) next.delete(v);
+      else next.add(v);
+      return next;
+    });
+  };
 
   const toggleSort = (col: 'promo_qty' | 'promo_revenue') => {
     if (sortBy === col) {
@@ -261,25 +280,54 @@ export default function PromotionDetailPage() {
     return results;
   }, [promo, items, inventory, orderLines, orders]);
 
-  // Sorted view (default: promo_qty desc)
+  // Filter options (聚合 distinct types/vendors,按推廣期銷量降序)
+  const typeOptions = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of stats) {
+      const k = s.product_type || '(未分類)';
+      m.set(k, (m.get(k) ?? 0) + s.promo_qty);
+    }
+    return Array.from(m.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([label]) => label);
+  }, [stats]);
+
+  const vendorOptions = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of stats) {
+      const k = s.vendor || '(未分類)';
+      m.set(k, (m.get(k) ?? 0) + s.promo_qty);
+    }
+    return Array.from(m.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([label]) => label);
+  }, [stats]);
+
+  // Filtered + sorted view (default: promo_qty desc)
   const sortedStats = useMemo(() => {
-    const arr = [...stats];
+    const arr = stats.filter(s => {
+      const t = s.product_type || '(未分類)';
+      const v = s.vendor || '(未分類)';
+      if (selectedTypes.size > 0 && !selectedTypes.has(t)) return false;
+      if (selectedVendors.size > 0 && !selectedVendors.has(v)) return false;
+      return true;
+    });
     arr.sort((a, b) => {
       const av = a[sortBy];
       const bv = b[sortBy];
       return sortDir === 'desc' ? bv - av : av - bv;
     });
     return arr;
-  }, [stats, sortBy, sortDir]);
+  }, [stats, sortBy, sortDir, selectedTypes, selectedVendors]);
 
-  // ── KPI roll-up ──────────────────────────────────────────────────────────
+  // ── KPI roll-up (用 filtered view) ──────────────────────────────────────
   const kpi = useMemo(() => {
-    if (!promo || stats.length === 0) {
+    if (!promo || sortedStats.length === 0) {
       return null;
     }
-    const totalQty = stats.reduce((s, p) => s + p.promo_qty, 0);
-    const totalRev = stats.reduce((s, p) => s + p.promo_revenue, 0);
-    const totalPreQty = stats.reduce((s, p) => s + p.pre_promo_qty, 0);
+    const totalQty = sortedStats.reduce((s, p) => s + p.promo_qty, 0);
+    const totalRev = sortedStats.reduce((s, p) => s + p.promo_revenue, 0);
+    const totalPreQty = sortedStats.reduce((s, p) => s + p.pre_promo_qty, 0);
 
     const startDate = new Date(promo.start_date + 'T00:00:00');
     const endDate = new Date(promo.end_date + 'T23:59:59');
@@ -291,13 +339,13 @@ export default function PromotionDetailPage() {
     const lift = preDaily === 0 ? (promoDaily > 0 ? 999 : 0) : promoDaily / preDaily;
     const aggRating: Rating = lift === 999 ? 'effective' : ratingFromLift(lift);
 
-    const effectiveCount = stats.filter(s => s.rating === 'effective').length;
-    const okCount = stats.filter(s => s.rating === 'ok').length;
-    const ineffectiveCount = stats.filter(s => s.rating === 'ineffective').length;
+    const effectiveCount = sortedStats.filter(s => s.rating === 'effective').length;
+    const okCount = sortedStats.filter(s => s.rating === 'ok').length;
+    const ineffectiveCount = sortedStats.filter(s => s.rating === 'ineffective').length;
 
     return {
-      totalProducts: stats.length,
-      totalSkus: stats.reduce((s, p) => s + p.num_skus, 0),
+      totalProducts: sortedStats.length,
+      totalSkus: sortedStats.reduce((s, p) => s + p.num_skus, 0),
       totalQty,
       totalRev,
       promoDays,
@@ -307,7 +355,7 @@ export default function PromotionDetailPage() {
       okCount,
       ineffectiveCount,
     };
-  }, [promo, stats]);
+  }, [promo, sortedStats]);
 
   // ── Use snapshot for ended promos ────────────────────────────────────────
   const isEnded = promo?.status === 'ended';
@@ -421,6 +469,30 @@ export default function PromotionDetailPage() {
           </div>
         </div>
       ) : null}
+
+      {/* Filter chips: 分類 + 品牌 */}
+      {!loading && stats.length > 0 && (typeOptions.length > 1 || vendorOptions.length > 1) && (
+        <div className="rounded-md border border-border/60 bg-card p-2 space-y-1.5">
+          {typeOptions.length > 1 && (
+            <FilterRow
+              label="分類"
+              options={typeOptions}
+              selected={selectedTypes}
+              onToggle={toggleType}
+              onClear={() => setSelectedTypes(new Set())}
+            />
+          )}
+          {vendorOptions.length > 1 && (
+            <FilterRow
+              label="品牌"
+              options={vendorOptions}
+              selected={selectedVendors}
+              onToggle={toggleVendor}
+              onClear={() => setSelectedVendors(new Set())}
+            />
+          )}
+        </div>
+      )}
 
       {/* Snapshot indicator for ended */}
       {isEnded && promo?.final_qty_sold != null && (
@@ -610,6 +682,57 @@ function KpiCard({
     <div className={`rounded-md border bg-card p-2 ${color ?? 'border-border/60'}`}>
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className="text-sm font-semibold tabular-nums mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+function FilterRow({
+  label,
+  options,
+  selected,
+  onToggle,
+  onClear,
+}: {
+  label: string;
+  options: string[];
+  selected: Set<string>;
+  onToggle: (v: string) => void;
+  onClear: () => void;
+}) {
+  const allActive = selected.size === 0;
+  return (
+    <div className="flex items-start gap-2">
+      <div className="text-[11px] text-muted-foreground shrink-0 w-10 pt-1">{label}</div>
+      <div className="flex flex-wrap gap-1 flex-1">
+        <button
+          onClick={onClear}
+          className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${
+            allActive
+              ? 'bg-amber-500/20 border-amber-500/60 text-amber-200'
+              : 'border-border/60 text-muted-foreground hover:bg-accent/40'
+          }`}
+        >
+          全部
+        </button>
+        {options.map(opt => {
+          const active = selected.has(opt);
+          return (
+            <button
+              key={opt}
+              onClick={() => onToggle(opt)}
+              className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors inline-flex items-center gap-1 ${
+                active
+                  ? 'bg-amber-500/20 border-amber-500/60 text-amber-200'
+                  : 'border-border/60 text-muted-foreground hover:bg-accent/40'
+              }`}
+              title={opt}
+            >
+              <span className="max-w-[180px] truncate">{opt}</span>
+              {active && <span className="text-amber-300">×</span>}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
