@@ -260,7 +260,7 @@ export default function PromotionDetailPage() {
           sku: s.sku,
           variant_title: s.variant_title ?? '',
           inventory: s.inventory_quantity ?? 0,
-          price: s.price ?? 0,
+          price: Number(s.price ?? 0),
           unit_cost: costBySku.get(s.sku) ?? 0,
           promo_qty: promoQty,
           promo_revenue: promoRev,
@@ -270,9 +270,10 @@ export default function PromotionDetailPage() {
         };
       });
 
-      // 代表價：取 first SKU 有值者
+      // 代表價：取 first SKU 有值者（強制 cast 為 number，避免 Supabase numeric 返 string）
       const repPrice = skuStats.find(s => s.price > 0)?.price ?? 0;
-      const repCompare = skuRows.find(s => (s.compare_at_price ?? 0) > 0)?.compare_at_price ?? 0;
+      const repCompare =
+        skuRows.map(s => Number(s.compare_at_price ?? 0)).find(v => v > 0) ?? 0;
       const repCost = skuStats.find(s => s.unit_cost > 0)?.unit_cost ?? 0;
 
       const promoQty = skuStats.reduce((s, x) => s + x.promo_qty, 0);
@@ -291,7 +292,7 @@ export default function PromotionDetailPage() {
         total_inventory: skuStats.reduce((s, x) => s + x.inventory, 0),
         num_skus: skuStats.length,
         retail_price: repPrice,
-        compare_at_price: repCompare ?? 0,
+        compare_at_price: repCompare,
         unit_cost: repCost,
         promo_price: promoPriceByProduct.get(productId) ?? null,
         promo_qty: promoQty,
@@ -679,10 +680,12 @@ export default function PromotionDetailPage() {
                         saving={savingId === g.product_id}
                         onChangePrice={(val) => setEditValue(g.product_id, val)}
                         onChangePct={(pct) => {
-                          if (pct == null || g.retail_price <= 0) {
+                          // 推廣% baseline = 建議零售價 (compare_at_price)，未設則 fallback retail_price
+                          const baseline = g.compare_at_price > 0 ? g.compare_at_price : g.retail_price;
+                          if (pct == null || baseline <= 0) {
                             setEditValue(g.product_id, null);
                           } else {
-                            const newPrice = Math.round(g.retail_price * (1 - pct / 100) * 100) / 100;
+                            const newPrice = Math.round(baseline * (1 - pct / 100) * 100) / 100;
                             setEditValue(g.product_id, newPrice);
                           }
                         }}
@@ -799,15 +802,16 @@ function PriceCells({
   onChangePct: (pct: number | null) => void;
   onCommit: (val: number | null) => void | Promise<void>;
 }) {
-  // 利潤% (原價)
+  // 利潤% = (零售價 - 成本) / 零售價
   const marginPct =
     row.retail_price > 0 ? ((row.retail_price - row.unit_cost) / row.retail_price) * 100 : 0;
 
-  // 推廣%：edit 有值時用 editValue 反計；否則用 row.promo_price
+  // 推廣% baseline = 建議零售價 (compare_at_price)，未設則 fallback retail_price
+  const promoBaseline = row.compare_at_price > 0 ? row.compare_at_price : row.retail_price;
   const effectivePromoPrice = editValue;
   const promoPct =
-    effectivePromoPrice != null && row.retail_price > 0
-      ? ((row.retail_price - effectivePromoPrice) / row.retail_price) * 100
+    effectivePromoPrice != null && promoBaseline > 0
+      ? ((promoBaseline - effectivePromoPrice) / promoBaseline) * 100
       : null;
 
   // 推廣後利潤金額 = (推廣價 - cost) × promo_qty
@@ -870,7 +874,7 @@ function PriceCells({
           onKeyDown={e => {
             if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
           }}
-          disabled={saving || row.retail_price <= 0}
+          disabled={saving || promoBaseline <= 0}
           placeholder="—"
           className="w-16 text-right tabular-nums text-xs px-1.5 py-0.5 rounded border border-border/60 bg-background focus:border-primary focus:outline-none"
         />
