@@ -29,6 +29,7 @@ export interface PromotionItem {
   previous_manual_status: string | null;
   assigned_at: string;
   is_archived: boolean;
+  promo_price: number | null;
 }
 
 export type Rating = 'effective' | 'ok' | 'ineffective';

@@ -176,6 +176,21 @@ export default function PromotionDetailPage() {
   }, [load]);
 
   // ── Compute metrics ──────────────────────────────────────────────────────
+  // cost / promo_price lookups
+  const costBySku = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const b of bcInv) m.set(b.number, Number(b.unit_cost ?? 0));
+    return m;
+  }, [bcInv]);
+
+  const promoPriceByProduct = useMemo(() => {
+    const m = new Map<string, number | null>();
+    for (const it of items) {
+      m.set(String(it.product_id), it.promo_price != null ? Number(it.promo_price) : null);
+    }
+    return m;
+  }, [items]);
+
   const stats = useMemo<ProductStat[]>(() => {
     if (!promo || items.length === 0 || inventory.length === 0) return [];
 
@@ -243,6 +258,7 @@ export default function PromotionDetailPage() {
           variant_title: s.variant_title ?? '',
           inventory: s.inventory_quantity ?? 0,
           price: s.price ?? 0,
+          unit_cost: costBySku.get(s.sku) ?? 0,
           promo_qty: promoQty,
           promo_revenue: promoRev,
           pre_promo_qty: preQty,
@@ -250,6 +266,11 @@ export default function PromotionDetailPage() {
           last_sold_at: skuLastSold.get(s.sku) ?? null,
         };
       });
+
+      // 代表價：取 first SKU 有值者
+      const repPrice = skuStats.find(s => s.price > 0)?.price ?? 0;
+      const repCompare = skuRows.find(s => (s.compare_at_price ?? 0) > 0)?.compare_at_price ?? 0;
+      const repCost = skuStats.find(s => s.unit_cost > 0)?.unit_cost ?? 0;
 
       const promoQty = skuStats.reduce((s, x) => s + x.promo_qty, 0);
       const promoRev = skuStats.reduce((s, x) => s + x.promo_revenue, 0);
@@ -266,6 +287,10 @@ export default function PromotionDetailPage() {
         product_type: skuRows[0].product_type ?? '—',
         total_inventory: skuStats.reduce((s, x) => s + x.inventory, 0),
         num_skus: skuStats.length,
+        retail_price: repPrice,
+        compare_at_price: repCompare ?? 0,
+        unit_cost: repCost,
+        promo_price: promoPriceByProduct.get(productId) ?? null,
         promo_qty: promoQty,
         promo_revenue: promoRev,
         pre_promo_qty: preQty,
@@ -278,7 +303,55 @@ export default function PromotionDetailPage() {
     }
 
     return results;
-  }, [promo, items, inventory, orderLines, orders]);
+  }, [promo, items, inventory, orderLines, orders, costBySku, promoPriceByProduct]);
+
+  // Save promo_price
+  const savePromoPrice = useCallback(
+    async (productId: string, newPrice: number | null) => {
+      if (!promoId) return;
+      setSavingId(productId);
+      try {
+        const productIdNum = Number(productId);
+        const { error: upErr } = await supabase
+          .from('promotion_items')
+          .update({ promo_price: newPrice })
+          .eq('promotion_id', promoId)
+          .eq('product_id', productIdNum)
+          .eq('is_archived', false);
+        if (upErr) throw upErr;
+        setItems(prev =>
+          prev.map(it =>
+            String(it.product_id) === productId ? { ...it, promo_price: newPrice } : it
+          )
+        );
+      } catch (e) {
+        alert(`儲存推廣價失敗：${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setSavingId(null);
+      }
+    },
+    [promoId]
+  );
+
+  const getEditValue = (productId: string, fallback: number | null): number | null => {
+    if (priceEdits.has(productId)) return priceEdits.get(productId) ?? null;
+    return fallback;
+  };
+  const setEditValue = (productId: string, val: number | null) => {
+    setPriceEdits(prev => {
+      const next = new Map(prev);
+      next.set(productId, val);
+      return next;
+    });
+  };
+  const clearEdit = (productId: string) => {
+    setPriceEdits(prev => {
+      if (!prev.has(productId)) return prev;
+      const next = new Map(prev);
+      next.delete(productId);
+      return next;
+    });
+  };
 
   // Filter options (聚合 distinct types/vendors,按推廣期銷量降序)
   const typeOptions = useMemo(() => {
@@ -531,6 +604,13 @@ export default function PromotionDetailPage() {
                 <th className="text-left px-2 py-2 font-normal text-muted-foreground">品牌</th>
                 <th className="text-right px-2 py-2 font-normal text-muted-foreground">SKU</th>
                 <th className="text-right px-2 py-2 font-normal text-muted-foreground">現庫存</th>
+                <th className="text-right px-2 py-2 font-normal text-muted-foreground">建議零售價</th>
+                <th className="text-right px-2 py-2 font-normal text-muted-foreground">零售價</th>
+                <th className="text-right px-2 py-2 font-normal text-muted-foreground">單件成本</th>
+                <th className="text-right px-2 py-2 font-normal text-muted-foreground">利潤%</th>
+                <th className="text-right px-2 py-2 font-normal text-muted-foreground w-24">推廣價</th>
+                <th className="text-right px-2 py-2 font-normal text-muted-foreground w-20">推廣%</th>
+                <th className="text-right px-2 py-2 font-normal text-muted-foreground">推廣後利潤金額</th>
                 <th
                   className="text-right px-2 py-2 font-normal text-muted-foreground cursor-pointer hover:text-foreground select-none"
                   onClick={() => toggleSort('promo_qty')}
@@ -589,6 +669,25 @@ export default function PromotionDetailPage() {
                       <td className="px-2 py-1.5 text-muted-foreground">{g.vendor}</td>
                       <td className="px-2 py-1.5 text-right tabular-nums">{g.num_skus}</td>
                       <td className="px-2 py-1.5 text-right tabular-nums">{formatNumber(g.total_inventory)}</td>
+                      {/* 價格 5 列 + 推廣價 + 推廣% + 推廣後利潤金額 */}
+                      <PriceCells
+                        row={g}
+                        editValue={getEditValue(g.product_id, g.promo_price)}
+                        saving={savingId === g.product_id}
+                        onChangePrice={(val) => setEditValue(g.product_id, val)}
+                        onChangePct={(pct) => {
+                          if (pct == null || g.retail_price <= 0) {
+                            setEditValue(g.product_id, null);
+                          } else {
+                            const newPrice = Math.round(g.retail_price * (1 - pct / 100) * 100) / 100;
+                            setEditValue(g.product_id, newPrice);
+                          }
+                        }}
+                        onCommit={async (val) => {
+                          await savePromoPrice(g.product_id, val);
+                          clearEdit(g.product_id);
+                        }}
+                      />
                       <td className="px-2 py-1.5 text-right tabular-nums font-medium">
                         {formatNumber(g.promo_qty)}
                       </td>
@@ -615,7 +714,7 @@ export default function PromotionDetailPage() {
                     </tr>
                     {isExpanded && (
                       <tr key={`${g.product_id}-detail`} className="bg-muted/20 border-b border-border/40">
-                        <td colSpan={10} className="px-3 py-2">
+                        <td colSpan={17} className="px-3 py-2">
                           <div className="text-[10px] text-muted-foreground mb-1.5">
                             身下 SKU 明細：
                           </div>
@@ -679,6 +778,111 @@ function KpiCard({
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className="text-sm font-semibold tabular-nums mt-0.5">{value}</div>
     </div>
+  );
+}
+
+function PriceCells({
+  row,
+  editValue,
+  saving,
+  onChangePrice,
+  onChangePct,
+  onCommit,
+}: {
+  row: ProductStat;
+  editValue: number | null;
+  saving: boolean;
+  onChangePrice: (val: number | null) => void;
+  onChangePct: (pct: number | null) => void;
+  onCommit: (val: number | null) => void | Promise<void>;
+}) {
+  // 利潤% (原價)
+  const marginPct =
+    row.retail_price > 0 ? ((row.retail_price - row.unit_cost) / row.retail_price) * 100 : 0;
+
+  // 推廣%：edit 有值時用 editValue 反計；否則用 row.promo_price
+  const effectivePromoPrice = editValue;
+  const promoPct =
+    effectivePromoPrice != null && row.retail_price > 0
+      ? ((row.retail_price - effectivePromoPrice) / row.retail_price) * 100
+      : null;
+
+  // 推廣後利潤金額 = (推廣價 - cost) × promo_qty
+  const promoProfit =
+    effectivePromoPrice != null
+      ? (effectivePromoPrice - row.unit_cost) * row.promo_qty
+      : null;
+
+  const fmtCurrency = (n: number) =>
+    new Intl.NumberFormat('en-HK', { style: 'currency', currency: 'HKD', maximumFractionDigits: 0 }).format(n);
+  const fmtPlain = (n: number) => (n > 0 ? n.toFixed(0) : '—');
+
+  return (
+    <>
+      <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
+        {row.compare_at_price > 0 ? fmtPlain(row.compare_at_price) : '—'}
+      </td>
+      <td className="px-2 py-1.5 text-right tabular-nums">{fmtPlain(row.retail_price)}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">
+        {row.unit_cost > 0 ? fmtPlain(row.unit_cost) : '—'}
+      </td>
+      <td className="px-2 py-1.5 text-right tabular-nums">
+        <span className={marginPct < 20 ? 'text-rose-300' : marginPct < 40 ? 'text-amber-300' : 'text-emerald-300'}>
+          {row.retail_price > 0 && row.unit_cost > 0 ? `${marginPct.toFixed(0)}%` : '—'}
+        </span>
+      </td>
+      {/* 推廣價 input */}
+      <td className="px-2 py-1.5 text-right" onClick={e => e.stopPropagation()}>
+        <input
+          type="number"
+          step="1"
+          min="0"
+          value={effectivePromoPrice ?? ''}
+          onChange={e => {
+            const v = e.target.value.trim();
+            onChangePrice(v === '' ? null : Number(v));
+          }}
+          onBlur={() => onCommit(effectivePromoPrice)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+          disabled={saving}
+          placeholder="—"
+          className="w-20 text-right tabular-nums text-xs px-1.5 py-0.5 rounded border border-border/60 bg-background focus:border-primary focus:outline-none"
+        />
+      </td>
+      {/* 推廣% input */}
+      <td className="px-2 py-1.5 text-right" onClick={e => e.stopPropagation()}>
+        <input
+          type="number"
+          step="1"
+          min="0"
+          max="100"
+          value={promoPct != null ? Math.round(promoPct * 10) / 10 : ''}
+          onChange={e => {
+            const v = e.target.value.trim();
+            onChangePct(v === '' ? null : Number(v));
+          }}
+          onBlur={() => onCommit(effectivePromoPrice)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+          disabled={saving || row.retail_price <= 0}
+          placeholder="—"
+          className="w-16 text-right tabular-nums text-xs px-1.5 py-0.5 rounded border border-border/60 bg-background focus:border-primary focus:outline-none"
+        />
+      </td>
+      {/* 推廣後利潤金額 */}
+      <td className="px-2 py-1.5 text-right tabular-nums">
+        {promoProfit != null ? (
+          <span className={promoProfit < 0 ? 'text-rose-300' : 'text-emerald-300'}>
+            {fmtCurrency(promoProfit)}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </td>
+    </>
   );
 }
 
