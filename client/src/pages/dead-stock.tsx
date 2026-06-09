@@ -1275,23 +1275,6 @@ export default function DeadStockPage() {
 
   // ── Inline field update helper ──────────────────────────────────────────────
 
-  // Helper: 推廣中 → 提示輸入開始日期（return undefined = cancelled）
-  const promptPromoStartDate = (currentValue?: string | null): string | null | undefined => {
-    const today = new Date().toISOString().slice(0, 10);
-    const defaultVal = currentValue ?? today;
-    const input = window.prompt(
-      `請輸入推廣開始日期 (YYYY-MM-DD)。\n預設今日；取消則不設定。`,
-      defaultVal,
-    );
-    if (input === null) return undefined;
-    if (input.trim() === '') return null;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.trim())) {
-      alert('日期格式不正確，請用 YYYY-MM-DD');
-      return undefined;
-    }
-    return input.trim();
-  };
-
   const handleInlineUpdate = async (
     sku: string,
     fieldName: 'system_status_override' | 'manual_status' | 'action',
@@ -1311,24 +1294,12 @@ export default function DeadStockPage() {
       return [...prev, { sku, [dbField]: newValue || null, updated_at: updatedAt } as DeadStockReview];
     });
 
-    // 推廣中 → 提示輸入開始日期
-    let promoStartDate: string | null | undefined = undefined;
-    if (fieldName === 'manual_status' && newValue === 'promoting') {
-      promoStartDate = promptPromoStartDate();
-      if (promoStartDate === undefined) return;
-    }
-
+    // 推廣中 唔再彈窗問日期 — 改用「推廣管理」頁分派 promo
     const upsertPayload: any = {
       sku,
       [dbField]: newValue || null,
       updated_at: new Date().toISOString(),
     };
-    if (promoStartDate !== undefined) upsertPayload.promo_start_date = promoStartDate;
-
-    if (promoStartDate !== undefined) {
-      const psd = promoStartDate;
-      setReviews(prev => prev.map(r => r.sku === sku ? { ...r, promo_start_date: psd } : r));
-    }
 
     await supabase.from('dead_stock_reviews').upsert(upsertPayload, { onConflict: 'sku' });
 
@@ -1358,13 +1329,7 @@ export default function DeadStockPage() {
   ) => {
     if (items.length === 0) return;
 
-    // 推廣中 → 提示輸入開始日期（套用到全部 variants）
-    let promoStartDate: string | null | undefined = undefined;
-    if (fieldName === 'manual_status' && newValue === 'promoting') {
-      promoStartDate = promptPromoStartDate();
-      if (promoStartDate === undefined) return;
-    }
-
+    // 推廣中 唔再彈窗問日期 — 改用「推廣管理」頁分派 promo
     const stamp = new Date().toISOString();
 
     // Optimistic update: 即刻 update local reviews state，UI 唔會閃返舊 value
@@ -1381,21 +1346,11 @@ export default function DeadStockPage() {
       return [...updated, ...newRows];
     });
 
-    const reviewRows = items.map(it => {
-      const row: any = {
-        sku: it.sku,
-        [fieldName]: newValue || null,
-        updated_at: stamp,
-      };
-      if (promoStartDate !== undefined) row.promo_start_date = promoStartDate;
-      return row;
-    });
-
-    if (promoStartDate !== undefined) {
-      const psd = promoStartDate;
-      const skuSet2 = new Set(items.map(it => it.sku));
-      setReviews(prev => prev.map(r => skuSet2.has(r.sku) ? { ...r, promo_start_date: psd } : r));
-    }
+    const reviewRows = items.map(it => ({
+      sku: it.sku,
+      [fieldName]: newValue || null,
+      updated_at: stamp,
+    } as any));
     const auditRows = items
       .filter(it => (it.manual_status ?? '') !== (newValue ?? ''))
       .map(it => ({
