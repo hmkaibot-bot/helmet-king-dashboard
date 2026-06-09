@@ -54,8 +54,27 @@ export default function PromotionsItemsPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [filterAssignment, setFilterAssignment] = useState<'all' | 'assigned' | 'unassigned'>('all');
+  const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
+  const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPromo, setBulkPromo] = useState<string>('');
+
+  const toggleType = (t: string) => {
+    setSelectedTypes(prev => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
+  };
+  const toggleVendor = (v: string) => {
+    setSelectedVendors(prev => {
+      const next = new Set(prev);
+      if (next.has(v)) next.delete(v);
+      else next.add(v);
+      return next;
+    });
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -150,6 +169,12 @@ export default function PromotionsItemsPage() {
     let list = products;
     if (filterAssignment === 'assigned') list = list.filter(p => p.assigned_promo);
     else if (filterAssignment === 'unassigned') list = list.filter(p => !p.assigned_promo);
+    if (selectedTypes.size > 0) {
+      list = list.filter(p => selectedTypes.has(p.product_type || '(未分類)'));
+    }
+    if (selectedVendors.size > 0) {
+      list = list.filter(p => selectedVendors.has(p.vendor || '(未分類)'));
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter(
@@ -160,7 +185,26 @@ export default function PromotionsItemsPage() {
       );
     }
     return list;
-  }, [products, filterAssignment, search]);
+  }, [products, filterAssignment, search, selectedTypes, selectedVendors]);
+
+  // Filter options —按推廣商品數量降序
+  const typeOptions = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of products) {
+      const k = p.product_type || '(未分類)';
+      m.set(k, (m.get(k) ?? 0) + 1);
+    }
+    return Array.from(m.entries()).sort((a, b) => b[1] - a[1]).map(([k]) => k);
+  }, [products]);
+
+  const vendorOptions = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of products) {
+      const k = p.vendor || '(未分類)';
+      m.set(k, (m.get(k) ?? 0) + 1);
+    }
+    return Array.from(m.entries()).sort((a, b) => b[1] - a[1]).map(([k]) => k);
+  }, [products]);
 
   const assignedCount = products.filter(p => p.assigned_promo).length;
   const unassignedCount = products.length - assignedCount;
@@ -318,6 +362,30 @@ export default function PromotionsItemsPage() {
         </div>
       </div>
 
+      {/* Chip filter：分類 + 品牌 */}
+      {!loading && products.length > 0 && (typeOptions.length > 1 || vendorOptions.length > 1) && (
+        <div className="rounded-md border border-border/60 bg-card p-2 space-y-1.5">
+          {typeOptions.length > 1 && (
+            <FilterRow
+              label="分類"
+              options={typeOptions}
+              selected={selectedTypes}
+              onToggle={toggleType}
+              onClear={() => setSelectedTypes(new Set())}
+            />
+          )}
+          {vendorOptions.length > 1 && (
+            <FilterRow
+              label="品牌"
+              options={vendorOptions}
+              selected={selectedVendors}
+              onToggle={toggleVendor}
+              onClear={() => setSelectedVendors(new Set())}
+            />
+          )}
+        </div>
+      )}
+
       {/* Bulk assign bar */}
       {selected.size > 0 && (
         <div className="rounded-md border border-primary/40 bg-primary/5 p-3 flex items-center gap-2 flex-wrap">
@@ -466,3 +534,54 @@ export default function PromotionsItemsPage() {
 }
 
 void formatCurrency;
+
+function FilterRow({
+  label,
+  options,
+  selected,
+  onToggle,
+  onClear,
+}: {
+  label: string;
+  options: string[];
+  selected: Set<string>;
+  onToggle: (v: string) => void;
+  onClear: () => void;
+}) {
+  const allActive = selected.size === 0;
+  return (
+    <div className="flex items-start gap-2">
+      <div className="text-[11px] text-muted-foreground shrink-0 w-10 pt-1">{label}</div>
+      <div className="flex flex-wrap gap-1 flex-1">
+        <button
+          onClick={onClear}
+          className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${
+            allActive
+              ? 'bg-amber-500/20 border-amber-500/60 text-amber-200'
+              : 'border-border/60 text-muted-foreground hover:bg-accent/40'
+          }`}
+        >
+          全部
+        </button>
+        {options.map(opt => {
+          const active = selected.has(opt);
+          return (
+            <button
+              key={opt}
+              onClick={() => onToggle(opt)}
+              className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors inline-flex items-center gap-1 ${
+                active
+                  ? 'bg-amber-500/20 border-amber-500/60 text-amber-200'
+                  : 'border-border/60 text-muted-foreground hover:bg-accent/40'
+              }`}
+              title={opt}
+            >
+              <span className="max-w-[180px] truncate">{opt}</span>
+              {active && <span className="text-amber-300">×</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
