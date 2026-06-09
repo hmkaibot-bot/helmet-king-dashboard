@@ -363,26 +363,22 @@ export default function PromotionsItemsPage() {
       </div>
 
       {/* Chip filter：分類 + 品牌 */}
-      {!loading && products.length > 0 && (typeOptions.length > 1 || vendorOptions.length > 1) && (
+      {!loading && products.length > 0 && (
         <div className="rounded-md border border-border/60 bg-card p-2 space-y-1.5">
-          {typeOptions.length > 1 && (
-            <FilterRow
-              label="分類"
-              options={typeOptions}
-              selected={selectedTypes}
-              onToggle={toggleType}
-              onClear={() => setSelectedTypes(new Set())}
-            />
-          )}
-          {vendorOptions.length > 1 && (
-            <FilterRow
-              label="品牌"
-              options={vendorOptions}
-              selected={selectedVendors}
-              onToggle={toggleVendor}
-              onClear={() => setSelectedVendors(new Set())}
-            />
-          )}
+          <FilterRow
+            label="分類"
+            options={typeOptions}
+            selected={selectedTypes}
+            onToggle={toggleType}
+            onClear={() => setSelectedTypes(new Set())}
+          />
+          <FilterRow
+            label="品牌"
+            options={vendorOptions}
+            selected={selectedVendors}
+            onToggle={toggleVendor}
+            onClear={() => setSelectedVendors(new Set())}
+          />
         </div>
       )}
 
