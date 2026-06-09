@@ -90,6 +90,9 @@ export default function PromotionDetailPage() {
   const [inventory, setInventory] = useState<InventoryRow[]>([]);
   const [orderLines, setOrderLines] = useState<OrderLineRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [bcInv, setBcInv] = useState<BcInvRow[]>([]);
+  const [priceEdits, setPriceEdits] = useState<Map<string, number | null>>(new Map());
+  const [savingId, setSavingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
