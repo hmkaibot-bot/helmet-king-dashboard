@@ -816,10 +816,19 @@ function PriceCells({
       ? ((promoBaseline - effectivePromoPrice) / promoBaseline) * 100
       : null;
 
-  // 推廣後利潤金額 = (推廣價 - cost) × promo_qty
+  // 推廣後利潤金額：
+  //   有 promo_qty → (推廣價 - cost) × promo_qty (總額)
+  //   未有銷售 → (推廣價 - cost) (每件利潤，加灰色字 /件)
+  const hasPromoSales = row.promo_qty > 0;
+  const promoUnitProfit =
+    effectivePromoPrice != null && row.unit_cost > 0
+      ? effectivePromoPrice - row.unit_cost
+      : null;
   const promoProfit =
-    effectivePromoPrice != null
-      ? (effectivePromoPrice - row.unit_cost) * row.promo_qty
+    promoUnitProfit != null
+      ? hasPromoSales
+        ? promoUnitProfit * row.promo_qty
+        : promoUnitProfit
       : null;
 
   const fmtCurrency = (n: number) =>
@@ -886,6 +895,7 @@ function PriceCells({
         {promoProfit != null ? (
           <span className={promoProfit < 0 ? 'text-rose-300' : 'text-emerald-300'}>
             {fmtCurrency(promoProfit)}
+            {!hasPromoSales && <span className="text-[9px] text-muted-foreground ml-0.5">/件</span>}
           </span>
         ) : (
           <span className="text-muted-foreground">—</span>
