@@ -247,6 +247,7 @@ const DEFAULT_FILTERS: FilterState = {
   // 預設隱藏 0 庫存母 ITEM（focus 喺仲有貨嘅 SKU）
   hide_zero_stock: true,
   aging_bucket: null,
+  is_promoting: 'all',
 };
 
 // 老化區間 bucket 判斷（同 summaryStats.aging 同步）
@@ -1030,6 +1031,11 @@ export default function DeadStockPage() {
       });
     }
     if (filters.actions.length) items = items.filter(i => filters.actions.includes(i.action ?? ''));
+    if (filters.is_promoting === 'on') {
+      items = items.filter(i => i.is_promoting === true);
+    } else if (filters.is_promoting === 'off') {
+      items = items.filter(i => i.is_promoting !== true);
+    }
     if (filters.aging_bucket) {
       const b = filters.aging_bucket;
       items = items.filter(i => matchAgingBucket(i.days_since_last_sale, b));
@@ -2253,6 +2259,37 @@ export default function DeadStockPage() {
               </button>
             );
           })()}
+        </div>
+
+        {/* Row 2.5: 推廣中 (tri-state) */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] font-medium text-muted-foreground w-20 shrink-0">推廣中</span>
+          {([
+            { key: 'all', label: '全部' },
+            { key: 'on', label: '只看推廣中' },
+            { key: 'off', label: '排除推廣中' },
+          ] as const).map(({ key, label }) => {
+            const active = filters.is_promoting === key;
+            return (
+              <button
+                key={key}
+                onClick={() => setFilters(f => ({ ...f, is_promoting: key }))}
+                className={`px-2.5 py-1 rounded-md text-xs border transition-colors ${
+                  active
+                    ? (key === 'on'
+                        ? 'bg-purple-500/90 text-white border-purple-500'
+                        : key === 'off'
+                          ? 'bg-amber-500/90 text-white border-amber-500'
+                          : 'bg-primary text-primary-foreground border-primary')
+                    : 'border-border/60 bg-background hover:bg-accent'
+                }`}
+                title={key === 'on' ? '只顯示勾咗推廣中嘅 SKU' : key === 'off' ? '排除勾咗推廣中嘅 SKU' : '不篩'}
+              >
+                <span className="inline-block w-3 mr-1 text-center">{active ? '✓' : ''}</span>
+                {label}
+              </button>
+            );
+          })}
         </div>
 
         {/* Row 3: 分類 (多選帶搜尋) */}
