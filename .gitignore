@@ -1,10 +1,8 @@
 node_modules/
-# Only ignore the server bundle, not the compiled frontend
-dist/*.cjs
-dist/*.js
+dist/
 .env
+.env.local
 *.log
 *.jpg
 !client/src/assets/*.jpg
 !client/public/*.jpg
-!dist/public/assets/*.jpg

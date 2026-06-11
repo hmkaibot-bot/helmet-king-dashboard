@@ -73,7 +73,8 @@ function AppRouter() {
 }
 
 function AuthGate() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, loading } = useAuth();
+  if (loading) return null;
   if (!isAuthenticated) return <LoginPage />;
   return (
     <DateProvider>

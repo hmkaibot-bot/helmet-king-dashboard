@@ -5,14 +5,14 @@
  * CORS: ✅ Allowed for helmet-king-dashboard.vercel.app
  */
 import JSEncrypt from 'jsencrypt';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config';
 
 const BASE = 'https://vf.foorir.com/hx-api';
-const USERNAME = 'HMK';
-const PASSWORD = '12345678';
-
-// Supabase Edge Function proxy for server-side token caching
-const SUPABASE_URL = 'https://myrangmxyjamsupbxbba.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15cmFuZ214eWphbXN1cGJ4YmJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MzA0NjQsImV4cCI6MjA5MTMwNjQ2NH0.RmMZyuLZrddw7kL4y2qFY8XaI6zGXPx5D9xCi58-iSY';
+// Foorir credentials come from env (.env locally / Vercel project settings).
+// Set VITE_FOORIR_USERNAME + VITE_FOORIR_PASSWORD — without them the foot
+// traffic login card shows a config error instead of a CAPTCHA.
+const USERNAME: string = import.meta.env.VITE_FOORIR_USERNAME || '';
+const PASSWORD: string = import.meta.env.VITE_FOORIR_PASSWORD || '';
 const RSA_PUBLIC_KEY =
   'MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBANL378k3RiZHWx5AfJqdH9xRNBmD9wGD' +
   '\n2iRe41HdTNF8RUhNnHit5NpMNtGL0NPTSSpPjjI1kJfVorRvaQerUgkCAwEAAQ==';
@@ -145,6 +145,9 @@ export async function getCaptcha(): Promise<{ uuid: string; img: string }> {
 
 /** Login with CAPTCHA code. Returns true on success. */
 export async function loginFoorir(code: string, uuid: string): Promise<{ ok: boolean; message: string }> {
+  if (!USERNAME || !PASSWORD) {
+    return { ok: false, message: 'Foorir 帳號未設定 (VITE_FOORIR_USERNAME / VITE_FOORIR_PASSWORD)' };
+  }
   const encPw = encryptPassword();
   if (!encPw) return { ok: false, message: 'RSA encryption failed' };
 

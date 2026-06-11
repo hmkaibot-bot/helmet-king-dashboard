@@ -22,8 +22,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 
 // ── Marsello Edge Function proxy ──────────────────────────────
-const SUPABASE_URL = 'https://myrangmxyjamsupbxbba.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15cmFuZ214eWphbXN1cGJ4YmJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MzA0NjQsImV4cCI6MjA5MTMwNjQ2NH0.RmMZyuLZrddw7kL4y2qFY8XaI6zGXPx5D9xCi58-iSY';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/config';
 
 async function marselloFetch(path: string, method: string = 'GET', body?: any): Promise<Response> {
   return fetch(`${SUPABASE_URL}/functions/v1/marsello-proxy`, {
