@@ -21,13 +21,14 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { queryAllPages } from '@/lib/query-helpers';
+import { downloadCsv, dateStamp } from '@/lib/export-csv';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Package, AlertTriangle, Search, Filter, ChevronDown, ChevronUp,
   ChevronRight, Calendar, Edit3, Save, X, RotateCcw, TrendingDown, Archive,
-  Eye, Clock, CheckCircle2, XCircle, Info,
+  Eye, Clock, CheckCircle2, XCircle, Info, Download as DownloadIcon,
 } from 'lucide-react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -2243,13 +2244,48 @@ export default function DeadStockPage() {
             顯示 <span className="font-medium text-foreground">{productGroups.length}</span> 個產品
             （<span className="font-medium text-foreground">{totalFilteredSkus}</span> 個 SKU）
           </span>
-          {totalFilteredSkus > 0 && (
-            <span className="text-xs text-muted-foreground">
-              庫存成本合計: <span className="font-medium text-foreground">
-                {formatCurrency(productGroups.reduce((s, g) => s + g.total_stock_cost, 0))}
+          <div className="flex items-center gap-3">
+            {totalFilteredSkus > 0 && (
+              <span className="text-xs text-muted-foreground">
+                庫存成本合計: <span className="font-medium text-foreground">
+                  {formatCurrency(productGroups.reduce((s, g) => s + g.total_stock_cost, 0))}
+                </span>
               </span>
-            </span>
-          )}
+            )}
+            <button
+              onClick={() =>
+                downloadCsv(
+                  `dead-stock-${dateStamp()}`,
+                  productGroups.flatMap(g => g.skus),
+                  [
+                    { label: '系統狀態', value: r => r.system_status },
+                    { label: '產品', value: r => r.product_title },
+                    { label: '款式', value: r => r.variant_title },
+                    { label: 'SKU', value: r => r.sku },
+                    { label: '供應商', value: r => r.vendor },
+                    { label: '分類', value: r => r.product_type },
+                    { label: '庫存', value: r => r.inventory_quantity },
+                    { label: '零售價', value: r => r.price },
+                    { label: '單件成本', value: r => r.unit_cost },
+                    { label: '庫存成本', value: r => r.stock_cost },
+                    { label: '最後售出', value: r => r.last_sold_date },
+                    { label: '未售天數', value: r => r.days_since_last_sale },
+                    { label: '30日銷量', value: r => r.sold_30d },
+                    { label: '90日銷量', value: r => r.sold_90d },
+                    { label: '人手狀態', value: r => manualStatusLabel(r.manual_status) },
+                    { label: '動作', value: r => r.action },
+                    { label: '備註', value: r => r.notes },
+                  ],
+                )
+              }
+              disabled={totalFilteredSkus === 0}
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+              data-testid="button-export-dead-stock"
+              title="匯出目前篩選結果 (全部 SKU)"
+            >
+              <DownloadIcon className="h-3.5 w-3.5" /> 匯出 CSV
+            </button>
+          </div>
         </div>
 
         {/* Scrollable table container with sticky header */}

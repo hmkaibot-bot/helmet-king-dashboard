@@ -5,7 +5,8 @@ import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart-theme';
-import { AlertTriangle, XCircle, AlertOctagon, PackageCheck, Archive } from 'lucide-react';
+import { AlertTriangle, XCircle, AlertOctagon, PackageCheck, Archive, Download } from 'lucide-react';
+import { downloadCsv, dateStamp } from '@/lib/export-csv';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
@@ -211,10 +212,30 @@ export default function RestockPage() {
       </ChartCard>
 
       <Card className="border-border/40">
-        <CardHeader className="pb-2 pt-4 px-4">
+        <CardHeader className="pb-2 pt-4 px-4 flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-sm font-medium">
             補貨清單 <span className="text-xs font-normal text-muted-foreground">Restock List</span>
           </CardTitle>
+          <button
+            onClick={() =>
+              downloadCsv(`restock-${tab}-${dateStamp()}`, filtered, [
+                { label: '狀態', value: (r) => STATUS_LABEL[r.status] },
+                { label: '產品', value: (r) => r.product_title },
+                { label: 'SKU', value: (r) => r.sku },
+                { label: '供應商', value: (r) => r.vendor },
+                { label: '庫存', value: (r) => r.inventory_quantity },
+                { label: '日均銷量', value: (r) => r.avg_daily_sales.toFixed(2) },
+                { label: '庫存天數', value: (r) => (r.days_of_stock === Infinity ? '' : r.days_of_stock.toFixed(0)) },
+                { label: '建議補貨', value: (r) => r.reorder_qty },
+                { label: '價格', value: (r) => r.price },
+              ])
+            }
+            disabled={loading || filtered.length === 0}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors disabled:opacity-40"
+            data-testid="button-export-restock"
+          >
+            <Download className="h-3.5 w-3.5" /> 匯出 CSV
+          </button>
         </CardHeader>
         <CardContent className="px-4 pb-4">
           {/* Tabs */}

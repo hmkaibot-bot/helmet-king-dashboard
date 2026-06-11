@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build client
+        run: npx vite build
+
+      # typecheck 暫時唔擋 merge — 現有 code 有歷史遺留 TS errors,
+      # 清晒之後可以將 continue-on-error 移除
+      - name: Typecheck (non-blocking)
+        run: npm run check
+        continue-on-error: true

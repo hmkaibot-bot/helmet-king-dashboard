@@ -34,6 +34,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import MarselloApprovalPage from "@/pages/marsello-approval";
 import ProductAnalyticsPage from "@/pages/product-analytics";
 import ForecastPage from "@/pages/forecast";
+import SyncStatusPage from "@/pages/sync-status";
 import NotFound from "@/pages/not-found";
 
 function AppRouter() {
@@ -65,6 +66,7 @@ function AppRouter() {
         <Route path="/crm/marsello-approval" component={MarselloApprovalPage} />
         <Route path="/performance/product-analytics" component={ProductAnalyticsPage} />
         <Route path="/performance/forecast" component={ForecastPage} />
+        <Route path="/system/sync-status" component={SyncStatusPage} />
         <Route component={NotFound} />
       </Switch>
       </ErrorBoundary>
