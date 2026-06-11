@@ -574,7 +574,7 @@ export default function DeadStockPage() {
   // Batch selection state
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
   const [batchSaving, setBatchSaving] = useState(false);
-  const [batchField, setBatchField] = useState<'system_status' | 'manual_status' | 'action'>('manual_status');
+  const [batchField, setBatchField] = useState<'system_status' | 'manual_status' | 'action' | 'is_promoting'>('manual_status');
   const [batchValue, setBatchValue] = useState('');
 
   // ── Column order & widths state ─────────────────────────────────────────────
@@ -1498,11 +1498,15 @@ export default function DeadStockPage() {
       const skus = Array.from(selectedSkus);
       const now = new Date().toISOString();
       const dbField = batchField === 'system_status' ? 'system_status_override' : batchField;
+      // 推廣中 (is_promoting) 是 boolean — 轉換 'true'/'false' 字串
+      const dbValue: any = batchField === 'is_promoting'
+        ? (batchValue === 'true')
+        : (batchValue || null);
 
       for (const sku of skus) {
         await supabase.from('dead_stock_reviews').upsert({
           sku,
-          [dbField]: batchValue || null,
+          [dbField]: dbValue,
           updated_at: now,
         }, { onConflict: 'sku' });
 
@@ -1544,6 +1548,13 @@ export default function DeadStockPage() {
     action: {
       label: '動作',
       options: ACTION_OPTIONS.map(k => ({ value: k, label: ACTION_LABELS[k] })),
+    },
+    is_promoting: {
+      label: '推廣中',
+      options: [
+        { value: 'true', label: '✓ 設為推廣中' },
+        { value: 'false', label: '✗ 取消推廣中' },
+      ],
     },
   };
 
@@ -2371,6 +2382,7 @@ export default function DeadStockPage() {
             <option value="system_status">系統狀態</option>
             <option value="manual_status">人手狀態</option>
             <option value="action">動作</option>
+            <option value="is_promoting">推廣中</option>
           </select>
           <select
             value={batchValue}
