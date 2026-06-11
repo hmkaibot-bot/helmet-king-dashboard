@@ -90,6 +90,7 @@ interface DeadStockReview {
   revived: boolean | null;
   system_status_override: string | null;
   promo_start_date: string | null;
+  is_promoting: boolean | null;
 }
 
 interface AuditLogRow {
@@ -129,6 +130,7 @@ interface DeadStockItem {
   last_review_date: string | null;
   next_review_date: string | null;
   revived: boolean;
+  is_promoting: boolean;
 }
 
 /** A product group = product_title as key, with aggregated totals + child SKUs */
@@ -147,12 +149,11 @@ interface ProductGroup {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-// V2: 「狀態核實」(原 manual_status) — 5 個固定選項
+// V2: 「狀態核實」(原 manual_status) — 4 個固定選項 (「推廣中」已拆出獨立 checkbox)
 const MANUAL_STATUS_LABELS: Record<string, string> = {
   normal: '正常貨',
   slow: '慢移貨',
   dead: '死貨',
-  promoting: '推廣中',
   keep_uncleared: '保留不清',
 };
 
@@ -164,6 +165,7 @@ const LEGACY_MANUAL_STATUS_LABELS: Record<string, string> = {
   revived: '已翻生 (舊)',
   cleared: '已清貨 (舊)',
   keep: '保留不清 (舊)',
+  promoting: '推廣中 (舊-已拆出)',
 };
 
 function manualStatusLabel(key: string | null | undefined): string {
@@ -580,7 +582,7 @@ export default function DeadStockPage() {
   const DEFAULT_COLUMN_ORDER = [
     'product_title', 'vendor', 'product_type', 'total_qty',
     'compare_price', 'retail_price', 'unit_cost', 'stock_cost',
-    'margin_pct', 'days_since', 'sold_90d', 'system_status', 'status_review',
+    'margin_pct', 'days_since', 'sold_90d', 'system_status', 'status_review', 'is_promoting',
   ];
 
   const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
@@ -597,6 +599,7 @@ export default function DeadStockPage() {
     sold_90d: 70,
     system_status: 90,
     status_review: 130,
+    is_promoting: 80,
   };
 
   const [columnOrder, setColumnOrder] = useState<string[]>(DEFAULT_COLUMN_ORDER);
@@ -955,6 +958,7 @@ export default function DeadStockPage() {
         last_review_date: rev?.last_review_date ?? null,
         next_review_date: rev?.next_review_date ?? null,
         revived: rev?.revived ?? false,
+        is_promoting: rev?.is_promoting ?? false,
       });
     }
 
@@ -1375,6 +1379,90 @@ export default function DeadStockPage() {
     setAuditLog(newAudit);
   };
 
+  // ── is_promoting toggle (independent checkbox) ──────────────────────────────
+  // Promo flag 同 manual_status 完全獨立 — 一個 SKU 可以同時係死貨 + 推廣中
+
+  const togglePromoting = async (sku: string, newValue: boolean, oldValue: boolean) => {
+    const stamp = new Date().toISOString();
+
+    // Optimistic update
+    setReviews(prev => {
+      const existing = prev.find(r => r.sku === sku);
+      if (existing) {
+        return prev.map(r => r.sku === sku ? { ...r, is_promoting: newValue, updated_at: stamp } : r);
+      }
+      return [...prev, { sku, is_promoting: newValue, updated_at: stamp } as DeadStockReview];
+    });
+
+    await supabase.from('dead_stock_reviews').upsert({
+      sku,
+      is_promoting: newValue,
+      updated_at: stamp,
+    }, { onConflict: 'sku' });
+
+    await supabase.from('dead_stock_audit_log').insert({
+      sku,
+      field_name: 'is_promoting',
+      old_value: String(oldValue),
+      new_value: String(newValue),
+      changed_by: 'user',
+      changed_at: stamp,
+    });
+
+    const [newReviews, newAudit] = await Promise.all([
+      fetchAllRows<DeadStockReview>('dead_stock_reviews'),
+      fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
+    ]);
+    setReviews(newReviews);
+    setAuditLog(newAudit);
+  };
+
+  const toggleGroupPromoting = async (items: DeadStockItem[], newValue: boolean) => {
+    if (items.length === 0) return;
+    const stamp = new Date().toISOString();
+    const skuSet = new Set(items.map(it => it.sku));
+
+    setReviews(prev => {
+      const updated = prev.map(r => skuSet.has(r.sku) ? { ...r, is_promoting: newValue, updated_at: stamp } : r);
+      const existingSkus = new Set(prev.map(r => r.sku));
+      const newRows: DeadStockReview[] = [];
+      for (const it of items) {
+        if (!existingSkus.has(it.sku)) {
+          newRows.push({ sku: it.sku, is_promoting: newValue, updated_at: stamp } as DeadStockReview);
+        }
+      }
+      return [...updated, ...newRows];
+    });
+
+    const reviewRows = items.map(it => ({
+      sku: it.sku,
+      is_promoting: newValue,
+      updated_at: stamp,
+    } as any));
+    const auditRows = items
+      .filter(it => (it.is_promoting ?? false) !== newValue)
+      .map(it => ({
+        sku: it.sku,
+        field_name: 'is_promoting',
+        old_value: String(it.is_promoting ?? false),
+        new_value: String(newValue),
+        changed_by: 'user (group)',
+        changed_at: stamp,
+      }));
+
+    await supabase.from('dead_stock_reviews').upsert(reviewRows, { onConflict: 'sku' });
+    if (auditRows.length) {
+      await supabase.from('dead_stock_audit_log').insert(auditRows);
+    }
+
+    const [newReviews, newAudit] = await Promise.all([
+      fetchAllRows<DeadStockReview>('dead_stock_reviews'),
+      fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
+    ]);
+    setReviews(newReviews);
+    setAuditLog(newAudit);
+  };
+
   // ── Checkbox toggle helpers ─────────────────────────────────────────────────
 
   const toggleSelect = (sku: string) => {
@@ -1743,6 +1831,46 @@ export default function DeadStockPage() {
                 <option value={v}>{manualStatusLabel(v)}</option>
               )}
             </select>
+          );
+        },
+      },
+      {
+        id: 'is_promoting',
+        label: '推廣中',
+        align: 'left' as const,
+        defaultWidth: 80,
+        // 独立 checkbox — 同 manual_status 完全分開
+        renderGroup: (group: ProductGroup) => {
+          const allOn = group.skus.length > 0 && group.skus.every(s => s.is_promoting);
+          const anyOn = group.skus.some(s => s.is_promoting);
+          const isMixed = anyOn && !allOn;
+          return (
+            <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="checkbox"
+                checked={allOn}
+                ref={(el) => { if (el) el.indeterminate = isMixed; }}
+                onChange={async (e) => {
+                  await toggleGroupPromoting(group.skus, e.target.checked);
+                }}
+                className="h-4 w-4 cursor-pointer accent-purple-500"
+                title={isMixed ? `${group.skus.length} 個 variants 不一致 — 勾選會全部設為推廣中` : `${group.skus.length} 個 variants`}
+              />
+            </div>
+          );
+        },
+        renderItem: (item: DeadStockItem) => {
+          return (
+            <div className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="checkbox"
+                checked={item.is_promoting}
+                onChange={async (e) => {
+                  await togglePromoting(item.sku, e.target.checked, item.is_promoting);
+                }}
+                className="h-4 w-4 cursor-pointer accent-purple-500"
+              />
+            </div>
           );
         },
       },
