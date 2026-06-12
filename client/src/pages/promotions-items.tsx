@@ -12,6 +12,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import { MultiSelectChipFilter } from '@/components/multi-select-chip-filter';
 import {
   Promotion,
   PromotionItem,
@@ -59,23 +60,6 @@ export default function PromotionsItemsPage() {
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPromo, setBulkPromo] = useState<string>('');
-
-  const toggleType = (t: string) => {
-    setSelectedTypes(prev => {
-      const next = new Set(prev);
-      if (next.has(t)) next.delete(t);
-      else next.add(t);
-      return next;
-    });
-  };
-  const toggleVendor = (v: string) => {
-    setSelectedVendors(prev => {
-      const next = new Set(prev);
-      if (next.has(v)) next.delete(v);
-      else next.add(v);
-      return next;
-    });
-  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -365,22 +349,22 @@ export default function PromotionsItemsPage() {
         </div>
       </div>
 
-      {/* Chip filter：分類 + 品牌 */}
+      {/* Chip filter：分類 + 品牌 (死貨頁同款「+ 加」搜尋彈窗,唔再全部攤開) */}
       {!loading && products.length > 0 && (
         <div className="rounded-md border border-border/60 bg-card p-2 space-y-1.5">
-          <FilterRow
+          <MultiSelectChipFilter
             label="分類"
             options={typeOptions}
-            selected={selectedTypes}
-            onToggle={toggleType}
-            onClear={() => setSelectedTypes(new Set())}
+            selected={Array.from(selectedTypes)}
+            onChange={(next) => setSelectedTypes(new Set(next))}
+            placeholder="搜尋分類…"
           />
-          <FilterRow
+          <MultiSelectChipFilter
             label="品牌"
             options={vendorOptions}
-            selected={selectedVendors}
-            onToggle={toggleVendor}
-            onClear={() => setSelectedVendors(new Set())}
+            selected={Array.from(selectedVendors)}
+            onChange={(next) => setSelectedVendors(new Set(next))}
+            placeholder="搜尋品牌…"
           />
         </div>
       )}
@@ -534,53 +518,3 @@ export default function PromotionsItemsPage() {
 
 void formatCurrency;
 
-function FilterRow({
-  label,
-  options,
-  selected,
-  onToggle,
-  onClear,
-}: {
-  label: string;
-  options: string[];
-  selected: Set<string>;
-  onToggle: (v: string) => void;
-  onClear: () => void;
-}) {
-  const allActive = selected.size === 0;
-  return (
-    <div className="flex items-start gap-2">
-      <div className="text-[11px] text-muted-foreground shrink-0 w-10 pt-1">{label}</div>
-      <div className="flex flex-wrap gap-1 flex-1">
-        <button
-          onClick={onClear}
-          className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${
-            allActive
-              ? 'bg-amber-500/20 border-amber-500/60 text-amber-200'
-              : 'border-border/60 text-muted-foreground hover:bg-accent/40'
-          }`}
-        >
-          全部
-        </button>
-        {options.map(opt => {
-          const active = selected.has(opt);
-          return (
-            <button
-              key={opt}
-              onClick={() => onToggle(opt)}
-              className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors inline-flex items-center gap-1 ${
-                active
-                  ? 'bg-amber-500/20 border-amber-500/60 text-amber-200'
-                  : 'border-border/60 text-muted-foreground hover:bg-accent/40'
-              }`}
-              title={opt}
-            >
-              <span className="max-w-[180px] truncate">{opt}</span>
-              {active && <span className="text-amber-300">×</span>}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
