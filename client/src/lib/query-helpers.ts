@@ -102,8 +102,9 @@ export async function queryInBatches(
 }
 
 /**
- * Query ALL records from a table using 1000-per-page pagination.
- * Supabase REST API caps responses at 1000 rows — this loops through all pages.
+ * Query ALL records from a table using paginated requests.
+ * 單次回傳上限由 PostgREST max-rows 設定決定 — 首頁實際回傳行數會被用作
+ * page size,之後剩餘頁並行拉,自動適應任何 max-rows 值。
  */
 // In-memory cache shared across pages so that switching back to a previously
 // viewed page (e.g. inventory → dead-stock → inventory) does not re-fetch the
@@ -164,14 +165,21 @@ async function _queryAllPagesUncached(
   extraFilters?: { column: string; op: 'eq' | 'gte' | 'lte'; value: string }[],
   maxRows = 200000
 ): Promise<any[]> {
-  const PAGE_SIZE = 1000;
+  // 每次 request 想攞嘅行數。實際單次回傳上限由 PostgREST max-rows 決定
+  // (Supabase 預設 1000,可以喺 DB 度 alter role authenticator set pgrst.db_max_rows
+  //  調高) — 以下邏輯用「首頁實際回傳行數」自動適應,所以兩種設定都正確。
+  const DESIRED_PAGE_SIZE = 10000;
   // Retry with backoff — Supabase REST (Cloudflare 前面) 大量分頁請求時
   // 偶然會 rate limit / 斷線,唔 retry 嘅話成頁數據會缺一截。
   const MAX_RETRIES = 3;
   const RETRY_DELAYS = [500, 1500, 4000];
 
-  // 單頁 fetch + retry
-  const fetchPage = async (offset: number): Promise<any[]> => {
+  // 單頁 fetch + retry。withCount = true 時順便攞 exact total。
+  const fetchRange = async (
+    from: number,
+    to: number,
+    withCount: boolean,
+  ): Promise<{ rows: any[]; count: number | null }> => {
     let lastError: unknown = null;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       if (attempt > 0) {
@@ -179,8 +187,8 @@ async function _queryAllPagesUncached(
       }
       let query = supabase
         .from(table)
-        .select(columns)
-        .range(offset, offset + PAGE_SIZE - 1);
+        .select(columns, withCount ? { count: 'exact' } : undefined)
+        .range(from, to);
       if (extraFilters) {
         for (const f of extraFilters) {
           if (f.op === 'eq')  query = (query as any).eq(f.column, f.value);
@@ -189,36 +197,41 @@ async function _queryAllPagesUncached(
         }
       }
       const res = await query;
-      if (!res.error) return res.data ?? [];
+      if (!res.error) return { rows: res.data ?? [], count: res.count ?? null };
       lastError = res.error;
-      console.warn(`Pagination error on ${table} offset=${offset} (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, res.error);
+      console.warn(`Pagination error on ${table} range=${from}-${to} (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, res.error);
     }
     // 唔好靜靜回傳半截數據當完整 — throw 俾上層 (queryAllPages 有 stale cache fallback)
     throw new Error(`queryAllPages(${table}) failed after ${MAX_RETRIES + 1} attempts: ${(lastError as any)?.message ?? lastError}`);
   };
 
-  // 第一頁先單獨試 — 大部分表唔夠 1000 行,一個 request 搞掂
-  const all: any[] = [];
-  const first = await fetchPage(0);
-  all.push(...first);
-  if (first.length < PAGE_SIZE) return all;
+  // 首頁攞埋 exact count — 知道 total 之後,剩餘頁可以一次過並行拉,
+  // 唔使逐輪「拉到唔滿一頁先知到尾」。
+  const first = await fetchRange(0, DESIRED_PAGE_SIZE - 1, true);
+  const all: any[] = [...first.rows];
+  const total = Math.min(first.count ?? all.length, maxRows);
+  if (all.length === 0 || all.length >= total) return all;
 
-  // 之後每輪並行拉 CONCURRENCY 頁,直到某一頁唔滿 (= 到尾)。
-  // 並行度刻意保守 (4) 避免觸發 Supabase / Cloudflare rate limit。
-  const CONCURRENCY = 4;
-  let offset = PAGE_SIZE;
-  while (all.length < maxRows) {
-    const offsets = Array.from({ length: CONCURRENCY }, (_, i) => offset + i * PAGE_SIZE);
-    const pages = await Promise.all(offsets.map(fetchPage));
-    let done = false;
-    for (const page of pages) {
-      all.push(...page);
-      if (page.length < PAGE_SIZE) { done = true; break; }
+  // 首頁實際回傳行數 = server 單次上限 (PostgREST max-rows),用佢做 page size
+  const pageSize = first.rows.length;
+  const offsets: number[] = [];
+  for (let o = pageSize; o < total; o += pageSize) offsets.push(o);
+
+  // 並行拉剩餘頁 — 並行度保守 (6) 避免觸發 Supabase / Cloudflare rate limit
+  const CONCURRENCY = 6;
+  const results: any[][] = new Array(offsets.length);
+  let nextIdx = 0;
+  const worker = async () => {
+    while (nextIdx < offsets.length) {
+      const i = nextIdx++;
+      const o = offsets[i];
+      const { rows } = await fetchRange(o, o + pageSize - 1, false);
+      results[i] = rows;
     }
-    if (done) break;
-    offset += CONCURRENCY * PAGE_SIZE;
-  }
-  return all;
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, offsets.length) }, worker));
+  for (const rows of results) all.push(...rows);
+  return all.length > maxRows ? all.slice(0, maxRows) : all;
 }
 
 /**

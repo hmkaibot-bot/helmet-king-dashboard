@@ -43,12 +43,36 @@ where o.cancelled_at is null
   and o.created_at >= now() - interval '90 days'
 group by l.variant_id;
 
+-- 每個 SKU 嘅返貨統計 (死貨頁用) — 取代客戶端拉 bc_purchase_invoices + lines 兩張表
+create or replace view sku_receive_stats
+with (security_invoker = on) as
+select
+  btrim(l.item_number)        as sku,
+  min(i.posting_date)::date   as first_receive_date,
+  max(i.posting_date)::date   as last_receive_date
+from bc_purchase_invoice_lines l
+join bc_purchase_invoices i on i.id = l.invoice_id
+where i.posting_date is not null
+  and l.item_number is not null
+  and btrim(l.item_number) <> ''
+group by btrim(l.item_number);
+
 -- 建議 index (如果未有) — 大表 join 加速
 create index if not exists idx_shopify_order_lines_order_id on shopify_order_lines (order_id);
 create index if not exists idx_shopify_order_lines_sku       on shopify_order_lines (sku);
 create index if not exists idx_shopify_orders_created_at     on shopify_orders (created_at);
+create index if not exists idx_bc_pil_invoice_id  on bc_purchase_invoice_lines (invoice_id);
+create index if not exists idx_bc_pil_item_number on bc_purchase_invoice_lines (item_number);
+create index if not exists idx_dead_stock_audit_sku_changed on dead_stock_audit_log (sku, changed_at desc);
+
+-- PostgREST 單次回傳行數上限 (預設 1000) — 調高到 10000,前端分頁 request 數即減 90%。
+-- 前端 queryAllPages 會自動適應實際上限,所以呢句跑唔跑 app 都正確,跑咗就快好多。
+alter role authenticator set pgrst.db_max_rows = '10000';
+notify pgrst, 'reload config';
 
 -- 驗證
 select 'sku_sales_stats' as view, count(*) from sku_sales_stats
 union all
-select 'variant_sales_90d', count(*) from variant_sales_90d;
+select 'variant_sales_90d', count(*) from variant_sales_90d
+union all
+select 'sku_receive_stats', count(*) from sku_receive_stats;
