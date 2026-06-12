@@ -37,6 +37,12 @@ interface InventoryRow {
   product_type: string | null;
   inventory_quantity: number | null;
   price: number | null;
+  compare_at_price: number | string | null;
+}
+
+interface BcInvRow {
+  number: string;
+  unit_cost: number | string | null;
 }
 
 interface OrderLineRow {
@@ -57,6 +63,7 @@ interface SkuStat {
   variant_title: string;
   inventory: number;
   price: number;
+  unit_cost: number;
   promo_qty: number;
   promo_revenue: number;
   pre_promo_qty: number;
@@ -71,6 +78,10 @@ interface ProductStat {
   product_type: string;
   total_inventory: number;
   num_skus: number;
+  retail_price: number;
+  compare_at_price: number;
+  unit_cost: number;
+  promo_price: number | null;
   promo_qty: number;
   promo_revenue: number;
   pre_promo_qty: number;

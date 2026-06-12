@@ -28,6 +28,7 @@ import {
   Building2,
   CalendarCheck,
   TrendingUp,
+  Activity,
   Sparkles,
   ClipboardCheck,
   Award,
@@ -120,6 +121,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   { path: '/marketing', label: '營銷', sublabel: 'Marketing', icon: Megaphone },
   { path: '/finance', label: '財務', sublabel: 'Finance', icon: Receipt },
+  { path: '/system/sync-status', label: '同步狀態', sublabel: 'Sync Status', icon: Activity },
 ];
 
 function findCurrentPage(location: string): { label: string; sublabel: string } {

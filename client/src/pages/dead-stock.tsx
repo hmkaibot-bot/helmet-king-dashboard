@@ -20,14 +20,15 @@
  */
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { queryAllPages } from '@/lib/query-helpers';
+import { queryAllPages, tryView } from '@/lib/query-helpers';
+import { downloadCsv, dateStamp } from '@/lib/export-csv';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Package, AlertTriangle, Search, Filter, ChevronDown, ChevronUp,
   ChevronRight, Calendar, Edit3, Save, X, RotateCcw, TrendingDown, Archive,
-  Eye, Clock, CheckCircle2, XCircle, Info,
+  Eye, Clock, CheckCircle2, XCircle, Info, Download as DownloadIcon,
 } from 'lucide-react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -70,6 +71,15 @@ interface OrderLineRow {
   sku: string;
   quantity: number;
   order_id: string;
+}
+
+/** sku_sales_stats view (sql/perf-views.sql) 一行 — server-side 聚合 */
+interface SkuSalesStatsRow {
+  sku: string;
+  first_sold_date: string | null;
+  last_sold_date: string | null;
+  sold_30d: number | string;
+  sold_90d: number | string;
 }
 
 interface OrderRow {
@@ -204,6 +214,7 @@ interface FilterState {
   actions: string[];
   hide_zero_stock: boolean;
   aging_bucket: AgingBucket | null;
+  is_promoting: 'all' | 'on' | 'off';
 }
 
 // 預設分類（用戶指定 24 個）
@@ -549,6 +560,7 @@ export default function DeadStockPage() {
   const [bcInv, setBcInv] = useState<BcInventoryRow[]>([]);
   const [orderLines, setOrderLines] = useState<OrderLineRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [skuStatsView, setSkuStatsView] = useState<SkuSalesStatsRow[] | null>(null);
   const [reviews, setReviews] = useState<DeadStockReview[]>([]);
   const [auditLog, setAuditLog] = useState<AuditLogRow[]>([]);
   const [shopifyProducts, setShopifyProducts] = useState<ShopifyProductRow[]>([]);
@@ -748,13 +760,16 @@ export default function DeadStockPage() {
     setLoading(true);
     setError(null);
     try {
-      const [invRows, bcRows, linesRows, ordersRows, reviewsRows, auditRows, productsRows, piRows, pilRows] = await Promise.all([
+      // 優先用 server-side 聚合 view (sql/perf-views.sql) — 一個細 request
+      // 取代 shopify_order_lines + shopify_orders 兩張最大表
+      const statsViewPromise = tryView('sku_sales_stats', 'sku,first_sold_date,last_sold_date,sold_30d,sold_90d');
+
+      const [statsView, invRows, bcRows, reviewsRows, auditRows, productsRows, piRows, pilRows] = await Promise.all([
+        statsViewPromise,
         // V2.2: 一次 load 全部 SKU（包括 0-stock），令母行 best-of 全面正確
         // 不再需要 lazy-load 0-stock variants
         queryAllPages('shopify_inventory', 'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price'),
         queryAllPages('bc_inventory', 'number,unit_cost,unit_price'),
-        queryAllPages('shopify_order_lines', 'sku,quantity,order_id'),
-        queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
         // V2.3: 用 queryAllPages 避免 Supabase 1000-row default cap (reviews 表已過 1k 行)
         queryAllPages('dead_stock_reviews', '*'),
         queryAllPages('dead_stock_audit_log', '*'),
@@ -762,6 +777,17 @@ export default function DeadStockPage() {
         queryAllPages('bc_purchase_invoices', 'id,posting_date'),
         queryAllPages('bc_purchase_invoice_lines', 'invoice_id,item_number'),
       ]);
+
+      // View 未建立 → fallback: 拉返原始 order lines/orders 喺 client 計
+      let linesRows: any[] = [];
+      let ordersRows: any[] = [];
+      if (statsView === null) {
+        [linesRows, ordersRows] = await Promise.all([
+          queryAllPages('shopify_order_lines', 'sku,quantity,order_id'),
+          queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
+        ]);
+      }
+      setSkuStatsView(statsView as SkuSalesStatsRow[] | null);
 
       setShopifyInv(invRows as ShopifyInventoryRow[]);
       setBcInv(bcRows as BcInventoryRow[]);
@@ -824,34 +850,50 @@ export default function DeadStockPage() {
     const reviewMap = new Map<string, DeadStockReview>();
     for (const r of reviews) reviewMap.set(r.sku, r);
 
-    const orderMap = new Map<string, { created_at: string; cancelled: boolean }>();
-    for (const o of orders) {
-      orderMap.set(String(o.id), { created_at: o.created_at, cancelled: !!o.cancelled_at });
-    }
-
     const skuStats = new Map<string, { lastDate: number; firstDate: number; sold30: number; sold90: number }>();
     const now30 = now - 30 * MS_PER_DAY;
     const now90 = now - 90 * MS_PER_DAY;
 
-    for (const line of orderLines) {
-      const ord = orderMap.get(String(line.order_id));
-      if (!ord || ord.cancelled) continue;
-      const ts = new Date(ord.created_at).getTime();
-      if (isNaN(ts)) continue;
-
-      const existing = skuStats.get(line.sku);
-      if (!existing) {
-        skuStats.set(line.sku, {
-          lastDate: ts,
-          firstDate: ts,
-          sold30: ts >= now30 ? (line.quantity ?? 0) : 0,
-          sold90: ts >= now90 ? (line.quantity ?? 0) : 0,
+    if (skuStatsView) {
+      // Server-side 聚合 view 已經計好每個 SKU 嘅統計
+      for (const r of skuStatsView) {
+        const lastTs = r.last_sold_date ? new Date(r.last_sold_date).getTime() : NaN;
+        const firstTs = r.first_sold_date ? new Date(r.first_sold_date).getTime() : NaN;
+        if (isNaN(lastTs) || isNaN(firstTs)) continue;
+        skuStats.set(r.sku, {
+          lastDate: lastTs,
+          firstDate: firstTs,
+          sold30: Number(r.sold_30d) || 0,
+          sold90: Number(r.sold_90d) || 0,
         });
-      } else {
-        if (ts > existing.lastDate) existing.lastDate = ts;
-        if (ts < existing.firstDate) existing.firstDate = ts;
-        if (ts >= now30) existing.sold30 += line.quantity ?? 0;
-        if (ts >= now90) existing.sold90 += line.quantity ?? 0;
+      }
+    } else {
+      // Fallback: client-side 聚合原始 order lines
+      const orderMap = new Map<string, { created_at: string; cancelled: boolean }>();
+      for (const o of orders) {
+        orderMap.set(String(o.id), { created_at: o.created_at, cancelled: !!o.cancelled_at });
+      }
+
+      for (const line of orderLines) {
+        const ord = orderMap.get(String(line.order_id));
+        if (!ord || ord.cancelled) continue;
+        const ts = new Date(ord.created_at).getTime();
+        if (isNaN(ts)) continue;
+
+        const existing = skuStats.get(line.sku);
+        if (!existing) {
+          skuStats.set(line.sku, {
+            lastDate: ts,
+            firstDate: ts,
+            sold30: ts >= now30 ? (line.quantity ?? 0) : 0,
+            sold90: ts >= now90 ? (line.quantity ?? 0) : 0,
+          });
+        } else {
+          if (ts > existing.lastDate) existing.lastDate = ts;
+          if (ts < existing.firstDate) existing.firstDate = ts;
+          if (ts >= now30) existing.sold30 += line.quantity ?? 0;
+          if (ts >= now90) existing.sold90 += line.quantity ?? 0;
+        }
       }
     }
 
@@ -964,7 +1006,7 @@ export default function DeadStockPage() {
     }
 
     return result;
-  }, [shopifyInv, bcInv, orderLines, orders, reviews, shopifyProducts, purchaseInvoices, purchaseInvoiceLines]);
+  }, [shopifyInv, bcInv, orderLines, orders, skuStatsView, reviews, shopifyProducts, purchaseInvoices, purchaseInvoiceLines]);
 
   // ── Summary stats ───────────────────────────────────────────────────────────
 
@@ -1301,7 +1343,7 @@ export default function DeadStockPage() {
       if (existing) {
         return prev.map(r => r.sku === sku ? { ...r, [dbField]: newValue || null, updated_at: updatedAt } : r);
       }
-      return [...prev, { sku, [dbField]: newValue || null, updated_at: updatedAt } as DeadStockReview];
+      return [...prev, { sku, [dbField]: newValue || null, updated_at: updatedAt } as unknown as DeadStockReview];
     });
 
     // 推廣中 唔再彈窗問日期 — 改用「推廣管理」頁分派 promo
@@ -1350,7 +1392,7 @@ export default function DeadStockPage() {
       const newRows: DeadStockReview[] = [];
       for (const it of items) {
         if (!existingSkus.has(it.sku)) {
-          newRows.push({ sku: it.sku, [fieldName]: newValue || null, updated_at: stamp } as DeadStockReview);
+          newRows.push({ sku: it.sku, [fieldName]: newValue || null, updated_at: stamp } as unknown as DeadStockReview);
         }
       }
       return [...updated, ...newRows];
@@ -1397,7 +1439,7 @@ export default function DeadStockPage() {
       if (existing) {
         return prev.map(r => r.sku === sku ? { ...r, is_promoting: newValue, updated_at: stamp } : r);
       }
-      return [...prev, { sku, is_promoting: newValue, updated_at: stamp } as DeadStockReview];
+      return [...prev, { sku, is_promoting: newValue, updated_at: stamp } as unknown as DeadStockReview];
     });
 
     await supabase.from('dead_stock_reviews').upsert({
@@ -1434,7 +1476,7 @@ export default function DeadStockPage() {
       const newRows: DeadStockReview[] = [];
       for (const it of items) {
         if (!existingSkus.has(it.sku)) {
-          newRows.push({ sku: it.sku, is_promoting: newValue, updated_at: stamp } as DeadStockReview);
+          newRows.push({ sku: it.sku, is_promoting: newValue, updated_at: stamp } as unknown as DeadStockReview);
         }
       }
       return [...updated, ...newRows];
@@ -1826,7 +1868,7 @@ export default function DeadStockPage() {
               onChange={async (e) => {
                 const newVal = e.target.value;
                 if (newVal === v) return;
-                await handleInlineUpdate(item.sku, 'manual_status', newVal);
+                await handleInlineUpdate(item.sku, 'manual_status', newVal, v || null);
               }}
               onClick={(e) => e.stopPropagation()}
               className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent w-full ${
@@ -2420,13 +2462,48 @@ export default function DeadStockPage() {
             顯示 <span className="font-medium text-foreground">{productGroups.length}</span> 個產品
             （<span className="font-medium text-foreground">{totalFilteredSkus}</span> 個 SKU）
           </span>
-          {totalFilteredSkus > 0 && (
-            <span className="text-xs text-muted-foreground">
-              庫存成本合計: <span className="font-medium text-foreground">
-                {formatCurrency(productGroups.reduce((s, g) => s + g.total_stock_cost, 0))}
+          <div className="flex items-center gap-3">
+            {totalFilteredSkus > 0 && (
+              <span className="text-xs text-muted-foreground">
+                庫存成本合計: <span className="font-medium text-foreground">
+                  {formatCurrency(productGroups.reduce((s, g) => s + g.total_stock_cost, 0))}
+                </span>
               </span>
-            </span>
-          )}
+            )}
+            <button
+              onClick={() =>
+                downloadCsv(
+                  `dead-stock-${dateStamp()}`,
+                  productGroups.flatMap(g => g.skus),
+                  [
+                    { label: '系統狀態', value: r => r.system_status },
+                    { label: '產品', value: r => r.product_title },
+                    { label: '款式', value: r => r.variant_title },
+                    { label: 'SKU', value: r => r.sku },
+                    { label: '供應商', value: r => r.vendor },
+                    { label: '分類', value: r => r.product_type },
+                    { label: '庫存', value: r => r.inventory_quantity },
+                    { label: '零售價', value: r => r.price },
+                    { label: '單件成本', value: r => r.unit_cost },
+                    { label: '庫存成本', value: r => r.stock_cost },
+                    { label: '最後售出', value: r => r.last_sold_date },
+                    { label: '未售天數', value: r => r.days_since_last_sale },
+                    { label: '30日銷量', value: r => r.sold_30d },
+                    { label: '90日銷量', value: r => r.sold_90d },
+                    { label: '人手狀態', value: r => manualStatusLabel(r.manual_status) },
+                    { label: '動作', value: r => r.action },
+                    { label: '備註', value: r => r.notes },
+                  ],
+                )
+              }
+              disabled={totalFilteredSkus === 0}
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+              data-testid="button-export-dead-stock"
+              title="匯出目前篩選結果 (全部 SKU)"
+            >
+              <DownloadIcon className="h-3.5 w-3.5" /> 匯出 CSV
+            </button>
+          </div>
         </div>
 
         {/* Scrollable table container with sticky header */}

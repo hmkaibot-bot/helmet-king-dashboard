@@ -3,8 +3,8 @@
 ## Deployed URL
 https://www.perplexity.ai/computer/a/helmet-king-dashboard-LfSBbLeJQ.ebe1a4fhaF3Q
 
-## Password
-HK2026dashboard
+## Login
+Supabase Auth (email + password) — 喺 Supabase Dashboard → Authentication → Users 管理用戶
 
 ## Data Source
 Supabase: https://myrangmxyjamsupbxbba.supabase.co

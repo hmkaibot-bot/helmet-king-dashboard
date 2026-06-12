@@ -922,7 +922,7 @@ export default function DailyWeeklyPage() {
                           <span>{ch.data.count} 單</span>
                           {ch.data.count > 0 && <span>AOV {formatCurrency(ch.data.aov)}</span>}
                         </div>
-                        {'domains' in ch.data && Object.keys(ch.data.domains).length > 0 && (
+                        {'domains' in ch.data && Object.keys((ch.data as { domains: Record<string, number> }).domains).length > 0 && (
                           <div className="mt-1.5">
                             {Object.entries(ch.data.domains as Record<string,number>).slice(0,2).map(([d,n]) => (
                               <p key={d} className="text-[10px] text-muted-foreground/70 truncate">{d} ×{n}</p>
