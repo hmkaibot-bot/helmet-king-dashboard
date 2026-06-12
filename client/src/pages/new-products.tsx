@@ -80,7 +80,9 @@ export default function NewProductsPage() {
           queryAllPages('shopify_products', 'id,title,product_type,vendor,status,created_at', [
             { column: 'created_at', op: 'gte', value: ninetyAgoStr },
           ]),
-          queryAllPages('shopify_order_lines', 'product_id,quantity,price,created_at'),
+          // 新品最多睇 90 日 — server-side filter 慳大量傳輸
+          queryAllPages('shopify_order_lines', 'product_id,quantity,price,created_at',
+            [{ column: 'created_at', op: 'gte', value: ninetyAgoStr }]),
           queryAllPages('shopify_inventory', 'product_id,sku,inventory_quantity,price,snapshot_date'),
         ]);
 

@@ -12,18 +12,21 @@
 -- security_invoker = on 令 view 跟返查詢者嘅 RLS 權限 (登入用戶先讀到)。
 -- ============================================================================
 
--- 每個 SKU 嘅銷售統計 (死貨頁用) — 取代客戶端拉全部 order lines
+-- 每個 SKU 嘅銷售統計 (死貨頁 + 庫存頁用) — 取代客戶端拉全部 order lines
+-- v2: 加 total_qty (全歷史銷量) + 剔除 refunded 訂單
 create or replace view sku_sales_stats
 with (security_invoker = on) as
 select
   l.sku,
   min(o.created_at)::date                                                          as first_sold_date,
   max(o.created_at)::date                                                          as last_sold_date,
+  coalesce(sum(l.quantity), 0)                                                     as total_qty,
   coalesce(sum(l.quantity) filter (where o.created_at >= now() - interval '30 days'), 0) as sold_30d,
   coalesce(sum(l.quantity) filter (where o.created_at >= now() - interval '90 days'), 0) as sold_90d
 from shopify_order_lines l
 join shopify_orders o on o.id = l.order_id
 where o.cancelled_at is null
+  and (o.financial_status is null or o.financial_status <> 'refunded')
   and l.sku is not null
 group by l.sku;
 

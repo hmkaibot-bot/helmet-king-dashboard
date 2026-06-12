@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { queryAll, queryAllPages, queryWithDateRange } from '@/lib/query-helpers';
+import { queryAll, queryAllPages, queryWithDateRange, tryView } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
@@ -420,15 +420,25 @@ export default function RetailInventoryPage() {
     async function load() {
       setLoading(true);
       try {
-        const [inv, bcInv, purchaseLines, purchaseInvoices, orderLines, orders, shopifyProducts] = await Promise.all([
+        // 優先用 server-side 聚合 view (sql/perf-views.sql v2 帶 total_qty),
+        // 一個細 request 取代 order_lines + orders 兩張最大表
+        const [inv, bcInv, purchaseLines, purchaseInvoices, salesView, shopifyProducts] = await Promise.all([
           fetchAllInventory(),
           queryAllPages('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code'),
           queryAllPages('bc_purchase_invoice_lines', 'invoice_id,invoice_number,item_number,quantity,unit_cost'),
           queryAllPages('bc_purchase_invoices', 'id,posting_date,number'),
-          queryAllPages('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity'),
-          queryAllPages('shopify_orders', 'id,created_at,financial_status,cancelled_at'),
+          tryView('sku_sales_stats', 'sku,last_sold_date,total_qty'),
           queryAllPages('shopify_products', 'id,status,created_at'),
         ]);
+        // View 未建立 (或未係 v2) → fallback 拉原始表
+        let orderLines: any[] = [];
+        let orders: any[] = [];
+        if (salesView === null) {
+          [orderLines, orders] = await Promise.all([
+            queryAllPages('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity'),
+            queryAllPages('shopify_orders', 'id,created_at,financial_status,cancelled_at'),
+          ]);
+        }
         if (cancelled) return;
 
         // Build set of product IDs to exclude from dead stock (draft or created within 90 days)
@@ -500,19 +510,27 @@ export default function RetailInventoryPage() {
         setProcurementByItem(procMap);
 
         // Sales by product
-        const validOrders = orders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at);
-        const orderDateMap: Record<string, string> = {};
-        validOrders.forEach((o: any) => { orderDateMap[o.id] = o.created_at; });
-        const validIds = new Set(validOrders.map((o: any) => o.id));
-
         const salesMap: Record<string, { qty: number; lastSaleDate: string }> = {};
-        orderLines.filter((l: any) => validIds.has(l.order_id)).forEach((l: any) => {
-          const key = l.sku || l.title;
-          const date = orderDateMap[l.order_id] || '';
-          if (!salesMap[key]) salesMap[key] = { qty: 0, lastSaleDate: '' };
-          salesMap[key].qty += l.quantity || 0;
-          if (date > salesMap[key].lastSaleDate) salesMap[key].lastSaleDate = date;
-        });
+        if (salesView) {
+          // View 已經 server-side 計好 (剔除 cancelled/refunded)
+          salesView.forEach((r: any) => {
+            if (!r.sku) return;
+            salesMap[r.sku] = { qty: Number(r.total_qty) || 0, lastSaleDate: r.last_sold_date || '' };
+          });
+        } else {
+          const validOrders = orders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at);
+          const orderDateMap: Record<string, string> = {};
+          validOrders.forEach((o: any) => { orderDateMap[o.id] = o.created_at; });
+          const validIds = new Set(validOrders.map((o: any) => o.id));
+
+          orderLines.filter((l: any) => validIds.has(l.order_id)).forEach((l: any) => {
+            const key = l.sku || l.title;
+            const date = orderDateMap[l.order_id] || '';
+            if (!salesMap[key]) salesMap[key] = { qty: 0, lastSaleDate: '' };
+            salesMap[key].qty += l.quantity || 0;
+            if (date > salesMap[key].lastSaleDate) salesMap[key].lastSaleDate = date;
+          });
+        }
         setSalesByProduct(salesMap);
       } catch (e) {
         console.error('Inventory error:', e);

@@ -234,9 +234,15 @@ export default function ForecastPage() {
     async function load() {
       setLoading(true);
       try {
+        // 預測用 24 個月歷史已經夠 — 唔使拉全部年代嘅訂單
+        const twoYearsAgo = new Date();
+        twoYearsAgo.setMonth(twoYearsAgo.getMonth() - 24);
+        const histFrom = twoYearsAgo.toISOString().slice(0, 10);
         const [lines, ords, inv] = await Promise.all([
-          queryAllPages('shopify_order_lines', 'order_id,product_type,quantity,price,line_total,title,sku'),
-          queryAllPages('shopify_orders', 'id,created_at'),
+          queryAllPages('shopify_order_lines', 'order_id,product_type,quantity,price,line_total,title,sku',
+            [{ column: 'created_at', op: 'gte', value: histFrom }]),
+          queryAllPages('shopify_orders', 'id,created_at',
+            [{ column: 'created_at', op: 'gte', value: histFrom }]),
           queryAllPages('shopify_inventory', 'product_type,inventory_quantity,sku'),
         ]);
         setOrderLines(lines);

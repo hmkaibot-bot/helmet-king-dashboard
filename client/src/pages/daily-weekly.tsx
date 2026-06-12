@@ -300,53 +300,12 @@ export default function DailyWeeklyPage() {
         const fortyFiveAgo = new Date(hktNow); fortyFiveAgo.setDate(hktNow.getDate() - 45);
         const fromDate  = toDateStr(firstOfMo < fortyFiveAgo ? fortyFiveAgo : firstOfMo);
 
-        // Phase 1: parallel
-        const [ordersRaw, orderLines, productsData] = await Promise.all([
-          (async () => {
-            const { data } = await supabase
-              .from('shopify_orders')
-              .select('id,order_number,created_at,total_price,financial_status,cancelled_at,customer_name,customer_id,discount_codes,source_name,user_id')
-              .gte('created_at', fromDate)
-              .limit(5000);
-            return (data || []) as any[];
-          })(),
-          queryAllPages(
-            'shopify_order_lines',
-            'order_id,product_id,title,sku,vendor,quantity,price,product_type,created_at'
-          ) as Promise<any[]>,
-          queryAllPages('shopify_products', 'id,product_type') as Promise<any[]>,
-        ]);
+        // Order lines 只需要近 60 日 (velocityMap 用 60 日,其餘 join 45 日內嘅 orders)
+        // — 全表拉嘅話係幾十萬行,呢個 filter 係本頁載入速度嘅關鍵
+        const linesFromD = new Date(hktNow); linesFromD.setDate(hktNow.getDate() - 62);
+        const linesFrom = toDateStr(linesFromD);
 
-        if (cancelled) return;
-
-        setAllOrders(ordersRaw.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at));
-        setAllOrderLines(orderLines);
-
-        // Build product_id → product_type lookup
-        const ptMap: Record<string, string> = {};
-        productsData.forEach((p: any) => {
-          if (p.id && p.product_type) ptMap[String(p.id)] = p.product_type;
-        });
-        setProductTypeMap(ptMap);
-
-        // Phase 2: batch inventory for sold SKUs
-        const skuList = [...new Set(orderLines.map((l: any) => l.sku).filter(Boolean))] as string[];
-        const invMap: Record<string, number> = {};
-        const BATCH = 100;
-        for (let i = 0; i < skuList.length; i += BATCH) {
-          if (cancelled) break;
-          const { data: invData } = await supabase
-            .from('shopify_inventory')
-            .select('sku,inventory_quantity')
-            .in('sku', skuList.slice(i, i + BATCH));
-          (invData || []).forEach((r: any) => {
-            if (r.sku) invMap[r.sku] = Math.max(0, r.inventory_quantity || 0);
-          });
-        }
-        if (!cancelled) setInventoryMap(invMap);
-
-        // Phase 3: fetch last year same-period orders for weekly comparison chart
-        // Get this week Mon & last week Mon, then compute the same dates last year
+        // 去年同期 range (Phase 3 嘅 LY 比較,一併喺第一輪 parallel 攞)
         const twBounds = getThisWeekBounds();
         const lwBounds = getLastWeekBounds();
         const lyThisMonday = new Date(twBounds.from + 'T00:00:00');
@@ -358,17 +317,66 @@ export default function DailyWeeklyPage() {
         lySunday.setDate(lyThisMonday.getDate() + 6);
         const lyTo = toDateStr(lySunday);
 
-        const { data: lyData } = await supabase
-          .from('shopify_orders')
-          .select('id,order_number,created_at,total_price,financial_status,cancelled_at')
-          .gte('created_at', lyFrom)
-          .lte('created_at', lyTo + 'T23:59:59')
-          .limit(5000);
-        if (!cancelled) {
-          setLastYearOrders(
-            (lyData || []).filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at)
-          );
+        // Phase 1: parallel
+        const [ordersRaw, orderLines, productsData, lyData] = await Promise.all([
+          (async () => {
+            const { data } = await supabase
+              .from('shopify_orders')
+              .select('id,order_number,created_at,total_price,financial_status,cancelled_at,customer_name,customer_id,discount_codes,source_name,user_id')
+              .gte('created_at', fromDate)
+              .limit(5000);
+            return (data || []) as any[];
+          })(),
+          queryAllPages(
+            'shopify_order_lines',
+            'order_id,product_id,title,sku,vendor,quantity,price,product_type,created_at',
+            [{ column: 'created_at', op: 'gte', value: linesFrom }]
+          ) as Promise<any[]>,
+          queryAllPages('shopify_products', 'id,product_type') as Promise<any[]>,
+          (async () => {
+            const { data } = await supabase
+              .from('shopify_orders')
+              .select('id,order_number,created_at,total_price,financial_status,cancelled_at')
+              .gte('created_at', lyFrom)
+              .lte('created_at', lyTo + 'T23:59:59')
+              .limit(5000);
+            return (data || []) as any[];
+          })(),
+        ]);
+
+        if (cancelled) return;
+
+        setLastYearOrders(
+          lyData.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at)
+        );
+
+        setAllOrders(ordersRaw.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at));
+        setAllOrderLines(orderLines);
+
+        // Build product_id → product_type lookup
+        const ptMap: Record<string, string> = {};
+        productsData.forEach((p: any) => {
+          if (p.id && p.product_type) ptMap[String(p.id)] = p.product_type;
+        });
+        setProductTypeMap(ptMap);
+
+        // Phase 2: batch inventory for sold SKUs (並行拉所有 batches)
+        const skuList = [...new Set(orderLines.map((l: any) => l.sku).filter(Boolean))] as string[];
+        const invMap: Record<string, number> = {};
+        const BATCH = 100;
+        const batches: string[][] = [];
+        for (let i = 0; i < skuList.length; i += BATCH) batches.push(skuList.slice(i, i + BATCH));
+        const invResults = await Promise.all(
+          batches.map(b =>
+            supabase.from('shopify_inventory').select('sku,inventory_quantity').in('sku', b)
+          )
+        );
+        for (const { data: invData } of invResults) {
+          (invData || []).forEach((r: any) => {
+            if (r.sku) invMap[r.sku] = Math.max(0, r.inventory_quantity || 0);
+          });
         }
+        if (!cancelled) setInventoryMap(invMap);
       } catch (e) {
         console.error('Daily/Weekly load error:', e);
       } finally {
