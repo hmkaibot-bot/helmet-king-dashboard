@@ -59,6 +59,7 @@ interface QueueItem {
   notes: string | null;
   approved_at: string | null;
   synced_at: string | null;
+  sync_response: string | null;
   created_at: string;
 }
 

@@ -26,8 +26,5 @@ jobs:
       - name: Build client
         run: npx vite build
 
-      # typecheck 暫時唔擋 merge — 現有 code 有歷史遺留 TS errors,
-      # 清晒之後可以將 continue-on-error 移除
-      - name: Typecheck (non-blocking)
+      - name: Typecheck
         run: npm run check
-        continue-on-error: true

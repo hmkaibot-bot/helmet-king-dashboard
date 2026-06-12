@@ -1292,7 +1292,7 @@ export default function DeadStockPage() {
       if (existing) {
         return prev.map(r => r.sku === sku ? { ...r, [dbField]: newValue || null, updated_at: updatedAt } : r);
       }
-      return [...prev, { sku, [dbField]: newValue || null, updated_at: updatedAt } as DeadStockReview];
+      return [...prev, { sku, [dbField]: newValue || null, updated_at: updatedAt } as unknown as DeadStockReview];
     });
 
     // 推廣中 唔再彈窗問日期 — 改用「推廣管理」頁分派 promo
@@ -1341,7 +1341,7 @@ export default function DeadStockPage() {
       const newRows: DeadStockReview[] = [];
       for (const it of items) {
         if (!existingSkus.has(it.sku)) {
-          newRows.push({ sku: it.sku, [fieldName]: newValue || null, updated_at: stamp } as DeadStockReview);
+          newRows.push({ sku: it.sku, [fieldName]: newValue || null, updated_at: stamp } as unknown as DeadStockReview);
         }
       }
       return [...updated, ...newRows];
@@ -1722,7 +1722,7 @@ export default function DeadStockPage() {
               onChange={async (e) => {
                 const newVal = e.target.value;
                 if (newVal === v) return;
-                await handleInlineUpdate(item.sku, 'manual_status', newVal);
+                await handleInlineUpdate(item.sku, 'manual_status', newVal, v || null);
               }}
               onClick={(e) => e.stopPropagation()}
               className={`text-[10px] font-medium rounded border px-1 py-0.5 cursor-pointer bg-transparent w-full ${

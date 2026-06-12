@@ -758,7 +758,7 @@ export default function ForecastPage() {
                   <YAxis {...AXIS_STYLE} />
                   <Tooltip
                     {...TOOLTIP_STYLE}
-                    formatter={(value: number | null, name: string) => {
+                    formatter={(value: any, name: any) => {
                       if (value === null) return ['—', name];
                       const labels: Record<string, string> = {
                         actual_qty: '實際銷量',

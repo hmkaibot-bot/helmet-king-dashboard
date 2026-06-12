@@ -165,24 +165,42 @@ async function _queryAllPagesUncached(
   maxRows = 200000
 ): Promise<any[]> {
   const PAGE_SIZE = 1000;
-  let all: any[] = [];
+  // Retry with backoff — Supabase REST (Cloudflare 前面) 大量分頁請求時
+  // 偶然會 rate limit / 斷線,唔 retry 嘅話成頁數據會缺一截。
+  const MAX_RETRIES = 3;
+  const RETRY_DELAYS = [500, 1500, 4000];
+
+  const all: any[] = [];
   let offset = 0;
   while (all.length < maxRows) {
-    let query = supabase
-      .from(table)
-      .select(columns)
-      .range(offset, offset + PAGE_SIZE - 1);
-    if (extraFilters) {
-      for (const f of extraFilters) {
-        if (f.op === 'eq')  query = (query as any).eq(f.column, f.value);
-        if (f.op === 'gte') query = (query as any).gte(f.column, f.value);
-        if (f.op === 'lte') query = (query as any).lte(f.column, f.value);
+    let data: any[] | null = null;
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt - 1]));
       }
+      let query = supabase
+        .from(table)
+        .select(columns)
+        .range(offset, offset + PAGE_SIZE - 1);
+      if (extraFilters) {
+        for (const f of extraFilters) {
+          if (f.op === 'eq')  query = (query as any).eq(f.column, f.value);
+          if (f.op === 'gte') query = (query as any).gte(f.column, f.value);
+          if (f.op === 'lte') query = (query as any).lte(f.column, f.value);
+        }
+      }
+      const res = await query;
+      if (!res.error) { data = res.data ?? []; break; }
+      lastError = res.error;
+      console.warn(`Pagination error on ${table} (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, res.error);
     }
-    const { data, error } = await query;
-    if (error) { console.error(`Pagination error on ${table}:`, error); break; }
-    if (!data || data.length === 0) break;
-    all = [...all, ...data];
+    if (data === null) {
+      // 唔好靜靜回傳半截數據當完整 — throw 俾上層 (queryAllPages 有 stale cache fallback)
+      throw new Error(`queryAllPages(${table}) failed after ${MAX_RETRIES + 1} attempts: ${(lastError as any)?.message ?? lastError}`);
+    }
+    if (data.length === 0) break;
+    all.push(...data);
     if (data.length < PAGE_SIZE) break;
     offset += PAGE_SIZE;
   }

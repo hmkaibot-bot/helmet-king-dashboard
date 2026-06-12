@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Switch, Route, Router, Redirect } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -8,39 +9,50 @@ import { AuthProvider, useAuth } from "@/lib/auth";
 import { DateProvider } from "@/lib/date-context";
 import { ThemeProvider } from "@/lib/theme";
 import { AppLayout } from "@/components/app-layout";
-import LoginPage from "@/pages/login";
-import OverviewPage from "@/pages/overview";
-import RetailSalesPage from "@/pages/retail-sales";
-import RetailInventoryPage from "@/pages/retail-inventory";
-import RetailCustomersPage from "@/pages/retail-customers";
-import RetailBrandsPage from "@/pages/retail-brands";
-import GarageOrdersPage from "@/pages/garage-orders";
-import GarageServicesPage from "@/pages/garage-services";
-import MarketingPage from "@/pages/marketing";
-import FinancePage from "@/pages/finance";
-import RestockPage from "@/pages/restock";
-import DeadStockPage from "@/pages/dead-stock";
-import PromotionsPage from "@/pages/promotions";
-import PromotionsItemsPage from "@/pages/promotions-items";
-import PromotionsHistoryPage from "@/pages/promotions-history";
-import PromotionDetailPage from "@/pages/promotions-detail";
-import VendorsPage from "@/pages/vendors";
-import ReturnsPage from "@/pages/returns";
-import DailyWeeklyPage from "@/pages/daily-weekly";
-import VelocityPage from "@/pages/velocity";
-import NewProductsPage from "@/pages/new-products";
-import WeeklyReviewPage from "@/pages/weekly-review";
 import { ErrorBoundary } from "@/components/error-boundary";
-import MarselloApprovalPage from "@/pages/marsello-approval";
-import ProductAnalyticsPage from "@/pages/product-analytics";
-import ForecastPage from "@/pages/forecast";
-import SyncStatusPage from "@/pages/sync-status";
-import NotFound from "@/pages/not-found";
+import LoginPage from "@/pages/login";
+
+// 每頁獨立 chunk (lazy) — 首次載入唔使等成個 dashboard 嘅 JS
+const OverviewPage = lazy(() => import("@/pages/overview"));
+const RetailSalesPage = lazy(() => import("@/pages/retail-sales"));
+const RetailInventoryPage = lazy(() => import("@/pages/retail-inventory"));
+const RetailCustomersPage = lazy(() => import("@/pages/retail-customers"));
+const RetailBrandsPage = lazy(() => import("@/pages/retail-brands"));
+const GarageOrdersPage = lazy(() => import("@/pages/garage-orders"));
+const GarageServicesPage = lazy(() => import("@/pages/garage-services"));
+const MarketingPage = lazy(() => import("@/pages/marketing"));
+const FinancePage = lazy(() => import("@/pages/finance"));
+const RestockPage = lazy(() => import("@/pages/restock"));
+const DeadStockPage = lazy(() => import("@/pages/dead-stock"));
+const PromotionsPage = lazy(() => import("@/pages/promotions"));
+const PromotionsItemsPage = lazy(() => import("@/pages/promotions-items"));
+const PromotionsHistoryPage = lazy(() => import("@/pages/promotions-history"));
+const PromotionDetailPage = lazy(() => import("@/pages/promotions-detail"));
+const VendorsPage = lazy(() => import("@/pages/vendors"));
+const ReturnsPage = lazy(() => import("@/pages/returns"));
+const DailyWeeklyPage = lazy(() => import("@/pages/daily-weekly"));
+const VelocityPage = lazy(() => import("@/pages/velocity"));
+const NewProductsPage = lazy(() => import("@/pages/new-products"));
+const WeeklyReviewPage = lazy(() => import("@/pages/weekly-review"));
+const MarselloApprovalPage = lazy(() => import("@/pages/marsello-approval"));
+const ProductAnalyticsPage = lazy(() => import("@/pages/product-analytics"));
+const ForecastPage = lazy(() => import("@/pages/forecast"));
+const SyncStatusPage = lazy(() => import("@/pages/sync-status"));
+const NotFound = lazy(() => import("@/pages/not-found"));
+
+function PageLoading() {
+  return (
+    <div className="flex items-center justify-center py-24 text-sm text-muted-foreground">
+      載入中…
+    </div>
+  );
+}
 
 function AppRouter() {
   return (
     <AppLayout>
       <ErrorBoundary>
+      <Suspense fallback={<PageLoading />}>
       <Switch>
         <Route path="/" component={OverviewPage} />
         <Route path="/retail/sales" component={RetailSalesPage} />
@@ -69,6 +81,7 @@ function AppRouter() {
         <Route path="/system/sync-status" component={SyncStatusPage} />
         <Route component={NotFound} />
       </Switch>
+      </Suspense>
       </ErrorBoundary>
     </AppLayout>
   );
