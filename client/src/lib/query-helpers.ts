@@ -102,8 +102,9 @@ export async function queryInBatches(
 }
 
 /**
- * Query ALL records from a table using 1000-per-page pagination.
- * Supabase REST API caps responses at 1000 rows — this loops through all pages.
+ * Query ALL records from a table using paginated requests.
+ * 單次回傳上限由 PostgREST max-rows 設定決定 — 首頁實際回傳行數會被用作
+ * page size,之後剩餘頁並行拉,自動適應任何 max-rows 值。
  */
 // In-memory cache shared across pages so that switching back to a previously
 // viewed page (e.g. inventory → dead-stock → inventory) does not re-fetch the
@@ -116,31 +117,138 @@ function _makeKey(table: string, columns: string, extraFilters: any): string {
   return `${table}|${columns}|${extraFilters ? JSON.stringify(extraFilters) : ''}`;
 }
 
+// ── Persistent cache (IndexedDB) ─────────────────────────────────────────────
+// 數據每日 02:00–03:00 HKT 先由 GitHub Actions / n8n 同步一次,日間根本唔變 —
+// 將每日同步嘅大表持久化落 IndexedDB,同一個「數據日」之內 reload / 開新 tab
+// 都唔使再拉幾 MB,直接即開。用戶手動改嘅表 (dead_stock_reviews 等) 唔持久化。
+const PERSIST_PREFIXES = ['shopify_', 'bc_', 'marsello_', 'sku_', 'variant_', 'monthly_'];
+const IDB_NAME = 'hk-query-cache';
+const IDB_STORE = 'tables';
+
+function _isPersistable(table: string): boolean {
+  return PERSIST_PREFIXES.some(p => table.startsWith(p));
+}
+
+/** 最近一次同步邊界 = 04:00 HKT (= 20:00 UTC 前一日)。cache 喺邊界之後寫入先算新鮮。 */
+function _lastSyncBoundary(): number {
+  const b = new Date();
+  b.setUTCHours(20, 0, 0, 0);
+  if (b.getTime() > Date.now()) b.setUTCDate(b.getUTCDate() - 1);
+  return b.getTime();
+}
+
+function _openIdb(): Promise<IDBDatabase | null> {
+  return new Promise(resolve => {
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null); // e.g. sandboxed iframe / private mode without IDB
+    }
+  });
+}
+
+async function _idbGet(key: string): Promise<{ ts: number; data: any[] } | null> {
+  const db = await _openIdb();
+  if (!db) return null;
+  return new Promise(resolve => {
+    try {
+      const req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+
+async function _idbSet(key: string, value: { ts: number; data: any[] }): Promise<void> {
+  const db = await _openIdb();
+  if (!db) return;
+  try {
+    db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).put(value, key);
+  } catch { /* quota / private mode — degrade to memory-only */ }
+}
+
+// 每個 session 清一次過期 entry (上次同步邊界之前嘅) — 防止 IDB 積垃圾
+let _purged = false;
+async function _purgeStaleIdb(): Promise<void> {
+  if (_purged) return;
+  _purged = true;
+  const db = await _openIdb();
+  if (!db) return;
+  try {
+    const boundary = _lastSyncBoundary();
+    const store = db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE);
+    const req = store.openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      if (!cursor.value?.ts || cursor.value.ts < boundary) cursor.delete();
+      cursor.continue();
+    };
+  } catch { /* ignore */ }
+}
+
+async function _idbClear(prefix?: string): Promise<void> {
+  const db = await _openIdb();
+  if (!db) return;
+  try {
+    const store = db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE);
+    if (!prefix) { store.clear(); return; }
+    const req = store.getAllKeys();
+    req.onsuccess = () => {
+      for (const k of req.result) {
+        if (String(k).startsWith(`${prefix}|`)) store.delete(k);
+      }
+    };
+  } catch { /* ignore */ }
+}
+
 /** Manually invalidate cache (call after data sync or user clicks refresh). */
 export function clearQueryCache(tablePrefix?: string) {
-  if (!tablePrefix) { _cache.clear(); return; }
-  for (const k of Array.from(_cache.keys())) {
-    if (k.startsWith(`${tablePrefix}|`)) _cache.delete(k);
+  if (!tablePrefix) {
+    _cache.clear();
+  } else {
+    for (const k of Array.from(_cache.keys())) {
+      if (k.startsWith(`${tablePrefix}|`)) _cache.delete(k);
+    }
   }
+  void _idbClear(tablePrefix); // fire-and-forget
 }
 
 export async function queryAllPages(
   table: string,
   columns: string,
-  extraFilters?: { column: string; op: 'eq' | 'gte' | 'lte'; value: string }[],
+  extraFilters?: { column: string; op: 'eq' | 'gt' | 'gte' | 'lte'; value: string }[],
   maxRows = 200000
 ): Promise<any[]> {
   const cacheKey = _makeKey(table, columns, extraFilters);
   const cached = _cache.get(cacheKey);
   const now = Date.now();
-  // Serve fresh cache directly
-  if (cached && !cached.pending && now - cached.ts < CACHE_TTL_MS) {
+  const persistable = _isPersistable(table);
+  // 每日同步表: 同一個數據日之內 (上次同步邊界之後寫入) 一律算新鮮;
+  // 其他表 (用戶手動改): 沿用 5 分鐘 TTL
+  const isFresh = (ts: number) =>
+    persistable ? ts >= _lastSyncBoundary() : now - ts < CACHE_TTL_MS;
+  // Serve fresh memory cache directly
+  if (cached && !cached.pending && cached.ts > 0 && isFresh(cached.ts)) {
     return cached.data;
   }
   // De-duplicate concurrent identical requests
   if (cached?.pending) return cached.pending;
 
-  const promise = _queryAllPagesUncached(table, columns, extraFilters, maxRows);
+  const promise = (async () => {
+    // 持久 cache: reload / 新 tab 之後 memory 係空嘅,先試 IndexedDB
+    if (persistable && !cached) {
+      void _purgeStaleIdb();
+      const idbHit = await _idbGet(cacheKey);
+      if (idbHit && isFresh(idbHit.ts)) return idbHit.data;
+    }
+    const data = await _queryAllPagesUncached(table, columns, extraFilters, maxRows);
+    if (persistable) void _idbSet(cacheKey, { ts: Date.now(), data });
+    return data;
+  })();
   _cache.set(cacheKey, { ts: cached?.ts ?? 0, data: cached?.data ?? [], pending: promise });
   try {
     const data = await promise;
@@ -161,17 +269,24 @@ export async function queryAllPages(
 async function _queryAllPagesUncached(
   table: string,
   columns: string,
-  extraFilters?: { column: string; op: 'eq' | 'gte' | 'lte'; value: string }[],
+  extraFilters?: { column: string; op: 'eq' | 'gt' | 'gte' | 'lte'; value: string }[],
   maxRows = 200000
 ): Promise<any[]> {
-  const PAGE_SIZE = 1000;
+  // 每次 request 想攞嘅行數。實際單次回傳上限由 PostgREST max-rows 決定
+  // (Supabase 預設 1000,可以喺 DB 度 alter role authenticator set pgrst.db_max_rows
+  //  調高) — 以下邏輯用「首頁實際回傳行數」自動適應,所以兩種設定都正確。
+  const DESIRED_PAGE_SIZE = 10000;
   // Retry with backoff — Supabase REST (Cloudflare 前面) 大量分頁請求時
   // 偶然會 rate limit / 斷線,唔 retry 嘅話成頁數據會缺一截。
   const MAX_RETRIES = 3;
   const RETRY_DELAYS = [500, 1500, 4000];
 
-  // 單頁 fetch + retry
-  const fetchPage = async (offset: number): Promise<any[]> => {
+  // 單頁 fetch + retry。withCount = true 時順便攞 exact total。
+  const fetchRange = async (
+    from: number,
+    to: number,
+    withCount: boolean,
+  ): Promise<{ rows: any[]; count: number | null }> => {
     let lastError: unknown = null;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       if (attempt > 0) {
@@ -179,46 +294,52 @@ async function _queryAllPagesUncached(
       }
       let query = supabase
         .from(table)
-        .select(columns)
-        .range(offset, offset + PAGE_SIZE - 1);
+        .select(columns, withCount ? { count: 'exact' } : undefined)
+        .range(from, to);
       if (extraFilters) {
         for (const f of extraFilters) {
           if (f.op === 'eq')  query = (query as any).eq(f.column, f.value);
+          if (f.op === 'gt')  query = (query as any).gt(f.column, f.value);
           if (f.op === 'gte') query = (query as any).gte(f.column, f.value);
           if (f.op === 'lte') query = (query as any).lte(f.column, f.value);
         }
       }
       const res = await query;
-      if (!res.error) return res.data ?? [];
+      if (!res.error) return { rows: res.data ?? [], count: res.count ?? null };
       lastError = res.error;
-      console.warn(`Pagination error on ${table} offset=${offset} (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, res.error);
+      console.warn(`Pagination error on ${table} range=${from}-${to} (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, res.error);
     }
     // 唔好靜靜回傳半截數據當完整 — throw 俾上層 (queryAllPages 有 stale cache fallback)
     throw new Error(`queryAllPages(${table}) failed after ${MAX_RETRIES + 1} attempts: ${(lastError as any)?.message ?? lastError}`);
   };
 
-  // 第一頁先單獨試 — 大部分表唔夠 1000 行,一個 request 搞掂
-  const all: any[] = [];
-  const first = await fetchPage(0);
-  all.push(...first);
-  if (first.length < PAGE_SIZE) return all;
+  // 首頁攞埋 exact count — 知道 total 之後,剩餘頁可以一次過並行拉,
+  // 唔使逐輪「拉到唔滿一頁先知到尾」。
+  const first = await fetchRange(0, DESIRED_PAGE_SIZE - 1, true);
+  const all: any[] = [...first.rows];
+  const total = Math.min(first.count ?? all.length, maxRows);
+  if (all.length === 0 || all.length >= total) return all;
 
-  // 之後每輪並行拉 CONCURRENCY 頁,直到某一頁唔滿 (= 到尾)。
-  // 並行度刻意保守 (4) 避免觸發 Supabase / Cloudflare rate limit。
-  const CONCURRENCY = 4;
-  let offset = PAGE_SIZE;
-  while (all.length < maxRows) {
-    const offsets = Array.from({ length: CONCURRENCY }, (_, i) => offset + i * PAGE_SIZE);
-    const pages = await Promise.all(offsets.map(fetchPage));
-    let done = false;
-    for (const page of pages) {
-      all.push(...page);
-      if (page.length < PAGE_SIZE) { done = true; break; }
+  // 首頁實際回傳行數 = server 單次上限 (PostgREST max-rows),用佢做 page size
+  const pageSize = first.rows.length;
+  const offsets: number[] = [];
+  for (let o = pageSize; o < total; o += pageSize) offsets.push(o);
+
+  // 並行拉剩餘頁 — 並行度保守 (6) 避免觸發 Supabase / Cloudflare rate limit
+  const CONCURRENCY = 6;
+  const results: any[][] = new Array(offsets.length);
+  let nextIdx = 0;
+  const worker = async () => {
+    while (nextIdx < offsets.length) {
+      const i = nextIdx++;
+      const o = offsets[i];
+      const { rows } = await fetchRange(o, o + pageSize - 1, false);
+      results[i] = rows;
     }
-    if (done) break;
-    offset += CONCURRENCY * PAGE_SIZE;
-  }
-  return all;
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, offsets.length) }, worker));
+  for (const rows of results) all.push(...rows);
+  return all.length > maxRows ? all.slice(0, maxRows) : all;
 }
 
 /**

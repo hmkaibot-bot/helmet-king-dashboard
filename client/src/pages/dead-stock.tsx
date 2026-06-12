@@ -20,7 +20,7 @@
  */
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { queryAllPages, tryView } from '@/lib/query-helpers';
+import { queryAllPages, tryView, clearQueryCache } from '@/lib/query-helpers';
 import { downloadCsv, dateStamp } from '@/lib/export-csv';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -82,6 +82,13 @@ interface SkuSalesStatsRow {
   sold_90d: number | string;
 }
 
+/** sku_receive_stats view (sql/perf-views.sql) 一行 — server-side 聚合 */
+interface SkuReceiveStatsRow {
+  sku: string;
+  first_receive_date: string | null;
+  last_receive_date: string | null;
+}
+
 interface OrderRow {
   id: string;
   created_at: string;
@@ -131,6 +138,8 @@ interface DeadStockItem {
   sold_30d: number;
   sold_90d: number;
   days_since_last_sale: number;
+  /** 庫存覆蓋月數 = 現存量 ÷ 月均銷量 (近90日)。null = 近90日零銷售 (∞) */
+  coverage_months: number | null;
   system_status: SystemStatus;
   // from review
   manual_status: string | null;
@@ -153,6 +162,8 @@ interface ProductGroup {
   worst_system_status: SystemStatus;
   worst_days_since: number;
   total_sold_90d: number;
+  /** 群組庫存覆蓋月數 = 總存量 ÷ 群組月均銷量。null = 近90日零銷售 (∞) */
+  coverage_months: number | null;
   avg_margin: number | null;
   skus: DeadStockItem[];
 }
@@ -269,7 +280,7 @@ function matchAgingBucket(days: number, bucket: AgingBucket): boolean {
   return days >= 270; // 270d+
 }
 
-type SortKey = 'stock_cost' | 'total_qty' | 'worst_days_since' | 'total_sold_90d' | 'worst_system_status' | 'product_title';
+type SortKey = 'stock_cost' | 'total_qty' | 'worst_days_since' | 'total_sold_90d' | 'worst_system_status' | 'product_title' | 'coverage_months';
 type SortDir = 'asc' | 'desc';
 
 // ── Column Configuration ─────────────────────────────────────────────────────
@@ -303,6 +314,15 @@ function marginColorClass(margin: number): string {
 function computeMargin(price: number, unitCost: number): number | null {
   if (!price || price === 0) return null;
   return ((price - unitCost) / price) * 100;
+}
+
+// Helper: 庫存覆蓋月數 cell。null + 有貨 = 零流速 (∞,最嚴重);無貨就唔使顯示
+function renderCoverageMonths(months: number | null, qty: number, small = false): React.ReactNode {
+  const size = small ? 'text-[10px]' : '';
+  if (qty <= 0) return <span className={`text-muted-foreground ${size}`}>—</span>;
+  if (months == null) return <span className={`tabular-nums font-medium text-red-400 ${size}`}>∞</span>;
+  const color = months > 12 ? 'text-red-400 font-medium' : months >= 6 ? 'text-amber-400' : 'text-muted-foreground';
+  return <span className={`tabular-nums ${color} ${size}`}>{months.toFixed(1)}</span>;
 }
 
 // ── Dropdown Popover component (for header filter) ──────────────────────────
@@ -561,8 +581,8 @@ export default function DeadStockPage() {
   const [orderLines, setOrderLines] = useState<OrderLineRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [skuStatsView, setSkuStatsView] = useState<SkuSalesStatsRow[] | null>(null);
+  const [receiveStatsView, setReceiveStatsView] = useState<SkuReceiveStatsRow[] | null>(null);
   const [reviews, setReviews] = useState<DeadStockReview[]>([]);
-  const [auditLog, setAuditLog] = useState<AuditLogRow[]>([]);
   const [shopifyProducts, setShopifyProducts] = useState<ShopifyProductRow[]>([]);
   const [purchaseInvoices, setPurchaseInvoices] = useState<BcPurchaseInvoiceRow[]>([]);
   const [purchaseInvoiceLines, setPurchaseInvoiceLines] = useState<BcPurchaseInvoiceLineRow[]>([]);
@@ -595,7 +615,7 @@ export default function DeadStockPage() {
   const DEFAULT_COLUMN_ORDER = [
     'product_title', 'vendor', 'product_type', 'total_qty',
     'compare_price', 'retail_price', 'unit_cost', 'stock_cost',
-    'margin_pct', 'days_since', 'sold_90d', 'system_status', 'status_review', 'is_promoting',
+    'margin_pct', 'days_since', 'sold_90d', 'coverage_months', 'system_status', 'status_review', 'is_promoting',
   ];
 
   const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
@@ -610,6 +630,7 @@ export default function DeadStockPage() {
     margin_pct: 70,
     days_since: 80,
     sold_90d: 70,
+    coverage_months: 80,
     system_status: 90,
     status_review: 130,
     is_promoting: 80,
@@ -756,6 +777,13 @@ export default function DeadStockPage() {
     return all;
   };
 
+  // Review 寫入後 refetch + 清 queryAllPages cache — 否則其他頁 (loadData 路徑)
+  // 喺 cache TTL 內會見到舊 review
+  const refreshReviews = async (): Promise<DeadStockReview[]> => {
+    clearQueryCache('dead_stock_reviews');
+    return fetchAllRows<DeadStockReview>('dead_stock_reviews');
+  };
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -763,20 +791,21 @@ export default function DeadStockPage() {
       // 優先用 server-side 聚合 view (sql/perf-views.sql) — 一個細 request
       // 取代 shopify_order_lines + shopify_orders 兩張最大表
       const statsViewPromise = tryView('sku_sales_stats', 'sku,first_sold_date,last_sold_date,sold_30d,sold_90d');
+      // 同樣用 view 取代 bc_purchase_invoices + bc_purchase_invoice_lines 兩張表
+      const receiveViewPromise = tryView('sku_receive_stats', 'sku,first_receive_date,last_receive_date');
 
-      const [statsView, invRows, bcRows, reviewsRows, auditRows, productsRows, piRows, pilRows] = await Promise.all([
+      const [statsView, receiveView, invRows, bcRows, reviewsRows, productsRows] = await Promise.all([
         statsViewPromise,
+        receiveViewPromise,
         // V2.2: 一次 load 全部 SKU（包括 0-stock），令母行 best-of 全面正確
         // 不再需要 lazy-load 0-stock variants
         queryAllPages('shopify_inventory', 'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price'),
         queryAllPages('bc_inventory', 'number,unit_cost,unit_price'),
         // V2.3: 用 queryAllPages 避免 Supabase 1000-row default cap (reviews 表已過 1k 行)
         queryAllPages('dead_stock_reviews', '*'),
-        queryAllPages('dead_stock_audit_log', '*'),
         queryAllPages('shopify_products', 'id,status,created_at'),
-        queryAllPages('bc_purchase_invoices', 'id,posting_date'),
-        queryAllPages('bc_purchase_invoice_lines', 'invoice_id,item_number'),
       ]);
+      // 注意: dead_stock_audit_log 唔再開頁全載 (1.5 萬行) — 展開 SKU 時先逐個 lazy fetch
 
       // View 未建立 → fallback: 拉返原始 order lines/orders 喺 client 計
       let linesRows: any[] = [];
@@ -789,16 +818,22 @@ export default function DeadStockPage() {
       }
       setSkuStatsView(statsView as SkuSalesStatsRow[] | null);
 
+      // Receive view 未建立 → fallback: 拉返兩張 purchase invoice 表喺 client 計
+      let piRows: any[] = [];
+      let pilRows: any[] = [];
+      if (receiveView === null) {
+        [piRows, pilRows] = await Promise.all([
+          queryAllPages('bc_purchase_invoices', 'id,posting_date'),
+          queryAllPages('bc_purchase_invoice_lines', 'invoice_id,item_number'),
+        ]);
+      }
+      setReceiveStatsView(receiveView as SkuReceiveStatsRow[] | null);
+
       setShopifyInv(invRows as ShopifyInventoryRow[]);
       setBcInv(bcRows as BcInventoryRow[]);
       setOrderLines(linesRows as OrderLineRow[]);
       setOrders(ordersRows as OrderRow[]);
       setReviews(reviewsRows as DeadStockReview[]);
-      // Client-side sort audit log by changed_at desc (since queryAllPages doesn't accept orderBy)
-      const sortedAudit = (auditRows as AuditLogRow[]).slice().sort((a, b) =>
-        new Date(b.changed_at).getTime() - new Date(a.changed_at).getTime()
-      );
-      setAuditLog(sortedAudit);
       setShopifyProducts(productsRows as ShopifyProductRow[]);
       setPurchaseInvoices(piRows as BcPurchaseInvoiceRow[]);
       setPurchaseInvoiceLines(pilRows as BcPurchaseInvoiceLineRow[]);
@@ -811,6 +846,22 @@ export default function DeadStockPage() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // ── Audit log (lazy, per-SKU) ───────────────────────────────────────────────
+  // V3: 唔再開頁全載 dead_stock_audit_log (1.5 萬行) — 展開 SKU 時先拉最近 20 條
+  const [skuAuditLog, setSkuAuditLog] = useState<AuditLogRow[]>([]);
+  const auditSkuRef = useRef<string | null>(null);
+  const loadSkuAudit = useCallback(async (sku: string) => {
+    auditSkuRef.current = sku;
+    const { data } = await supabase
+      .from('dead_stock_audit_log')
+      .select('sku,field_name,old_value,new_value,changed_by,changed_at')
+      .eq('sku', sku)
+      .order('changed_at', { ascending: false })
+      .limit(20);
+    // 防 race: 用戶已切換去第二個 SKU 嘅話,唔好用舊 response 蓋掉
+    if (auditSkuRef.current === sku) setSkuAuditLog((data ?? []) as AuditLogRow[]);
+  }, []);
+
   // ── Data Computation ────────────────────────────────────────────────────────
 
   const computedItems = useMemo<DeadStockItem[]>(() => {
@@ -821,24 +872,35 @@ export default function DeadStockPage() {
     const productMap = new Map<string, ShopifyProductRow>();
     for (const p of shopifyProducts) productMap.set(String(p.id), p);
 
-    // Build last-receive-date map by SKU from BC purchase invoices
-    const piDateById = new Map<string, number>();
-    for (const pi of purchaseInvoices) {
-      if (!pi.posting_date) continue;
-      const ts = new Date(pi.posting_date).getTime();
-      if (Number.isFinite(ts)) piDateById.set(String(pi.id), ts);
-    }
+    // Build first/last-receive-date maps by SKU
     const lastReceiveBySku = new Map<string, number>();
     const firstReceiveBySku = new Map<string, number>();
-    for (const pl of purchaseInvoiceLines) {
-      const sku = String(pl.item_number || '').trim();
-      if (!sku) continue;
-      const ts = piDateById.get(String(pl.invoice_id));
-      if (ts == null) continue;
-      const prevLast = lastReceiveBySku.get(sku);
-      if (prevLast == null || ts > prevLast) lastReceiveBySku.set(sku, ts);
-      const prevFirst = firstReceiveBySku.get(sku);
-      if (prevFirst == null || ts < prevFirst) firstReceiveBySku.set(sku, ts);
+    if (receiveStatsView) {
+      // Server-side 聚合 view (sku_receive_stats) 已經計好每個 SKU 嘅返貨日期
+      for (const r of receiveStatsView) {
+        const firstTs = r.first_receive_date ? new Date(r.first_receive_date).getTime() : NaN;
+        const lastTs = r.last_receive_date ? new Date(r.last_receive_date).getTime() : NaN;
+        if (Number.isFinite(firstTs)) firstReceiveBySku.set(r.sku, firstTs);
+        if (Number.isFinite(lastTs)) lastReceiveBySku.set(r.sku, lastTs);
+      }
+    } else {
+      // Fallback: client-side 聚合原始 purchase invoices + lines
+      const piDateById = new Map<string, number>();
+      for (const pi of purchaseInvoices) {
+        if (!pi.posting_date) continue;
+        const ts = new Date(pi.posting_date).getTime();
+        if (Number.isFinite(ts)) piDateById.set(String(pi.id), ts);
+      }
+      for (const pl of purchaseInvoiceLines) {
+        const sku = String(pl.item_number || '').trim();
+        if (!sku) continue;
+        const ts = piDateById.get(String(pl.invoice_id));
+        if (ts == null) continue;
+        const prevLast = lastReceiveBySku.get(sku);
+        if (prevLast == null || ts > prevLast) lastReceiveBySku.set(sku, ts);
+        const prevFirst = firstReceiveBySku.get(sku);
+        if (prevFirst == null || ts < prevFirst) firstReceiveBySku.set(sku, ts);
+      }
     }
     // V2: 30-day new-product protection window (based on first receive)
     const PROTECTION_DAYS = 30;
@@ -909,9 +971,14 @@ export default function DeadStockPage() {
 
       const stats = skuStats.get(inv.sku);
       const lastSoldTs = stats?.lastDate ?? null;
+      // V3: 從未售出嘅 SKU 老化天數改用「最後返貨日」計 (以前一律 9999 全部跌入 270d+,
+      // 分唔到啱啱返貨 vs 積壓兩年)。狀態判定 (daysSinceLastSale) 唔受影響。
+      const neverSoldReceiveTs = lastReceiveBySku.get(inv.sku) ?? null;
       const daysSince = lastSoldTs != null
         ? Math.floor((now - lastSoldTs) / MS_PER_DAY)
-        : 9999;
+        : neverSoldReceiveTs != null
+          ? Math.floor((now - neverSoldReceiveTs) / MS_PER_DAY)
+          : 9999;
 
       const lastSoldDate = lastSoldTs != null
         ? new Date(lastSoldTs).toISOString().slice(0, 10)
@@ -993,6 +1060,9 @@ export default function DeadStockPage() {
         sold_30d: stats?.sold30 ?? 0,
         sold_90d: stats?.sold90 ?? 0,
         days_since_last_sale: daysSince,
+        coverage_months: (stats?.sold90 ?? 0) > 0
+          ? inv.inventory_quantity / ((stats!.sold90) / 3)
+          : null,
         system_status,
         manual_status: rev?.manual_status ?? null,
         action: rev?.action ?? null,
@@ -1006,7 +1076,7 @@ export default function DeadStockPage() {
     }
 
     return result;
-  }, [shopifyInv, bcInv, orderLines, orders, skuStatsView, reviews, shopifyProducts, purchaseInvoices, purchaseInvoiceLines]);
+  }, [shopifyInv, bcInv, orderLines, orders, skuStatsView, receiveStatsView, reviews, shopifyProducts, purchaseInvoices, purchaseInvoiceLines]);
 
   // ── Summary stats ───────────────────────────────────────────────────────────
 
@@ -1136,6 +1206,7 @@ export default function DeadStockPage() {
         worst_system_status,
         worst_days_since,
         total_sold_90d,
+        coverage_months: total_sold_90d > 0 ? total_qty / (total_sold_90d / 3) : null,
         avg_margin,
         skus,
       });
@@ -1155,6 +1226,12 @@ export default function DeadStockPage() {
       }
       if (sortKey === 'product_title') {
         return (a.product_title ?? '').localeCompare(b.product_title ?? '', 'en', { sensitivity: 'base' }) * mul;
+      }
+      if (sortKey === 'coverage_months') {
+        // null = 零流速 (∞ 覆蓋) — 排序時當無限大
+        const av = a.coverage_months ?? Number.MAX_VALUE;
+        const bv = b.coverage_months ?? Number.MAX_VALUE;
+        return (av === bv ? 0 : av < bv ? -1 : 1) * mul;
       }
       return ((a as any)[sortKey] - (b as any)[sortKey]) * mul;
     });
@@ -1250,12 +1327,9 @@ export default function DeadStockPage() {
         await supabase.from('dead_stock_audit_log').insert(auditRows);
       }
 
-      const [newReviews, newAudit] = await Promise.all([
-        fetchAllRows<DeadStockReview>('dead_stock_reviews'),
-        fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
-      ]);
+      const newReviews = await refreshReviews();
       setReviews(newReviews);
-      setAuditLog(newAudit);
+      if (expandedSku) loadSkuAudit(expandedSku);
 
       setFormOriginal({ ...formState });
       setSaveSuccess(true);
@@ -1297,24 +1371,39 @@ export default function DeadStockPage() {
   const isAllManualStatuses = filters.manual_statuses.length === 0;
 
   // BC purchase invoice sync 落後檢測（超過 30 日 → 新品判斷可能不準）
-  const bcSyncLagDays = useMemo(() => {
-    if (!purchaseInvoices.length) return null;
+  const bcSync = useMemo(() => {
     let maxTs = 0;
-    for (const pi of purchaseInvoices) {
-      if (!pi.posting_date) continue;
-      const ts = new Date(pi.posting_date).getTime();
-      if (Number.isFinite(ts) && ts > maxTs) maxTs = ts;
+    if (receiveStatsView) {
+      for (const r of receiveStatsView) {
+        if (!r.last_receive_date) continue;
+        const ts = new Date(r.last_receive_date).getTime();
+        if (Number.isFinite(ts) && ts > maxTs) maxTs = ts;
+      }
+    } else {
+      for (const pi of purchaseInvoices) {
+        if (!pi.posting_date) continue;
+        const ts = new Date(pi.posting_date).getTime();
+        if (Number.isFinite(ts) && ts > maxTs) maxTs = ts;
+      }
     }
-    if (!maxTs) return null;
-    return Math.floor((Date.now() - maxTs) / 86400000);
-  }, [purchaseInvoices]);
+    if (!maxTs) return { lagDays: null as number | null, latestDate: null as string | null };
+    return {
+      lagDays: Math.floor((Date.now() - maxTs) / 86400000),
+      latestDate: new Date(maxTs).toISOString().slice(0, 10),
+    };
+  }, [receiveStatsView, purchaseInvoices]);
+  const bcSyncLagDays = bcSync.lagDays;
 
-  // ── Audit log for expanded SKU ──────────────────────────────────────────────
+  // ── Audit log fetch on SKU expand ───────────────────────────────────────────
 
-  const skuAuditLog = useMemo(() => {
-    if (!expandedSku) return [];
-    return auditLog.filter(a => a.sku === expandedSku).slice(0, 20);
-  }, [auditLog, expandedSku]);
+  useEffect(() => {
+    if (!expandedSku) {
+      auditSkuRef.current = null;
+      setSkuAuditLog([]);
+      return;
+    }
+    loadSkuAudit(expandedSku);
+  }, [expandedSku, loadSkuAudit]);
 
   // ── Sort icon helper ────────────────────────────────────────────────────────
 
@@ -1364,12 +1453,9 @@ export default function DeadStockPage() {
       changed_at: new Date().toISOString(),
     });
 
-    const [newReviews, newAudit] = await Promise.all([
-      fetchAllRows<DeadStockReview>('dead_stock_reviews'),
-      fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
-    ]);
+    const newReviews = await refreshReviews();
     setReviews(newReviews);
-    setAuditLog(newAudit);
+    if (expandedSku) loadSkuAudit(expandedSku);
   };
 
   // ── Group-level inline update (item layer batch) ────────────────────
@@ -1419,12 +1505,9 @@ export default function DeadStockPage() {
       await supabase.from('dead_stock_audit_log').insert(auditRows);
     }
 
-    const [newReviews, newAudit] = await Promise.all([
-      fetchAllRows<DeadStockReview>('dead_stock_reviews'),
-      fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
-    ]);
+    const newReviews = await refreshReviews();
     setReviews(newReviews);
-    setAuditLog(newAudit);
+    if (expandedSku) loadSkuAudit(expandedSku);
   };
 
   // ── is_promoting toggle (independent checkbox) ──────────────────────────────
@@ -1457,12 +1540,9 @@ export default function DeadStockPage() {
       changed_at: stamp,
     });
 
-    const [newReviews, newAudit] = await Promise.all([
-      fetchAllRows<DeadStockReview>('dead_stock_reviews'),
-      fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
-    ]);
+    const newReviews = await refreshReviews();
     setReviews(newReviews);
-    setAuditLog(newAudit);
+    if (expandedSku) loadSkuAudit(expandedSku);
   };
 
   const toggleGroupPromoting = async (items: DeadStockItem[], newValue: boolean) => {
@@ -1503,12 +1583,9 @@ export default function DeadStockPage() {
       await supabase.from('dead_stock_audit_log').insert(auditRows);
     }
 
-    const [newReviews, newAudit] = await Promise.all([
-      fetchAllRows<DeadStockReview>('dead_stock_reviews'),
-      fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
-    ]);
+    const newReviews = await refreshReviews();
     setReviews(newReviews);
-    setAuditLog(newAudit);
+    if (expandedSku) loadSkuAudit(expandedSku);
   };
 
   // ── Checkbox toggle helpers ─────────────────────────────────────────────────
@@ -1562,12 +1639,9 @@ export default function DeadStockPage() {
         });
       }
 
-      const [newReviews, newAudit] = await Promise.all([
-        fetchAllRows<DeadStockReview>('dead_stock_reviews'),
-        fetchAllRows<AuditLogRow>('dead_stock_audit_log', { column: 'changed_at', ascending: false }),
-      ]);
+      const newReviews = await refreshReviews();
       setReviews(newReviews);
-      setAuditLog(newAudit);
+      if (expandedSku) loadSkuAudit(expandedSku);
 
       setSelectedSkus(new Set());
       setBatchValue('');
@@ -1788,6 +1862,16 @@ export default function DeadStockPage() {
         renderItem: (item: DeadStockItem) => (
           <span className="tabular-nums text-[10px] text-muted-foreground">{item.sold_90d}</span>
         ),
+      },
+      {
+        id: 'coverage_months',
+        label: '庫存月數',
+        align: 'right' as const,
+        defaultWidth: 80,
+        sortKey: 'coverage_months' as SortKey,
+        // 庫存覆蓋月數 = 現存量 ÷ 月均銷量 (近90日)。零銷售有貨 = ∞ (最嚴重)
+        renderGroup: (group: ProductGroup) => renderCoverageMonths(group.coverage_months, group.total_qty),
+        renderItem: (item: DeadStockItem) => renderCoverageMonths(item.coverage_months, item.inventory_quantity, true),
       },
       {
         id: 'system_status',
@@ -2223,7 +2307,7 @@ export default function DeadStockPage() {
           <div>
             <div className="font-medium">BC 補貨資料 sync 已落後 {bcSyncLagDays} 日</div>
             <div className="text-amber-200/80">
-              最近一筆 bc_purchase_invoices 为 {purchaseInvoices.reduce((m, p) => p.posting_date && p.posting_date > m ? p.posting_date : m, '0000-00-00')}。
+              最近一筆 bc_purchase_invoices 為 {bcSync.latestDate ?? '—'}。
               為避免新貨被誤判為死貨，現已 fallback 參考 Shopify product.created_at 作新品信號。請檢查 BC sync pipeline。
             </div>
           </div>
@@ -2490,6 +2574,7 @@ export default function DeadStockPage() {
                     { label: '未售天數', value: r => r.days_since_last_sale },
                     { label: '30日銷量', value: r => r.sold_30d },
                     { label: '90日銷量', value: r => r.sold_90d },
+                    { label: '庫存月數', value: r => r.coverage_months == null ? '∞' : r.coverage_months.toFixed(1) },
                     { label: '人手狀態', value: r => manualStatusLabel(r.manual_status) },
                     { label: '動作', value: r => r.action },
                     { label: '備註', value: r => r.notes },

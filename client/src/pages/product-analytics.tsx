@@ -86,7 +86,8 @@ export default function ProductAnalytics() {
 
   useEffect(() => {
     const now = new Date();
-    const sixtyDaysAgo = new Date(now.getTime() - 60 * 86400000).toISOString();
+    // 日期截到 YYYY-MM-DD — 令 queryAllPages cache key 全日穩定 (persistent cache 先 hit 到)
+    const sixtyDaysAgo = new Date(now.getTime() - 60 * 86400000).toISOString().slice(0, 10);
 
     async function loadPhase1() {
       const [ol, inv] = await Promise.all([

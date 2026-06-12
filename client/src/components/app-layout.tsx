@@ -38,7 +38,9 @@ import {
   Archive,
   History,
   Package,
+  RefreshCw,
 } from 'lucide-react';
+import { clearQueryCache } from '@/lib/query-helpers';
 import { Button } from '@/components/ui/button';
 import { useTheme } from '@/lib/theme';
 import {
@@ -309,6 +311,15 @@ export function AppLayout({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-2">
             {/* Data freshness badge — 讀取 shopify_orders 最新 updated_at */}
             <DataFreshnessBadge />
+            {/* 強制刷新 — 清晒 memory + IndexedDB cache 再重新載入 (手動觸發 sync 之後用) */}
+            <button
+              onClick={() => { clearQueryCache(); window.location.reload(); }}
+              title="刷新數據 (清除本地 cache 重新載入)"
+              className="h-8 w-8 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              data-testid="button-refresh-data"
+            >
+              <RefreshCw className="h-4 w-4" />
+            </button>
             {/* Light / Dark toggle */}
             <button
               onClick={toggleTheme}

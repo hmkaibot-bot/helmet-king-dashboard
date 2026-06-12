@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
-import { queryAllPages } from '@/lib/query-helpers';
+import { queryAllPages, tryView } from '@/lib/query-helpers';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import { CHART_COLORS, CHART_PALETTE, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart-theme';
@@ -223,6 +223,7 @@ function generateForecast(
 // ── Main Component ─────────────────────────────────────────────
 export default function ForecastPage() {
   const [loading, setLoading] = useState(true);
+  const [monthlyRows, setMonthlyRows] = useState<any[] | null>(null);
   const [orderLines, setOrderLines] = useState<any[]>([]);
   const [orders, setOrders] = useState<any[]>([]);
   const [inventory, setInventory] = useState<any[]>([]);
@@ -234,20 +235,28 @@ export default function ForecastPage() {
     async function load() {
       setLoading(true);
       try {
-        // 預測用 24 個月歷史已經夠 — 唔使拉全部年代嘅訂單
-        const twoYearsAgo = new Date();
-        twoYearsAgo.setMonth(twoYearsAgo.getMonth() - 24);
-        const histFrom = twoYearsAgo.toISOString().slice(0, 10);
-        const [lines, ords, inv] = await Promise.all([
-          queryAllPages('shopify_order_lines', 'order_id,product_type,quantity,price,line_total,title,sku',
-            [{ column: 'created_at', op: 'gte', value: histFrom }]),
-          queryAllPages('shopify_orders', 'id,created_at',
-            [{ column: 'created_at', op: 'gte', value: histFrom }]),
+        // 優先用 server-side 月度聚合 view (sql/perf-views.sql v3) —
+        // ~800 行取代 24 個月嘅 order_lines + orders (~7 萬行)
+        const [monthly, inv] = await Promise.all([
+          tryView('monthly_sales_by_type', 'month,product_type,qty,revenue'),
           queryAllPages('shopify_inventory', 'product_type,inventory_quantity,sku'),
         ]);
-        setOrderLines(lines);
-        setOrders(ords);
+        setMonthlyRows(monthly);
         setInventory(inv);
+        // View 未建立 → fallback: 拉返原始表喺 client 計
+        if (monthly === null) {
+          const twoYearsAgo = new Date();
+          twoYearsAgo.setMonth(twoYearsAgo.getMonth() - 24);
+          const histFrom = twoYearsAgo.toISOString().slice(0, 10);
+          const [lines, ords] = await Promise.all([
+            queryAllPages('shopify_order_lines', 'order_id,product_type,quantity,price,line_total,title,sku',
+              [{ column: 'created_at', op: 'gte', value: histFrom }]),
+            queryAllPages('shopify_orders', 'id,created_at',
+              [{ column: 'created_at', op: 'gte', value: histFrom }]),
+          ]);
+          setOrderLines(lines);
+          setOrders(ords);
+        }
       } catch (e) {
         console.error('Forecast data load error:', e);
       }
@@ -258,34 +267,21 @@ export default function ForecastPage() {
 
   // ── Process Data ────────────────────────────────────────────
   const processedData = useMemo(() => {
-    if (!orderLines.length || !orders.length) return null;
-
-    // Build order date map
-    const orderDateMap = new Map<number, string>();
-    for (const o of orders) {
-      orderDateMap.set(o.id, (o.created_at || '').slice(0, 7)); // YYYY-MM
-    }
+    if (!monthlyRows && (!orderLines.length || !orders.length)) return null;
 
     // Current month (HKT)
     const hkNow = getHKNow();
     const currentMonth = `${hkNow.getFullYear()}-${String(hkNow.getMonth() + 1).padStart(2, '0')}`;
-    
+
     // Aggregate by major category + month
     const catMonthly: Record<string, Record<string, { qty: number; revenue: number }>> = {};
     const subCatMonthly: Record<string, Record<string, { qty: number; revenue: number }>> = {};
     const totalMonthly: Record<string, { qty: number; revenue: number }> = {};
 
-    for (const line of orderLines) {
-      const month = orderDateMap.get(line.order_id);
-      if (!month) continue;
-      // Skip current incomplete month for trend analysis (but include for display)
-      
-      const major = getMajorCategory(line.product_type);
-      if (major === 'SERVICE/OTHER') continue; // Exclude service items
-      
-      const subCat = line.product_type || 'Unknown';
-      const qty = line.quantity || 0;
-      const rev = parseFloat(line.line_total || line.price || 0);
+    const addEntry = (month: string, productType: string | null, qty: number, rev: number) => {
+      const major = getMajorCategory(productType);
+      if (major === 'SERVICE/OTHER') return; // Exclude service items
+      const subCat = productType || 'Unknown';
 
       // Major category
       if (!catMonthly[major]) catMonthly[major] = {};
@@ -303,6 +299,24 @@ export default function ForecastPage() {
       if (!totalMonthly[month]) totalMonthly[month] = { qty: 0, revenue: 0 };
       totalMonthly[month].qty += qty;
       totalMonthly[month].revenue += rev;
+    };
+
+    if (monthlyRows) {
+      // Server-side 聚合 view 已經計好 月 x product_type
+      for (const r of monthlyRows) {
+        addEntry(r.month, r.product_type, Number(r.qty) || 0, Number(r.revenue) || 0);
+      }
+    } else {
+      // Fallback: client-side 聚合原始 order lines
+      const orderDateMap = new Map<number, string>();
+      for (const o of orders) {
+        orderDateMap.set(o.id, (o.created_at || '').slice(0, 7)); // YYYY-MM
+      }
+      for (const line of orderLines) {
+        const month = orderDateMap.get(line.order_id);
+        if (!month) continue;
+        addEntry(month, line.product_type, line.quantity || 0, parseFloat(line.line_total || line.price || 0));
+      }
     }
 
     // Convert to sorted arrays
@@ -355,7 +369,7 @@ export default function ForecastPage() {
       currentMonth,
       lastCompleteMonth,
     };
-  }, [orderLines, orders, inventory]);
+  }, [monthlyRows, orderLines, orders, inventory]);
 
   // ── YoY Comparison ──────────────────────────────────────────
   const yoyData = useMemo(() => {
