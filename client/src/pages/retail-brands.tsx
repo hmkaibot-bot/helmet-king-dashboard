@@ -40,7 +40,9 @@ export default function RetailBrandsPage() {
           queryWithDateRange('shopify_orders', 'id,created_at,financial_status,cancelled_at', 'created_at', bounds),
           queryAllPages('shopify_inventory', 'variant_id,product_title,vendor,price,inventory_quantity,sku'),
           queryAllPages('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code'),
-          queryAllPages('bc_purchase_invoice_lines', 'invoice_id,item_number,quantity,direct_unit_cost'),
+          // 注意: column 叫 unit_cost (以前寫錯 direct_unit_cost,select 唔存在嘅欄
+          // 令成個 Promise.all 死晒 → 成頁空白)
+          queryAllPages('bc_purchase_invoice_lines', 'invoice_id,item_number,quantity,unit_cost'),
           queryAllPages('bc_purchase_invoices', 'id,posting_date,vendor_name'),
           getProductMeta(),
         ]);
@@ -91,7 +93,7 @@ export default function RetailBrandsPage() {
         const phist = purchaseLines.map((l: any) => ({
           item_number: l.item_number,
           quantity: l.quantity,
-          unit_cost: l.direct_unit_cost,
+          unit_cost: l.unit_cost,
           date: invoiceDateMap[l.invoice_id]?.date || '',
           vendor: invoiceDateMap[l.invoice_id]?.vendor || '',
         }));
