@@ -5,6 +5,10 @@ import type { DateBounds } from './format';
  * Query a Supabase table with date range filtering.
  * Uses only .gte() since the proxy doesn't support .lte() on timestamptz.
  * Applies upper bound filtering in JS.
+ *
+ * 內部行 queryAllPages (分頁 + cache) — 以前係單一 request,行數一過
+ * PostgREST max-rows 上限就靜靜截斷,大表 (bc_inventory / marsello_customers)
+ * 一直攞唔齊。limit 而家係安全上限,唔再係單 request row cap。
  */
 export async function queryWithDateRange(
   table: string,
@@ -12,32 +16,23 @@ export async function queryWithDateRange(
   dateCol: string,
   bounds: DateBounds,
   extraFilters?: { column: string; op: 'eq'; value: string }[],
-  limit = 5000
+  limit = 100000
 ): Promise<any[]> {
-  let query = supabase
-    .from(table)
-    .select(columns)
-    .gte(dateCol, bounds.from);
-
-  if (extraFilters) {
-    for (const f of extraFilters) {
-      if (f.op === 'eq') {
-        query = query.eq(f.column, f.value);
-      }
-    }
-  }
-
-  query = query.limit(limit);
-
-  const { data, error } = await query;
-  if (error) {
-    console.error(`Query error on ${table}:`, error);
+  const filters = [
+    { column: dateCol, op: 'gte' as const, value: bounds.from },
+    ...(extraFilters ?? []),
+  ];
+  let data: any[];
+  try {
+    data = await queryAllPages(table, columns, filters, limit);
+  } catch (e) {
+    console.error(`Query error on ${table}:`, e);
     return [];
   }
 
   // JS-side upper bound filter
   const toStr = bounds.to + '\xff';
-  return (data || []).filter((row: any) => {
+  return data.filter((row: any) => {
     const val = String(row[dateCol] || '');
     return val <= toStr;
   });
@@ -45,31 +40,20 @@ export async function queryWithDateRange(
 
 /**
  * Query all records from a table (no date filter).
+ * 同上 — 內部行 queryAllPages (分頁 + cache),唔再受單 request row cap 截斷。
  */
 export async function queryAll(
   table: string,
   columns: string,
   extraFilters?: { column: string; op: 'eq'; value: string }[],
-  limit = 5000
+  limit = 100000
 ): Promise<any[]> {
-  let query = supabase.from(table).select(columns);
-
-  if (extraFilters) {
-    for (const f of extraFilters) {
-      if (f.op === 'eq') {
-        query = query.eq(f.column, f.value);
-      }
-    }
-  }
-
-  query = query.limit(limit);
-
-  const { data, error } = await query;
-  if (error) {
-    console.error(`Query error on ${table}:`, error);
+  try {
+    return await queryAllPages(table, columns, extraFilters, limit);
+  } catch (e) {
+    console.error(`Query error on ${table}:`, e);
     return [];
   }
-  return data || [];
 }
 
 /**

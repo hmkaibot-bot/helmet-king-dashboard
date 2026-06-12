@@ -317,31 +317,28 @@ export default function DailyWeeklyPage() {
         lySunday.setDate(lyThisMonday.getDate() + 6);
         const lyTo = toDateStr(lySunday);
 
-        // Phase 1: parallel
+        // Phase 1: parallel — orders 改用 queryAllPages (分頁 + cache),
+        // 以前 .limit(5000) 單一 request,窗口一長就靜靜截斷
         const [ordersRaw, orderLines, productsData, lyData] = await Promise.all([
-          (async () => {
-            const { data } = await supabase
-              .from('shopify_orders')
-              .select('id,order_number,created_at,total_price,financial_status,cancelled_at,customer_name,customer_id,discount_codes,source_name,user_id')
-              .gte('created_at', fromDate)
-              .limit(5000);
-            return (data || []) as any[];
-          })(),
+          queryAllPages(
+            'shopify_orders',
+            'id,order_number,created_at,total_price,financial_status,cancelled_at,customer_name,customer_id,discount_codes,source_name,user_id',
+            [{ column: 'created_at', op: 'gte', value: fromDate }]
+          ) as Promise<any[]>,
           queryAllPages(
             'shopify_order_lines',
             'order_id,product_id,title,sku,vendor,quantity,price,product_type,created_at',
             [{ column: 'created_at', op: 'gte', value: linesFrom }]
           ) as Promise<any[]>,
           queryAllPages('shopify_products', 'id,product_type') as Promise<any[]>,
-          (async () => {
-            const { data } = await supabase
-              .from('shopify_orders')
-              .select('id,order_number,created_at,total_price,financial_status,cancelled_at')
-              .gte('created_at', lyFrom)
-              .lte('created_at', lyTo + 'T23:59:59')
-              .limit(5000);
-            return (data || []) as any[];
-          })(),
+          queryAllPages(
+            'shopify_orders',
+            'id,order_number,created_at,total_price,financial_status,cancelled_at',
+            [
+              { column: 'created_at', op: 'gte', value: lyFrom },
+              { column: 'created_at', op: 'lte', value: lyTo + 'T23:59:59' },
+            ]
+          ) as Promise<any[]>,
         ]);
 
         if (cancelled) return;

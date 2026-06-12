@@ -35,48 +35,40 @@ export default function ReturnsPage() {
     async function load() {
       setLoading(true);
       try {
-        // Fetch all orders in date range to compute total count
-        const { data: allOrders, error: allErr } = await supabase
-          .from('shopify_orders')
-          .select('id,created_at,financial_status,cancelled_at')
-          .gte('created_at', bounds.from)
-          .limit(10000);
+        // 四個 orders query 互不依賴 — 一齊並行發 (以前逐個 await,白等 3 個 round trip)
+        const refundCols = 'id,order_number,created_at,total_price,total_discounts,customer_name,cancel_reason,gateway,source_name,financial_status';
+        const [allRes, r1Res, r2Res, cancelRes] = await Promise.all([
+          supabase.from('shopify_orders')
+            .select('id,created_at,financial_status,cancelled_at')
+            .gte('created_at', bounds.from)
+            .limit(10000),
+          supabase.from('shopify_orders')
+            .select(refundCols)
+            .eq('financial_status', 'refunded')
+            .gte('created_at', bounds.from)
+            .limit(5000),
+          supabase.from('shopify_orders')
+            .select(refundCols)
+            .eq('financial_status', 'partially_refunded')
+            .gte('created_at', bounds.from)
+            .limit(5000),
+          supabase.from('shopify_orders')
+            .select('id,order_number,created_at,total_price,cancel_reason,cancelled_at')
+            .not('cancelled_at', 'is', null)
+            .gte('created_at', bounds.from)
+            .limit(5000),
+        ]);
 
-        const filteredAll = (allOrders || []).filter((o: any) => o.created_at && o.created_at <= bounds.to + '\xff');
-
-        // Fetch refunded orders
-        const { data: refunded1, error: r1Err } = await supabase
-          .from('shopify_orders')
-          .select('id,order_number,created_at,total_price,total_discounts,customer_name,cancel_reason,gateway,source_name,financial_status')
-          .eq('financial_status', 'refunded')
-          .gte('created_at', bounds.from)
-          .limit(5000);
-
-        const { data: refunded2, error: r2Err } = await supabase
-          .from('shopify_orders')
-          .select('id,order_number,created_at,total_price,total_discounts,customer_name,cancel_reason,gateway,source_name,financial_status')
-          .eq('financial_status', 'partially_refunded')
-          .gte('created_at', bounds.from)
-          .limit(5000);
-
-        const allRefunded = [...(refunded1 || []), ...(refunded2 || [])]
+        const filteredAll = (allRes.data || []).filter((o: any) => o.created_at && o.created_at <= bounds.to + '\xff');
+        const allRefunded = [...(r1Res.data || []), ...(r2Res.data || [])]
           .filter((o: any) => o.created_at && o.created_at <= bounds.to + '\xff');
-
-        // Fetch cancelled orders
-        const { data: cancelledData } = await supabase
-          .from('shopify_orders')
-          .select('id,order_number,created_at,total_price,cancel_reason,cancelled_at')
-          .not('cancelled_at', 'is', null)
-          .gte('created_at', bounds.from)
-          .limit(5000);
-
-        const filteredCancelled = (cancelledData || []).filter((o: any) => o.created_at && o.created_at <= bounds.to + '\xff');
+        const filteredCancelled = (cancelRes.data || []).filter((o: any) => o.created_at && o.created_at <= bounds.to + '\xff');
 
         if (cancelled) return;
 
         // Fetch order lines for refunded orders
         const refundIds = allRefunded.map((o: any) => String(o.id));
-        const lines = await queryInBatches('shopify_order_lines', 'order_id,title,vendor,quantity,price', 'order_id', refundIds, 40);
+        const lines = await queryInBatches('shopify_order_lines', 'order_id,title,vendor,quantity,price', 'order_id', refundIds);
 
         setRefundedOrders(allRefunded);
         setCancelledOrders(filteredCancelled);
