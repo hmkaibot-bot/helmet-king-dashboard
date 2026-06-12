@@ -33,6 +33,7 @@ interface InventoryRow {
 interface ReviewRow {
   sku: string;
   manual_status: string | null;
+  is_promoting: boolean | null;
 }
 
 interface PromotingProduct {
@@ -86,13 +87,15 @@ export default function PromotionsItemsPage() {
           'shopify_inventory',
           'sku,product_id,product_title,vendor,product_type,inventory_quantity'
         ),
-        fetchAllRows<ReviewRow>('dead_stock_reviews', 'sku,manual_status'),
+        fetchAllRows<ReviewRow>('dead_stock_reviews', 'sku,manual_status,is_promoting'),
         fetchAllRows<Promotion>('promotions'),
         fetchAllRows<PromotionItem>('promotion_items'),
       ]);
 
-      // 2. Build product → SKUs map, find products with manual_status='promoting' on parent
+      // 2. Build product → SKUs map, find products with is_promoting=true on any child SKU
       // (parent-level promoting decision; aggregate on product_id)
+      // Note: is_promoting 是獨立 checkbox — 同 manual_status 完全分開，
+      // 由 dead-stock 頁 「推廣中」 column 勾選設定。
       const reviewBySku = new Map<string, ReviewRow>();
       for (const r of reviews) reviewBySku.set(r.sku, r);
 
@@ -106,8 +109,8 @@ export default function PromotionsItemsPage() {
         byProduct.set(key, arr);
       }
 
-      // Determine if a product is "promoting" — use first SKU's manual_status as proxy
-      // (in dead-stock V2, parent's manual_status is replicated to all child SKUs)
+      // Determine if a product is "promoting" — ANY child SKU with is_promoting=true
+      // (dead-stock V2 parent 勾選會 propagate 到所有 child SKU，但 individual SKU 亦可各自勾)
       const activeItems = items.filter(it => !it.is_archived);
       const assignedProductIds = new Map<string, string>(); // product_id (string) -> promo_id
       for (const it of activeItems) {
@@ -117,10 +120,10 @@ export default function PromotionsItemsPage() {
 
       const promotingProducts: PromotingProduct[] = [];
       for (const [productId, skus] of byProduct.entries()) {
-        // Check if any SKU has manual_status=promoting
+        // Check if any SKU has is_promoting=true
         const promotingSku = skus.find(s => {
           const r = reviewBySku.get(s.sku);
-          return r?.manual_status === 'promoting';
+          return r?.is_promoting === true;
         });
         if (!promotingSku) continue;
 
@@ -278,7 +281,7 @@ export default function PromotionsItemsPage() {
           <Package className="h-5 w-5 text-primary" />
           <h1 className="text-lg font-semibold">推廣商品池</h1>
           <span className="text-xs text-muted-foreground">
-            （狀態核實=推廣中 · 共 {products.length}）
+            （推廣中勾選 · 共 {products.length}）
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -426,7 +429,7 @@ export default function PromotionsItemsPage() {
               <Link to="/retail/dead-stock" className="text-primary hover:underline mx-1">
                 死貨表
               </Link>
-              將想推廣嘅母 ITEM 狀態改為「推廣中」。
+              勾選「推廣中」checkbox以加入推廣商品池。
             </>
           ) : (
             '冇符合條件嘅商品'
