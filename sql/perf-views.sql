@@ -14,7 +14,9 @@
 
 -- 每個 SKU 嘅銷售統計 (死貨頁 + 庫存頁用) — 取代客戶端拉全部 order lines
 -- v2: 加 total_qty (全歷史銷量) + 剔除 refunded 訂單
-create or replace view sku_sales_stats
+-- 註: create or replace 唔可以改欄位次序,所以先 drop 再 create
+drop view if exists sku_sales_stats;
+create view sku_sales_stats
 with (security_invoker = on) as
 select
   l.sku,
@@ -31,7 +33,8 @@ where o.cancelled_at is null
 group by l.sku;
 
 -- 每個 variant 近 90 日銷量 (補貨頁用)
-create or replace view variant_sales_90d
+drop view if exists variant_sales_90d;
+create view variant_sales_90d
 with (security_invoker = on) as
 select
   l.variant_id,
