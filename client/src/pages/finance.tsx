@@ -1,12 +1,12 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
+import { queryWithDateRange, queryAll, tryView } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatPercent } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart-theme';
 import { Store, Wrench, DollarSign, TrendingUp, BarChart3, Receipt } from 'lucide-react';
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { BarChart, Bar, LineChart, Line, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
 export default function FinancePage() {
   const { bounds } = useDateRange();
@@ -14,6 +14,8 @@ export default function FinancePage() {
   const [carshopInvoices, setCarshopInvoices] = useState<any[]>([]);
   const [garageInvoices, setGarageInvoices] = useState<any[]>([]);
   const [purchaseInvoices, setPurchaseInvoices] = useState<any[]>([]);
+  // monthly_gross_profit view (sql/perf-views.sql v4) — 零售真毛利
+  const [grossProfitRows, setGrossProfitRows] = useState<any[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -21,17 +23,51 @@ export default function FinancePage() {
       setLoading(true);
       try {
         // BC data should NOT use picker dates — fetch all available data
-        const [carshop, garage, purchases] = await Promise.all([
+        const [carshop, garage, purchases, gp] = await Promise.all([
           queryAll('bc_sales_invoices', 'id,invoice_date,customer_name,customer_number,total_amount_incl_tax', [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
           queryAll('bc_sales_invoices', 'id,invoice_date,total_amount_incl_tax', [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]),
           queryAll('bc_purchase_invoices', 'id,posting_date,vendor_number,vendor_name,total_amount_incl_tax'),
+          tryView('monthly_gross_profit', 'month,revenue,matched_revenue,cogs'),
         ]);
-        if (!cancelled) { setCarshopInvoices(carshop); setGarageInvoices(garage); setPurchaseInvoices(purchases); }
+        if (!cancelled) { setCarshopInvoices(carshop); setGarageInvoices(garage); setPurchaseInvoices(purchases); setGrossProfitRows(gp); }
       } catch (e) { console.error('Finance error:', e); } finally { if (!cancelled) setLoading(false); }
     }
     load();
     return () => { cancelled = true; };
   }, [bounds]);
+
+  // ── 零售真毛利 (Shopify 銷售 x BC 成本,銷售加權) ──
+  // matched_revenue / cogs 只計搵到成本嘅 lines;coverage = 成本覆蓋率
+  const grossProfitMonthly = useMemo(() => {
+    if (!grossProfitRows) return [];
+    return [...grossProfitRows]
+      .sort((a, b) => String(a.month).localeCompare(String(b.month)))
+      .slice(-12)
+      .map((r) => {
+        const revenue = Number(r.revenue) || 0;
+        const matched = Number(r.matched_revenue) || 0;
+        const cogs = Number(r.cogs) || 0;
+        const grossProfit = matched - cogs;
+        return {
+          month: r.month,
+          revenue,
+          grossProfit,
+          marginPct: matched > 0 ? (grossProfit / matched) * 100 : null,
+          coveragePct: revenue > 0 ? (matched / revenue) * 100 : null,
+        };
+      });
+  }, [grossProfitRows]);
+
+  // 最近一個完整月嘅毛利率 (本月未完,用上月做 KPI)
+  const lastFullMonthGP = useMemo(() => {
+    if (grossProfitMonthly.length < 2) return null;
+    return grossProfitMonthly[grossProfitMonthly.length - 2];
+  }, [grossProfitMonthly]);
+
+  const avgCoverage = useMemo(() => {
+    const vals = grossProfitMonthly.map(r => r.coveragePct).filter((v): v is number => v != null);
+    return vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
+  }, [grossProfitMonthly]);
 
   const carshopRev = carshopInvoices.reduce((s, i) => s + (parseFloat(i.total_amount_incl_tax) || 0), 0);
   const garageRev = garageInvoices.reduce((s, i) => s + (parseFloat(i.total_amount_incl_tax) || 0), 0);
@@ -79,6 +115,33 @@ export default function FinancePage() {
         <KpiCard title="門店均單" subtitle="Avg CS" value={formatCurrency(avgCarshop)} icon={BarChart3} loading={loading} testId="kpi-avg-cs" />
         <KpiCard title="車房均單" subtitle="Avg GR" value={formatCurrency(avgGarage)} icon={Receipt} loading={loading} testId="kpi-avg-gr" />
       </div>
+
+      {grossProfitMonthly.length > 0 && (
+        <ChartCard
+          title="零售毛利趨勢"
+          subtitle={`Shopify 銷售 × BC 成本（銷售加權實際毛利${lastFullMonthGP?.marginPct != null ? ` · 上月 ${lastFullMonthGP.marginPct.toFixed(1)}%` : ''}${avgCoverage != null ? ` · 成本覆蓋率 ~${avgCoverage.toFixed(0)}%` : ''}）`}
+          loading={loading}
+        >
+          <ResponsiveContainer width="100%" height={300}>
+            <ComposedChart data={grossProfitMonthly}>
+              <CartesianGrid {...GRID_STYLE} />
+              <XAxis dataKey="month" tick={AXIS_STYLE} />
+              <YAxis yAxisId="amt" tick={AXIS_STYLE} tickFormatter={(v) => `${(v / 1000).toFixed(0)}K`} />
+              <YAxis yAxisId="pct" orientation="right" domain={[0, 60]} tick={AXIS_STYLE} tickFormatter={(v) => `${v}%`} />
+              <Tooltip
+                {...TOOLTIP_STYLE}
+                formatter={(v: number, name: string) =>
+                  name === '毛利率' ? `${(v as number).toFixed(1)}%` : formatCurrency(v)
+                }
+              />
+              <Bar yAxisId="amt" dataKey="revenue" name="營收" fill={CHART_COLORS.primary} radius={[3, 3, 0, 0]} />
+              <Bar yAxisId="amt" dataKey="grossProfit" name="毛利" fill={CHART_COLORS.tertiary} radius={[3, 3, 0, 0]} />
+              <Line yAxisId="pct" type="monotone" dataKey="marginPct" name="毛利率" stroke={CHART_COLORS.fifth} strokeWidth={2} dot={{ r: 2.5 }} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      )}
 
       <ChartCard title="月度營收" subtitle="CARSHOP vs GARAGE" loading={loading}>
         <ResponsiveContainer width="100%" height={280}>
