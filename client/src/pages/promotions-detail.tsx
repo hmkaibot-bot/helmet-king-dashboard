@@ -108,17 +108,22 @@ export default function PromotionDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<'promo_qty' | 'promo_revenue'>('promo_qty');
+  type SortKey =
+    | 'product_title' | 'total_inventory' | 'compare_at_price' | 'retail_price'
+    | 'unit_cost' | 'margin_pct' | 'promo_price' | 'promo_pct' | 'promo_profit'
+    | 'promo_qty' | 'promo_revenue';
+  const [sortBy, setSortBy] = useState<SortKey>('promo_qty');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
 
-  const toggleSort = (col: 'promo_qty' | 'promo_revenue') => {
+  const toggleSort = (col: SortKey) => {
     if (sortBy === col) {
       setSortDir(d => (d === 'desc' ? 'asc' : 'desc'));
     } else {
       setSortBy(col);
-      setSortDir('desc');
+      // 文字欄首次點擊用 asc,數字欄用 desc
+      setSortDir(col === 'product_title' ? 'asc' : 'desc');
     }
   };
 
@@ -386,10 +391,47 @@ export default function PromotionDetailPage() {
       if (selectedVendors.size > 0 && !selectedVendors.has(v)) return false;
       return true;
     });
+    // 排序值 — 計算欄 (利潤% / 推廣% / 推廣後利潤金額) 同 PriceCells 顯示用同一公式;
+    // null (冇數據) 一律排最尾,唔受 asc/desc 影響
+    const sortValue = (s: ProductStat): number | string | null => {
+      switch (sortBy) {
+        case 'product_title':
+          return s.product_title || '';
+        case 'margin_pct':
+          return s.retail_price > 0 && s.unit_cost > 0
+            ? ((s.retail_price - s.unit_cost) / s.retail_price) * 100
+            : null;
+        case 'promo_pct': {
+          const baseline = s.compare_at_price > 0 ? s.compare_at_price : s.retail_price;
+          return s.promo_price != null && baseline > 0
+            ? ((baseline - s.promo_price) / baseline) * 100
+            : null;
+        }
+        case 'promo_profit': {
+          if (s.promo_price == null || s.unit_cost <= 0) return null;
+          const unit = s.promo_price - s.unit_cost;
+          return s.promo_qty > 0 ? unit * s.promo_qty : unit;
+        }
+        case 'compare_at_price':
+          return s.compare_at_price > 0 ? s.compare_at_price : null;
+        case 'unit_cost':
+          return s.unit_cost > 0 ? s.unit_cost : null;
+        case 'promo_price':
+          return s.promo_price;
+        default:
+          return (s as any)[sortBy] ?? null;
+      }
+    };
     arr.sort((a, b) => {
-      const av = a[sortBy];
-      const bv = b[sortBy];
-      return sortDir === 'desc' ? bv - av : av - bv;
+      const av = sortValue(a);
+      const bv = sortValue(b);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      const cmp = typeof av === 'string' || typeof bv === 'string'
+        ? String(av).localeCompare(String(bv), 'en', { sensitivity: 'base' })
+        : (av as number) - (bv as number);
+      return sortDir === 'desc' ? -cmp : cmp;
     });
     return arr;
   }, [stats, sortBy, sortDir, selectedTypes, selectedVendors]);
@@ -601,45 +643,19 @@ export default function PromotionDetailPage() {
             <thead className="bg-muted/30 border-b border-border/40">
               <tr>
                 <th className="text-left px-2 py-2 font-normal text-muted-foreground w-6"></th>
-                <th className="text-left px-2 py-2 font-normal text-muted-foreground">產品名稱</th>
+                <SortableTh col="product_title" label="產品名稱" align="left" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
                 <th className="text-left px-2 py-2 font-normal text-muted-foreground">品牌</th>
                 <th className="text-right px-2 py-2 font-normal text-muted-foreground">SKU</th>
-                <th className="text-right px-2 py-2 font-normal text-muted-foreground">現庫存</th>
-                <th className="text-right px-2 py-2 font-normal text-muted-foreground">建議零售價</th>
-                <th className="text-right px-2 py-2 font-normal text-muted-foreground">零售價</th>
-                <th className="text-right px-2 py-2 font-normal text-muted-foreground">單件成本</th>
-                <th className="text-right px-2 py-2 font-normal text-muted-foreground">利潤%</th>
-                <th className="text-right px-2 py-2 font-normal text-muted-foreground w-24">推廣價</th>
-                <th className="text-right px-2 py-2 font-normal text-muted-foreground w-20">推廣%</th>
-                <th className="text-right px-2 py-2 font-normal text-muted-foreground">推廣後利潤金額</th>
-                <th
-                  className="text-right px-2 py-2 font-normal text-muted-foreground cursor-pointer hover:text-foreground select-none"
-                  onClick={() => toggleSort('promo_qty')}
-                >
-                  <span className="inline-flex items-center gap-0.5">
-                    推廣期銷量
-                    {sortBy === 'promo_qty' &&
-                      (sortDir === 'desc' ? (
-                        <ArrowDown className="h-3 w-3" />
-                      ) : (
-                        <ArrowUp className="h-3 w-3" />
-                      ))}
-                  </span>
-                </th>
-                <th
-                  className="text-right px-2 py-2 font-normal text-muted-foreground cursor-pointer hover:text-foreground select-none"
-                  onClick={() => toggleSort('promo_revenue')}
-                >
-                  <span className="inline-flex items-center gap-0.5">
-                    推廣期營收
-                    {sortBy === 'promo_revenue' &&
-                      (sortDir === 'desc' ? (
-                        <ArrowDown className="h-3 w-3" />
-                      ) : (
-                        <ArrowUp className="h-3 w-3" />
-                      ))}
-                  </span>
-                </th>
+                <SortableTh col="total_inventory" label="現庫存" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                <SortableTh col="compare_at_price" label="建議零售價" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                <SortableTh col="retail_price" label="零售價" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                <SortableTh col="unit_cost" label="單件成本" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                <SortableTh col="margin_pct" label="利潤%" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                <SortableTh col="promo_price" label="推廣價" className="w-24" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                <SortableTh col="promo_pct" label="推廣%" className="w-20" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                <SortableTh col="promo_profit" label="推廣後利潤金額" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                <SortableTh col="promo_qty" label="推廣期銷量" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
+                <SortableTh col="promo_revenue" label="推廣期營收" sortBy={sortBy} sortDir={sortDir} onSort={toggleSort} />
                 <th className="text-right px-2 py-2 font-normal text-muted-foreground">推廣前 90d 銷量</th>
                 <th className="text-right px-2 py-2 font-normal text-muted-foreground">日均比較</th>
                 <th className="text-left px-2 py-2 font-normal text-muted-foreground">評級</th>
@@ -781,6 +797,34 @@ function KpiCard({
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className="text-sm font-semibold tabular-nums mt-0.5">{value}</div>
     </div>
+  );
+}
+
+// ── Sortable table header cell ───────────────────────────────────────────────
+function SortableTh({
+  col, label, align = 'right', className = '', sortBy, sortDir, onSort,
+}: {
+  col: string;
+  label: string;
+  align?: 'left' | 'right';
+  className?: string;
+  sortBy: string;
+  sortDir: 'asc' | 'desc';
+  onSort: (col: any) => void;
+}) {
+  const active = sortBy === col;
+  return (
+    <th
+      className={`${align === 'left' ? 'text-left' : 'text-right'} px-2 py-2 font-normal cursor-pointer select-none hover:text-foreground ${
+        active ? 'text-foreground' : 'text-muted-foreground'
+      } ${className}`}
+      onClick={() => onSort(col)}
+    >
+      <span className="inline-flex items-center gap-0.5">
+        {label}
+        {active && (sortDir === 'desc' ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />)}
+      </span>
+    </th>
   );
 }
 
