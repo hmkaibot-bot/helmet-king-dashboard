@@ -75,30 +75,41 @@ export async function queryAll(
 /**
  * Query records from a table using batched 'in' filters.
  * Splits the IDs into batches to avoid URL length limits.
+ * 批次並行拉 (6 workers) — 以前逐批串行,id 一多 (長 date range) 就變幾百個
+ * request 排隊,一頁等成分鐘。
  */
 export async function queryInBatches(
   table: string,
   columns: string,
   filterCol: string,
   ids: string[],
-  batchSize = 40
+  batchSize = 150
 ): Promise<any[]> {
   if (ids.length === 0) return [];
-  const results: any[] = [];
+  const batches: string[][] = [];
   for (let i = 0; i < ids.length; i += batchSize) {
-    const batch = ids.slice(i, i + batchSize);
-    const { data, error } = await supabase
-      .from(table)
-      .select(columns)
-      .in(filterCol, batch)
-      .limit(5000);
-    if (error) {
-      console.error(`Batch query error on ${table}:`, error);
-      continue;
-    }
-    if (data) results.push(...data);
+    batches.push(ids.slice(i, i + batchSize));
   }
-  return results;
+  const results: any[][] = new Array(batches.length).fill(null).map(() => []);
+  let nextIdx = 0;
+  const worker = async () => {
+    while (nextIdx < batches.length) {
+      const i = nextIdx++;
+      const { data, error } = await supabase
+        .from(table)
+        .select(columns)
+        .in(filterCol, batches[i])
+        .limit(50000);
+      if (error) {
+        console.error(`Batch query error on ${table}:`, error);
+        continue;
+      }
+      if (data) results[i] = data;
+    }
+  };
+  const CONCURRENCY = 6;
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batches.length) }, worker));
+  return results.flat();
 }
 
 /**

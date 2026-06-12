@@ -8,7 +8,7 @@ import {
   ResponsiveContainer, Cell, PieChart, Pie,
 } from 'recharts';
 
-import { queryAllPages, queryInBatches, getProductMeta } from '@/lib/query-helpers';
+import { queryAllPages, getProductMeta } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { DataFreshnessBadge } from '@/components/data-freshness';
@@ -188,14 +188,24 @@ export default function WeeklyReview() {
         );
         if (cancelled) return;
 
-        // 2. Pull lines only for those orders (batched 'in' query)
-        const orderIds = (orders as any[]).map(o => String(o.id));
+        // 2. Pull lines in the same window (server-side date filter, 2-3 requests)。
+        //    以前用 queryInBatches 逐 40 個 order id 拉 — YoY window 跨 13 個月,
+        //    成 400+ 個 request 排隊,呢頁就係咁先慢。lines 自帶 created_at
+        //    (= order 建立時間,daily-weekly 等頁同一用法),前後各鬆一日防 edge case,
+        //    之後照舊由 processOrders 按 order_id join 返先至計數。
+        const padDay = (d: string, delta: number) => {
+          const t = new Date(d + 'T00:00:00Z');
+          t.setUTCDate(t.getUTCDate() + delta);
+          return t.toISOString().slice(0, 10);
+        };
         const [lines, pmeta] = await Promise.all([
-          queryInBatches(
+          queryAllPages(
             'shopify_order_lines',
             'order_id,product_id,sku,title,vendor,product_type,quantity,price',
-            'order_id',
-            orderIds
+            [
+              { column: 'created_at', op: 'gte', value: padDay(fetchBounds.from, -1) },
+              { column: 'created_at', op: 'lte', value: padDay(fetchBounds.to, 1) + 'T23:59:59.999Z' },
+            ]
           ),
           getProductMeta(),
         ]);
