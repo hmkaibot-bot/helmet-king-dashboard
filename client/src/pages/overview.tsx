@@ -85,15 +85,26 @@ export default function OverviewPage() {
         const bcBounds = { from: '2023-01-01', to: '2099-12-31' };
         const ranges = getDateRanges();
 
-        const [orders, carshop, garage, marsello, adData, mtdOrdersData, bcInv, marselloAll] = await Promise.all([
+        // Promo / 昨日商品嘅日期係預先計到,一齊併入同一輪 parallel —
+        // 以前喺主 load 之後先串行拉,白白多等兩個 round trip
+        const thirtyAgo = new Date();
+        thirtyAgo.setDate(thirtyAgo.getDate() - 30);
+        const promoBounds = { from: thirtyAgo.toISOString().slice(0, 10), to: new Date().toISOString().slice(0, 10) };
+        const nowD = new Date();
+        const hkt = new Date(nowD.getTime() + nowD.getTimezoneOffset() * 60000 + 8 * 3600000);
+        hkt.setDate(hkt.getDate() - 1);
+        const yesterdayStr = hkt.toISOString().slice(0, 10);
+
+        const [orders, carshop, garage, adData, mtdOrdersData, bcInv, marselloAll, promoOrders, yOrders] = await Promise.all([
           queryWithDateRange('shopify_orders', 'created_at,total_price,financial_status,cancelled_at', 'created_at', bounds),
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bcBounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bcBounds, [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]),
-          queryAll('marsello_customers', 'id'),
           queryWithDateRange('meta_ad_insights', 'date,spend', 'date', bounds),
           queryWithDateRange('shopify_orders', 'id,total_price,financial_status,cancelled_at', 'created_at', { from: ranges.mtd.start, to: ranges.mtd.end }),
           queryAll('bc_inventory', 'number,unit_price,unit_cost', undefined, 50000),
           queryAll('marsello_customers', 'id,created_at', undefined, 50000),
+          queryWithDateRange('shopify_orders', 'id,total_price,discount_codes,financial_status,cancelled_at', 'created_at', promoBounds),
+          queryWithDateRange('shopify_orders', 'id,financial_status,cancelled_at,created_at', 'created_at', { from: yesterdayStr, to: yesterdayStr }),
         ]);
 
         if (cancelled) return;
@@ -112,7 +123,7 @@ export default function OverviewPage() {
         const garRev = garage.reduce((s: number, o: any) => s + (parseFloat(o.total_amount_incl_tax) || 0), 0);
         setBcGarageRevenue(garRev);
 
-        setMarselloCount(marsello.length);
+        setMarselloCount(marselloAll.length);
 
         // MTD revenue
         const mtdValid = mtdOrdersData.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at);
@@ -174,9 +185,6 @@ export default function OverviewPage() {
         );
 
         // Promo codes
-        const thirtyAgo = new Date();
-        thirtyAgo.setDate(thirtyAgo.getDate() - 30);
-        const promoOrders = await queryWithDateRange('shopify_orders', 'id,total_price,discount_codes,financial_status,cancelled_at', 'created_at', { from: thirtyAgo.toISOString().slice(0, 10), to: new Date().toISOString().slice(0, 10) });
         const validPromoOrders = promoOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at && o.discount_codes);
         const codeMap: Record<string, { code: string; type: string; uses: number; totalDiscount: number; totalRevenue: number }> = {};
         validPromoOrders.forEach((o: any) => {
@@ -197,12 +205,6 @@ export default function OverviewPage() {
         setPromoCodes(Object.values(codeMap).sort((a, b) => b.uses - a.uses));
 
         // Yesterday's products
-        const now = new Date();
-        const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-        const hkt = new Date(utc + 8 * 3600000);
-        hkt.setDate(hkt.getDate() - 1);
-        const yesterdayStr = hkt.toISOString().slice(0, 10);
-        const yOrders = await queryWithDateRange('shopify_orders', 'id,financial_status,cancelled_at,created_at', 'created_at', { from: yesterdayStr, to: yesterdayStr });
         const yValidIds = Array.from(new Set(yOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => String(o.id))));
         const yLines = await queryInBatches(
           'shopify_order_lines',

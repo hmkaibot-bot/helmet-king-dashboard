@@ -101,7 +101,8 @@ export default function MarketingPage() {
           .from('meta_campaigns')
           .select('*')
           .gt('spend_90d', 0)
-          .order('spend_90d', { ascending: false });
+          .order('spend_90d', { ascending: false })
+          .limit(2000);
         if (cancelled) return;
         if (error) { console.error('Campaigns error:', error); setCampaigns([]); return; }
         setCampaigns((data || []).map(computeCampaignFields));

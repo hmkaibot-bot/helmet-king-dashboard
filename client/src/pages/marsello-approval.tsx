@@ -11,7 +11,7 @@
  */
 import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
-import { queryAllPages } from '@/lib/query-helpers';
+import { queryAllPages, queryInBatches } from '@/lib/query-helpers';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import {
   CheckCircle2, XCircle, Clock, Zap, AlertTriangle, RefreshCw,
@@ -177,15 +177,13 @@ export default function MarselloApprovalPage() {
     const remainingPending = pendingItems.filter(q => (q.invoice_amount || 0) !== 0);
     if (remainingPending.length > 0) {
       const invoiceNumbers = remainingPending.map(q => q.bc_invoice_number).filter(Boolean);
-      const allLines: any[] = [];
-      for (let i = 0; i < invoiceNumbers.length; i += 50) {
-        const batch = invoiceNumbers.slice(i, i + 50);
-        const { data } = await supabase
-          .from('bc_invoice_lines')
-          .select('invoice_number,description,item_number,discount_amount')
-          .in('invoice_number', batch);
-        if (data) allLines.push(...data);
-      }
+      // 並行批次 (queryInBatches),以前逐 50 個串行
+      const allLines = await queryInBatches(
+        'bc_invoice_lines',
+        'invoice_number,description,item_number,discount_amount',
+        'invoice_number',
+        invoiceNumbers
+      );
 
       const invoiceLinesByNumber: Record<string, any[]> = {};
       for (const line of allLines) {
@@ -263,16 +261,14 @@ export default function MarselloApprovalPage() {
         queryAllPages('bc_customers', 'number,display_name,phone_number,email'),
       ]);
 
-      // Fetch invoice lines for auto-reject
+      // Fetch invoice lines for auto-reject (並行批次,以前逐 50 個串行)
       const invoiceNumbers = newInvoices.map((inv: any) => inv.number).filter(Boolean);
-      const allLines: any[] = [];
-      for (let i = 0; i < invoiceNumbers.length; i += 50) {
-        const batch = invoiceNumbers.slice(i, i + 50);
-        const { data } = await supabase.from('bc_invoice_lines')
-          .select('invoice_number,description,item_number,discount_amount')
-          .in('invoice_number', batch);
-        if (data) allLines.push(...data);
-      }
+      const allLines = await queryInBatches(
+        'bc_invoice_lines',
+        'invoice_number,description,item_number,discount_amount',
+        'invoice_number',
+        invoiceNumbers
+      );
       const invoiceLinesByNumber: Record<string, any[]> = {};
       for (const line of allLines) {
         if (!invoiceLinesByNumber[line.invoice_number]) invoiceLinesByNumber[line.invoice_number] = [];
@@ -420,19 +416,16 @@ export default function MarselloApprovalPage() {
       }
 
       // Fetch invoice lines for auto-reject checks (Receipt in advance + discount)
+      // 並行批次 (queryInBatches),以前逐 50 個串行
       const invoiceNumbers = newInvoices.map((inv: any) => inv.number).filter(Boolean);
       let invoiceLinesByNumber: Record<string, any[]> = {};
       if (invoiceNumbers.length > 0) {
-        // Fetch in batches of 50 invoice numbers
-        const allLines: any[] = [];
-        for (let i = 0; i < invoiceNumbers.length; i += 50) {
-          const batch = invoiceNumbers.slice(i, i + 50);
-          const { data } = await supabase
-            .from('bc_invoice_lines')
-            .select('invoice_number,description,item_number,discount_amount')
-            .in('invoice_number', batch);
-          if (data) allLines.push(...data);
-        }
+        const allLines = await queryInBatches(
+          'bc_invoice_lines',
+          'invoice_number,description,item_number,discount_amount',
+          'invoice_number',
+          invoiceNumbers
+        );
         // Group by invoice number
         for (const line of allLines) {
           if (!invoiceLinesByNumber[line.invoice_number]) invoiceLinesByNumber[line.invoice_number] = [];

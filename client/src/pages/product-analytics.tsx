@@ -90,18 +90,16 @@ export default function ProductAnalytics() {
     const sixtyDaysAgo = new Date(now.getTime() - 60 * 86400000).toISOString().slice(0, 10);
 
     async function loadPhase1() {
-      const [ol, inv] = await Promise.all([
+      const [ol, inv, ord] = await Promise.all([
         // 本頁全部指標都係 30/60 日 window — server-side filter,
         // 順手修正咗以前「60d」圖表其實計埋全歷史嘅問題
         queryAllPages('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity,price,product_type,created_at',
           [{ column: 'created_at', op: 'gte', value: sixtyDaysAgo }]),
         queryAllPages('shopify_inventory', 'product_id,sku,product_title,price,inventory_quantity,vendor,product_type'),
+        // orders 一齊並行 + 分頁 (以前單一 request .limit(5000) 串行跟尾)
+        queryAllPages('shopify_orders', 'id,created_at,total_price,financial_status,cancelled_at',
+          [{ column: 'created_at', op: 'gte', value: sixtyDaysAgo }]),
       ]);
-      const { data: ord } = await supabase
-        .from('shopify_orders')
-        .select('id,created_at,total_price,financial_status,cancelled_at')
-        .gte('created_at', sixtyDaysAgo)
-        .limit(5000);
       setOrderLines(ol);
       setInventory(inv);
       setOrders(ord || []);

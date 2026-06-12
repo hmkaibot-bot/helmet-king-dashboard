@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange, queryAll, queryAllPages, queryInBatches, getProductMeta } from '@/lib/query-helpers';
+import { queryWithDateRange, queryAll, queryAllPages, getProductMeta } from '@/lib/query-helpers';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
@@ -108,25 +108,41 @@ export default function RetailSalesPage() {
       try {
         const ranges = getDateRanges();
 
-        const [ordersData, prevOrdersData, mtdOrdersData, prevMtdOrdersData, productMeta] = await Promise.all([
+        // 全部互不依賴嘅 fetch 一齊並行 — 以前 bcInv / MTD / basket 喺主 load 之後
+        // 先逐個串行拉,白等幾個 round trip。order lines 改用 created_at server-side
+        // filter (= order 建立時間,同 daily-weekly 一致),之後照舊按 order id 過濾,
+        // 取代以前逐批 .in() 拉法
+        const lineCols = 'order_id,product_id,title,sku,vendor,quantity,price,product_type';
+        const padDay = (d: string, delta: number) => {
+          const t = new Date(d + 'T00:00:00Z');
+          t.setUTCDate(t.getUTCDate() + delta);
+          return t.toISOString().slice(0, 10);
+        };
+        const lineWindow = (from: string, to: string) => [
+          { column: 'created_at', op: 'gte' as const, value: padDay(from, -1) },
+          { column: 'created_at', op: 'lte' as const, value: padDay(to, 1) + 'T23:59:59.999Z' },
+        ];
+        const mainFrom = bounds.from < prevBounds.from ? bounds.from : prevBounds.from;
+        const mainTo = bounds.to > prevBounds.to ? bounds.to : prevBounds.to;
+        const ninetyDaysAgo = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+        const todayStr = new Date().toISOString().slice(0, 10);
+
+        const [
+          ordersData, prevOrdersData, mtdOrdersData, prevMtdOrdersData, productMeta,
+          orderLines, bcInv, mtdOrd, mtdLinesAll, basketOrders, basketLinesAll,
+        ] = await Promise.all([
           queryWithDateRange('shopify_orders', 'id,order_number,created_at,total_price,subtotal_price,total_discounts,financial_status,cancelled_at,customer_name,customer_email,source_name', 'created_at', bounds),
           queryWithDateRange('shopify_orders', 'id,total_price,subtotal_price,total_discounts,financial_status,cancelled_at', 'created_at', prevBounds),
           queryWithDateRange('shopify_orders', 'id,total_price,financial_status,cancelled_at', 'created_at', { from: ranges.mtd.start, to: ranges.mtd.end }),
           queryWithDateRange('shopify_orders', 'id,total_price,financial_status,cancelled_at', 'created_at', { from: ranges.prevMtd.start, to: ranges.prevMtd.end }),
           getProductMeta(),
+          queryAllPages('shopify_order_lines', lineCols, lineWindow(mainFrom, mainTo)),
+          queryAll('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code', undefined, 50000),
+          queryWithDateRange('shopify_orders', 'id,order_number,created_at,total_price,financial_status,cancelled_at,customer_name,source_name', 'created_at', { from: ranges.mtd.start, to: ranges.mtd.end }),
+          queryAllPages('shopify_order_lines', lineCols, lineWindow(ranges.mtd.start, ranges.mtd.end)),
+          queryAllPages('shopify_orders', 'id,financial_status,cancelled_at', [{ column: 'created_at', op: 'gte', value: ninetyDaysAgo }]),
+          queryAllPages('shopify_order_lines', lineCols, lineWindow(ninetyDaysAgo, todayStr)),
         ]);
-
-        // Pull order lines only for orders we care about (batched IN query, no 1000-row cap)
-        const allInterestingOrderIds = Array.from(new Set([
-          ...ordersData.map((o: any) => String(o.id)),
-          ...prevOrdersData.map((o: any) => String(o.id)),
-        ]));
-        const orderLines = await queryInBatches(
-          'shopify_order_lines',
-          'order_id,product_id,title,sku,vendor,quantity,price,product_type',
-          'order_id',
-          allInterestingOrderIds
-        );
 
         if (cancelled) return;
 
@@ -243,7 +259,6 @@ export default function RetailSalesPage() {
         setCategoryData(categoryArr);
 
         // Margin analysis
-        const bcInv = await queryAll('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code', undefined, 50000);
         const costMap: Record<string, { unitPrice: number; unitCost: number }> = {};
         bcInv.forEach((item: any) => {
           if (item.number) costMap[item.number] = { unitPrice: parseFloat(item.unit_price) || 0, unitCost: parseFloat(item.unit_cost) || 0 };
@@ -272,19 +287,8 @@ export default function RetailSalesPage() {
         setMarginData(marginArr);
 
         // ── Brand Ranking: MTD orders & lines ──
-        const mtdOrd = await queryWithDateRange(
-          'shopify_orders',
-          'id,order_number,created_at,total_price,financial_status,cancelled_at,customer_name,source_name',
-          'created_at',
-          { from: ranges.mtd.start, to: ranges.mtd.end }
-        );
         const mtdOrdIds = new Set(mtdOrd.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => String(o.id)));
-        const mtdLinesRaw = await queryInBatches(
-          'shopify_order_lines',
-          'order_id,product_id,title,sku,vendor,quantity,price,product_type',
-          'order_id',
-          Array.from(mtdOrdIds)
-        );
+        const mtdLinesRaw = mtdLinesAll.filter((l: any) => mtdOrdIds.has(String(l.order_id)));
         // Backfill product_type / vendor from products meta
         const mtdLines = mtdLinesRaw.map((l: any) => {
           const pm = productMeta[String(l.product_id || '')];
@@ -296,21 +300,10 @@ export default function RetailSalesPage() {
         }
 
         // ── Basket Analysis: 90 days ──
-        const ninetyDaysAgo = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
-        const basketOrders = await queryAllPages(
-          'shopify_orders',
-          'id,financial_status,cancelled_at',
-          [{ column: 'created_at', op: 'gte', value: ninetyDaysAgo }]
-        );
-        const basketValidIds = Array.from(new Set(
+        const basketValidIds = new Set(
           basketOrders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at).map((o: any) => String(o.id))
-        ));
-        const basketLinesRaw = await queryInBatches(
-          'shopify_order_lines',
-          'order_id,product_id,title,sku,vendor,quantity,price,product_type',
-          'order_id',
-          basketValidIds
         );
+        const basketLinesRaw = basketLinesAll.filter((l: any) => basketValidIds.has(String(l.order_id)));
         const basketLines = basketLinesRaw.map((l: any) => {
           const pm = productMeta[String(l.product_id || '')];
           return { ...l, product_type: l.product_type || pm?.product_type || '', vendor: l.vendor || pm?.vendor || '' };
