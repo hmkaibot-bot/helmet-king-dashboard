@@ -90,7 +90,10 @@ export default function ProductAnalytics() {
 
     async function loadPhase1() {
       const [ol, inv] = await Promise.all([
-        queryAllPages('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity,price,product_type,created_at'),
+        // 本頁全部指標都係 30/60 日 window — server-side filter,
+        // 順手修正咗以前「60d」圖表其實計埋全歷史嘅問題
+        queryAllPages('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity,price,product_type,created_at',
+          [{ column: 'created_at', op: 'gte', value: sixtyDaysAgo }]),
         queryAllPages('shopify_inventory', 'product_id,sku,product_title,price,inventory_quantity,vendor,product_type'),
       ]);
       const { data: ord } = await supabase

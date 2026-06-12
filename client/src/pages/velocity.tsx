@@ -153,7 +153,9 @@ export default function VelocityPage() {
         // Paginated fetches in parallel
         const [inventoryRaw, orderLinesRaw] = await Promise.all([
           queryAllPages('shopify_inventory', 'sku,product_title,variant_title,price,inventory_quantity,vendor,product_type,snapshot_date'),
-          queryAllPages('shopify_order_lines', 'sku,title,vendor,product_type,quantity,price,created_at'),
+          // 本頁只計 7/30/60 日 velocity — server-side filter 慳大量傳輸
+          queryAllPages('shopify_order_lines', 'sku,title,vendor,product_type,quantity,price,created_at',
+            [{ column: 'created_at', op: 'gte', value: sixtyAgoStr }]),
         ]);
 
         if (cancelled) return;
