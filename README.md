@@ -13,9 +13,9 @@ Foorir 客流 ──────────────────────
 ```
 
 - **前端**：`client/` — React 18 + Vite + Tailwind + shadcn/ui + TanStack Query + Recharts，hash routing（wouter）
-- **數據層**：`client/src/lib/query-helpers.ts` 統一查 Supabase（分頁、cache、de-dup）
+- **數據層**：`client/src/lib/query-helpers.ts` 統一查 Supabase（並行分頁、retry、cache、de-dup）；
+  重型聚合優先用 SQL views（`sql/perf-views.sql`），view 未建立會自動 fallback 行 client-side 計算
 - **同步**：`scripts/*.py` 由 `.github/workflows/` 每日排程跑（Shopify/BC → Supabase）
-- **`server/`**：只係本地開發用嘅 Vite dev server wrapper，production 唔會部署
 
 ## 安全模型（重要）
 
@@ -34,7 +34,8 @@ Foorir 客流 ──────────────────────
 2. 更新 GitHub repo secrets（`SUPABASE_SERVICE_KEY`）同 n8n 用新 key
 3. **建立登入用戶**：Supabase Dashboard → Authentication → Users → Add user（建議 Auto Confirm）
 4. **開 RLS**：SQL Editor 跑 `sql/enable-rls.sql`
-5. （可選）Vercel 環境變數設 `VITE_FOORIR_USERNAME` / `VITE_FOORIR_PASSWORD`（客流功能）
+5. **提速 views**：SQL Editor 跑 `sql/perf-views.sql`（死貨/補貨頁會由「拉幾十萬行」變「一個 request」）
+6. （可選）Vercel 環境變數設 `VITE_FOORIR_USERNAME` / `VITE_FOORIR_PASSWORD`（客流功能）
 
 ## 環境變數
 
@@ -44,9 +45,9 @@ Foorir 客流 ──────────────────────
 
 ```bash
 npm install
-npm run dev      # localhost:5000 (Express + Vite middleware)
+npm run dev      # Vite dev server
 npm run check    # TypeScript typecheck
-vite build       # production build → dist/public
+npm run build    # production build → dist/public
 ```
 
 ## 部署

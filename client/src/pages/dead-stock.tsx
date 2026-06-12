@@ -20,7 +20,7 @@
  */
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { queryAllPages } from '@/lib/query-helpers';
+import { queryAllPages, tryView } from '@/lib/query-helpers';
 import { downloadCsv, dateStamp } from '@/lib/export-csv';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -71,6 +71,15 @@ interface OrderLineRow {
   sku: string;
   quantity: number;
   order_id: string;
+}
+
+/** sku_sales_stats view (sql/perf-views.sql) 一行 — server-side 聚合 */
+interface SkuSalesStatsRow {
+  sku: string;
+  first_sold_date: string | null;
+  last_sold_date: string | null;
+  sold_30d: number | string;
+  sold_90d: number | string;
 }
 
 interface OrderRow {
@@ -547,6 +556,7 @@ export default function DeadStockPage() {
   const [bcInv, setBcInv] = useState<BcInventoryRow[]>([]);
   const [orderLines, setOrderLines] = useState<OrderLineRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [skuStatsView, setSkuStatsView] = useState<SkuSalesStatsRow[] | null>(null);
   const [reviews, setReviews] = useState<DeadStockReview[]>([]);
   const [auditLog, setAuditLog] = useState<AuditLogRow[]>([]);
   const [shopifyProducts, setShopifyProducts] = useState<ShopifyProductRow[]>([]);
@@ -745,13 +755,16 @@ export default function DeadStockPage() {
     setLoading(true);
     setError(null);
     try {
-      const [invRows, bcRows, linesRows, ordersRows, reviewsRows, auditRows, productsRows, piRows, pilRows] = await Promise.all([
+      // 優先用 server-side 聚合 view (sql/perf-views.sql) — 一個細 request
+      // 取代 shopify_order_lines + shopify_orders 兩張最大表
+      const statsViewPromise = tryView('sku_sales_stats', 'sku,first_sold_date,last_sold_date,sold_30d,sold_90d');
+
+      const [statsView, invRows, bcRows, reviewsRows, auditRows, productsRows, piRows, pilRows] = await Promise.all([
+        statsViewPromise,
         // V2.2: 一次 load 全部 SKU（包括 0-stock），令母行 best-of 全面正確
         // 不再需要 lazy-load 0-stock variants
         queryAllPages('shopify_inventory', 'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price'),
         queryAllPages('bc_inventory', 'number,unit_cost,unit_price'),
-        queryAllPages('shopify_order_lines', 'sku,quantity,order_id'),
-        queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
         // V2.3: 用 queryAllPages 避免 Supabase 1000-row default cap (reviews 表已過 1k 行)
         queryAllPages('dead_stock_reviews', '*'),
         queryAllPages('dead_stock_audit_log', '*'),
@@ -759,6 +772,17 @@ export default function DeadStockPage() {
         queryAllPages('bc_purchase_invoices', 'id,posting_date'),
         queryAllPages('bc_purchase_invoice_lines', 'invoice_id,item_number'),
       ]);
+
+      // View 未建立 → fallback: 拉返原始 order lines/orders 喺 client 計
+      let linesRows: any[] = [];
+      let ordersRows: any[] = [];
+      if (statsView === null) {
+        [linesRows, ordersRows] = await Promise.all([
+          queryAllPages('shopify_order_lines', 'sku,quantity,order_id'),
+          queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
+        ]);
+      }
+      setSkuStatsView(statsView as SkuSalesStatsRow[] | null);
 
       setShopifyInv(invRows as ShopifyInventoryRow[]);
       setBcInv(bcRows as BcInventoryRow[]);
@@ -821,34 +845,50 @@ export default function DeadStockPage() {
     const reviewMap = new Map<string, DeadStockReview>();
     for (const r of reviews) reviewMap.set(r.sku, r);
 
-    const orderMap = new Map<string, { created_at: string; cancelled: boolean }>();
-    for (const o of orders) {
-      orderMap.set(String(o.id), { created_at: o.created_at, cancelled: !!o.cancelled_at });
-    }
-
     const skuStats = new Map<string, { lastDate: number; firstDate: number; sold30: number; sold90: number }>();
     const now30 = now - 30 * MS_PER_DAY;
     const now90 = now - 90 * MS_PER_DAY;
 
-    for (const line of orderLines) {
-      const ord = orderMap.get(String(line.order_id));
-      if (!ord || ord.cancelled) continue;
-      const ts = new Date(ord.created_at).getTime();
-      if (isNaN(ts)) continue;
-
-      const existing = skuStats.get(line.sku);
-      if (!existing) {
-        skuStats.set(line.sku, {
-          lastDate: ts,
-          firstDate: ts,
-          sold30: ts >= now30 ? (line.quantity ?? 0) : 0,
-          sold90: ts >= now90 ? (line.quantity ?? 0) : 0,
+    if (skuStatsView) {
+      // Server-side 聚合 view 已經計好每個 SKU 嘅統計
+      for (const r of skuStatsView) {
+        const lastTs = r.last_sold_date ? new Date(r.last_sold_date).getTime() : NaN;
+        const firstTs = r.first_sold_date ? new Date(r.first_sold_date).getTime() : NaN;
+        if (isNaN(lastTs) || isNaN(firstTs)) continue;
+        skuStats.set(r.sku, {
+          lastDate: lastTs,
+          firstDate: firstTs,
+          sold30: Number(r.sold_30d) || 0,
+          sold90: Number(r.sold_90d) || 0,
         });
-      } else {
-        if (ts > existing.lastDate) existing.lastDate = ts;
-        if (ts < existing.firstDate) existing.firstDate = ts;
-        if (ts >= now30) existing.sold30 += line.quantity ?? 0;
-        if (ts >= now90) existing.sold90 += line.quantity ?? 0;
+      }
+    } else {
+      // Fallback: client-side 聚合原始 order lines
+      const orderMap = new Map<string, { created_at: string; cancelled: boolean }>();
+      for (const o of orders) {
+        orderMap.set(String(o.id), { created_at: o.created_at, cancelled: !!o.cancelled_at });
+      }
+
+      for (const line of orderLines) {
+        const ord = orderMap.get(String(line.order_id));
+        if (!ord || ord.cancelled) continue;
+        const ts = new Date(ord.created_at).getTime();
+        if (isNaN(ts)) continue;
+
+        const existing = skuStats.get(line.sku);
+        if (!existing) {
+          skuStats.set(line.sku, {
+            lastDate: ts,
+            firstDate: ts,
+            sold30: ts >= now30 ? (line.quantity ?? 0) : 0,
+            sold90: ts >= now90 ? (line.quantity ?? 0) : 0,
+          });
+        } else {
+          if (ts > existing.lastDate) existing.lastDate = ts;
+          if (ts < existing.firstDate) existing.firstDate = ts;
+          if (ts >= now30) existing.sold30 += line.quantity ?? 0;
+          if (ts >= now90) existing.sold90 += line.quantity ?? 0;
+        }
       }
     }
 
@@ -960,7 +1000,7 @@ export default function DeadStockPage() {
     }
 
     return result;
-  }, [shopifyInv, bcInv, orderLines, orders, reviews, shopifyProducts, purchaseInvoices, purchaseInvoiceLines]);
+  }, [shopifyInv, bcInv, orderLines, orders, skuStatsView, reviews, shopifyProducts, purchaseInvoices, purchaseInvoiceLines]);
 
   // ── Summary stats ───────────────────────────────────────────────────────────
 

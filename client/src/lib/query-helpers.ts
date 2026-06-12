@@ -170,10 +170,8 @@ async function _queryAllPagesUncached(
   const MAX_RETRIES = 3;
   const RETRY_DELAYS = [500, 1500, 4000];
 
-  const all: any[] = [];
-  let offset = 0;
-  while (all.length < maxRows) {
-    let data: any[] | null = null;
+  // 單頁 fetch + retry
+  const fetchPage = async (offset: number): Promise<any[]> => {
     let lastError: unknown = null;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       if (attempt > 0) {
@@ -191,20 +189,51 @@ async function _queryAllPagesUncached(
         }
       }
       const res = await query;
-      if (!res.error) { data = res.data ?? []; break; }
+      if (!res.error) return res.data ?? [];
       lastError = res.error;
-      console.warn(`Pagination error on ${table} (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, res.error);
+      console.warn(`Pagination error on ${table} offset=${offset} (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, res.error);
     }
-    if (data === null) {
-      // 唔好靜靜回傳半截數據當完整 — throw 俾上層 (queryAllPages 有 stale cache fallback)
-      throw new Error(`queryAllPages(${table}) failed after ${MAX_RETRIES + 1} attempts: ${(lastError as any)?.message ?? lastError}`);
+    // 唔好靜靜回傳半截數據當完整 — throw 俾上層 (queryAllPages 有 stale cache fallback)
+    throw new Error(`queryAllPages(${table}) failed after ${MAX_RETRIES + 1} attempts: ${(lastError as any)?.message ?? lastError}`);
+  };
+
+  // 第一頁先單獨試 — 大部分表唔夠 1000 行,一個 request 搞掂
+  const all: any[] = [];
+  const first = await fetchPage(0);
+  all.push(...first);
+  if (first.length < PAGE_SIZE) return all;
+
+  // 之後每輪並行拉 CONCURRENCY 頁,直到某一頁唔滿 (= 到尾)。
+  // 並行度刻意保守 (4) 避免觸發 Supabase / Cloudflare rate limit。
+  const CONCURRENCY = 4;
+  let offset = PAGE_SIZE;
+  while (all.length < maxRows) {
+    const offsets = Array.from({ length: CONCURRENCY }, (_, i) => offset + i * PAGE_SIZE);
+    const pages = await Promise.all(offsets.map(fetchPage));
+    let done = false;
+    for (const page of pages) {
+      all.push(...page);
+      if (page.length < PAGE_SIZE) { done = true; break; }
     }
-    if (data.length === 0) break;
-    all.push(...data);
-    if (data.length < PAGE_SIZE) break;
-    offset += PAGE_SIZE;
+    if (done) break;
+    offset += CONCURRENCY * PAGE_SIZE;
   }
   return all;
+}
+
+/**
+ * 試用 server-side 聚合 view (sql/perf-views.sql)。
+ * View 未建立時 (probe 即刻 error) 回 null,俾 caller fallback 行舊嘅
+ * client-side 聚合路徑 — 所以未跑 SQL 之前 app 照行。
+ */
+export async function tryView(view: string, columns: string): Promise<any[] | null> {
+  const probe = await supabase.from(view).select(columns).limit(1);
+  if (probe.error) return null;
+  try {
+    return await queryAllPages(view, columns);
+  } catch {
+    return null;
+  }
 }
 
 /**

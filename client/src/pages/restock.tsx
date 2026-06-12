@@ -1,6 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { supabase } from '@/lib/supabase';
-import { queryAll } from '@/lib/query-helpers';
+import { queryAllPages, tryView } from '@/lib/query-helpers';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber } from '@/lib/format';
@@ -74,46 +73,46 @@ export default function RestockPage() {
     async function load() {
       setLoading(true);
       try {
-        // 1. Fetch inventory
-        const inventory = await queryAll(
+        // 1. Fetch inventory (queryAllPages 分頁 — Supabase 單 request 最多 1000 行)
+        const inventory = await queryAllPages(
           'shopify_inventory',
-          'variant_id,product_id,product_title,sku,price,inventory_quantity,vendor,product_type',
-          undefined,
-          10000
+          'variant_id,product_id,product_title,sku,price,inventory_quantity,vendor,product_type'
         );
         const filteredInv = inventory.filter((i: any) => parseFloat(i.price) > 0);
 
-        // 2. Fetch order lines and orders from last 90 days
-        const ninetyAgo = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
-        const todayStr = new Date().toISOString().slice(0, 10);
-
-        const { data: recentOrders } = await supabase
-          .from('shopify_orders')
-          .select('id,created_at')
-          .gte('created_at', ninetyAgo)
-          .limit(10000);
-
-        const validOrderIds = new Set(
-          (recentOrders || [])
-            .filter((o: any) => o.created_at && o.created_at <= todayStr + '\xff')
-            .map((o: any) => o.id)
-        );
-
-        const orderLines = await queryAll(
-          'shopify_order_lines',
-          'variant_id,quantity,order_id',
-          undefined,
-          50000
-        );
-
-        // Compute avg daily sales per variant_id
+        // 2. 90 日銷量 — 優先用 server-side view (sql/perf-views.sql),
+        //    未建立就 fallback 拉原始 orders + order lines 喺 client 計
         const salesMap: Record<string, number> = {};
-        orderLines.forEach((l: any) => {
-          if (validOrderIds.has(l.order_id)) {
-            const vid = l.variant_id;
-            salesMap[vid] = (salesMap[vid] || 0) + (l.quantity || 0);
-          }
-        });
+        const viewRows = await tryView('variant_sales_90d', 'variant_id,qty_90d');
+        if (viewRows) {
+          viewRows.forEach((r: any) => {
+            if (r.variant_id != null) salesMap[r.variant_id] = Number(r.qty_90d) || 0;
+          });
+        } else {
+          const ninetyAgo = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+          const todayStr = new Date().toISOString().slice(0, 10);
+
+          const recentOrders = await queryAllPages(
+            'shopify_orders',
+            'id,created_at',
+            [{ column: 'created_at', op: 'gte', value: ninetyAgo }]
+          );
+
+          const validOrderIds = new Set(
+            recentOrders
+              .filter((o: any) => o.created_at && o.created_at <= todayStr + '\xff')
+              .map((o: any) => o.id)
+          );
+
+          const orderLines = await queryAllPages('shopify_order_lines', 'variant_id,quantity,order_id');
+
+          orderLines.forEach((l: any) => {
+            if (validOrderIds.has(l.order_id)) {
+              const vid = l.variant_id;
+              salesMap[vid] = (salesMap[vid] || 0) + (l.quantity || 0);
+            }
+          });
+        }
 
         if (cancelled) return;
 
