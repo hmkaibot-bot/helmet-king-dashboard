@@ -20,7 +20,7 @@
  */
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
-import { queryAllPages, tryView } from '@/lib/query-helpers';
+import { queryAllPages, tryView, clearQueryCache } from '@/lib/query-helpers';
 import { downloadCsv, dateStamp } from '@/lib/export-csv';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -777,6 +777,13 @@ export default function DeadStockPage() {
     return all;
   };
 
+  // Review 寫入後 refetch + 清 queryAllPages cache — 否則其他頁 (loadData 路徑)
+  // 喺 cache TTL 內會見到舊 review
+  const refreshReviews = async (): Promise<DeadStockReview[]> => {
+    clearQueryCache('dead_stock_reviews');
+    return fetchAllRows<DeadStockReview>('dead_stock_reviews');
+  };
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -1320,7 +1327,7 @@ export default function DeadStockPage() {
         await supabase.from('dead_stock_audit_log').insert(auditRows);
       }
 
-      const newReviews = await fetchAllRows<DeadStockReview>('dead_stock_reviews');
+      const newReviews = await refreshReviews();
       setReviews(newReviews);
       if (expandedSku) loadSkuAudit(expandedSku);
 
@@ -1446,7 +1453,7 @@ export default function DeadStockPage() {
       changed_at: new Date().toISOString(),
     });
 
-    const newReviews = await fetchAllRows<DeadStockReview>('dead_stock_reviews');
+    const newReviews = await refreshReviews();
     setReviews(newReviews);
     if (expandedSku) loadSkuAudit(expandedSku);
   };
@@ -1498,7 +1505,7 @@ export default function DeadStockPage() {
       await supabase.from('dead_stock_audit_log').insert(auditRows);
     }
 
-    const newReviews = await fetchAllRows<DeadStockReview>('dead_stock_reviews');
+    const newReviews = await refreshReviews();
     setReviews(newReviews);
     if (expandedSku) loadSkuAudit(expandedSku);
   };
@@ -1533,7 +1540,7 @@ export default function DeadStockPage() {
       changed_at: stamp,
     });
 
-    const newReviews = await fetchAllRows<DeadStockReview>('dead_stock_reviews');
+    const newReviews = await refreshReviews();
     setReviews(newReviews);
     if (expandedSku) loadSkuAudit(expandedSku);
   };
@@ -1576,7 +1583,7 @@ export default function DeadStockPage() {
       await supabase.from('dead_stock_audit_log').insert(auditRows);
     }
 
-    const newReviews = await fetchAllRows<DeadStockReview>('dead_stock_reviews');
+    const newReviews = await refreshReviews();
     setReviews(newReviews);
     if (expandedSku) loadSkuAudit(expandedSku);
   };
@@ -1632,7 +1639,7 @@ export default function DeadStockPage() {
         });
       }
 
-      const newReviews = await fetchAllRows<DeadStockReview>('dead_stock_reviews');
+      const newReviews = await refreshReviews();
       setReviews(newReviews);
       if (expandedSku) loadSkuAudit(expandedSku);
 

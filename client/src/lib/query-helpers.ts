@@ -117,31 +117,138 @@ function _makeKey(table: string, columns: string, extraFilters: any): string {
   return `${table}|${columns}|${extraFilters ? JSON.stringify(extraFilters) : ''}`;
 }
 
+// ── Persistent cache (IndexedDB) ─────────────────────────────────────────────
+// 數據每日 02:00–03:00 HKT 先由 GitHub Actions / n8n 同步一次,日間根本唔變 —
+// 將每日同步嘅大表持久化落 IndexedDB,同一個「數據日」之內 reload / 開新 tab
+// 都唔使再拉幾 MB,直接即開。用戶手動改嘅表 (dead_stock_reviews 等) 唔持久化。
+const PERSIST_PREFIXES = ['shopify_', 'bc_', 'marsello_', 'sku_', 'variant_', 'monthly_'];
+const IDB_NAME = 'hk-query-cache';
+const IDB_STORE = 'tables';
+
+function _isPersistable(table: string): boolean {
+  return PERSIST_PREFIXES.some(p => table.startsWith(p));
+}
+
+/** 最近一次同步邊界 = 04:00 HKT (= 20:00 UTC 前一日)。cache 喺邊界之後寫入先算新鮮。 */
+function _lastSyncBoundary(): number {
+  const b = new Date();
+  b.setUTCHours(20, 0, 0, 0);
+  if (b.getTime() > Date.now()) b.setUTCDate(b.getUTCDate() - 1);
+  return b.getTime();
+}
+
+function _openIdb(): Promise<IDBDatabase | null> {
+  return new Promise(resolve => {
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null); // e.g. sandboxed iframe / private mode without IDB
+    }
+  });
+}
+
+async function _idbGet(key: string): Promise<{ ts: number; data: any[] } | null> {
+  const db = await _openIdb();
+  if (!db) return null;
+  return new Promise(resolve => {
+    try {
+      const req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+
+async function _idbSet(key: string, value: { ts: number; data: any[] }): Promise<void> {
+  const db = await _openIdb();
+  if (!db) return;
+  try {
+    db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).put(value, key);
+  } catch { /* quota / private mode — degrade to memory-only */ }
+}
+
+// 每個 session 清一次過期 entry (上次同步邊界之前嘅) — 防止 IDB 積垃圾
+let _purged = false;
+async function _purgeStaleIdb(): Promise<void> {
+  if (_purged) return;
+  _purged = true;
+  const db = await _openIdb();
+  if (!db) return;
+  try {
+    const boundary = _lastSyncBoundary();
+    const store = db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE);
+    const req = store.openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      if (!cursor.value?.ts || cursor.value.ts < boundary) cursor.delete();
+      cursor.continue();
+    };
+  } catch { /* ignore */ }
+}
+
+async function _idbClear(prefix?: string): Promise<void> {
+  const db = await _openIdb();
+  if (!db) return;
+  try {
+    const store = db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE);
+    if (!prefix) { store.clear(); return; }
+    const req = store.getAllKeys();
+    req.onsuccess = () => {
+      for (const k of req.result) {
+        if (String(k).startsWith(`${prefix}|`)) store.delete(k);
+      }
+    };
+  } catch { /* ignore */ }
+}
+
 /** Manually invalidate cache (call after data sync or user clicks refresh). */
 export function clearQueryCache(tablePrefix?: string) {
-  if (!tablePrefix) { _cache.clear(); return; }
-  for (const k of Array.from(_cache.keys())) {
-    if (k.startsWith(`${tablePrefix}|`)) _cache.delete(k);
+  if (!tablePrefix) {
+    _cache.clear();
+  } else {
+    for (const k of Array.from(_cache.keys())) {
+      if (k.startsWith(`${tablePrefix}|`)) _cache.delete(k);
+    }
   }
+  void _idbClear(tablePrefix); // fire-and-forget
 }
 
 export async function queryAllPages(
   table: string,
   columns: string,
-  extraFilters?: { column: string; op: 'eq' | 'gte' | 'lte'; value: string }[],
+  extraFilters?: { column: string; op: 'eq' | 'gt' | 'gte' | 'lte'; value: string }[],
   maxRows = 200000
 ): Promise<any[]> {
   const cacheKey = _makeKey(table, columns, extraFilters);
   const cached = _cache.get(cacheKey);
   const now = Date.now();
-  // Serve fresh cache directly
-  if (cached && !cached.pending && now - cached.ts < CACHE_TTL_MS) {
+  const persistable = _isPersistable(table);
+  // 每日同步表: 同一個數據日之內 (上次同步邊界之後寫入) 一律算新鮮;
+  // 其他表 (用戶手動改): 沿用 5 分鐘 TTL
+  const isFresh = (ts: number) =>
+    persistable ? ts >= _lastSyncBoundary() : now - ts < CACHE_TTL_MS;
+  // Serve fresh memory cache directly
+  if (cached && !cached.pending && cached.ts > 0 && isFresh(cached.ts)) {
     return cached.data;
   }
   // De-duplicate concurrent identical requests
   if (cached?.pending) return cached.pending;
 
-  const promise = _queryAllPagesUncached(table, columns, extraFilters, maxRows);
+  const promise = (async () => {
+    // 持久 cache: reload / 新 tab 之後 memory 係空嘅,先試 IndexedDB
+    if (persistable && !cached) {
+      void _purgeStaleIdb();
+      const idbHit = await _idbGet(cacheKey);
+      if (idbHit && isFresh(idbHit.ts)) return idbHit.data;
+    }
+    const data = await _queryAllPagesUncached(table, columns, extraFilters, maxRows);
+    if (persistable) void _idbSet(cacheKey, { ts: Date.now(), data });
+    return data;
+  })();
   _cache.set(cacheKey, { ts: cached?.ts ?? 0, data: cached?.data ?? [], pending: promise });
   try {
     const data = await promise;
@@ -162,7 +269,7 @@ export async function queryAllPages(
 async function _queryAllPagesUncached(
   table: string,
   columns: string,
-  extraFilters?: { column: string; op: 'eq' | 'gte' | 'lte'; value: string }[],
+  extraFilters?: { column: string; op: 'eq' | 'gt' | 'gte' | 'lte'; value: string }[],
   maxRows = 200000
 ): Promise<any[]> {
   // 每次 request 想攞嘅行數。實際單次回傳上限由 PostgREST max-rows 決定
@@ -192,6 +299,7 @@ async function _queryAllPagesUncached(
       if (extraFilters) {
         for (const f of extraFilters) {
           if (f.op === 'eq')  query = (query as any).eq(f.column, f.value);
+          if (f.op === 'gt')  query = (query as any).gt(f.column, f.value);
           if (f.op === 'gte') query = (query as any).gte(f.column, f.value);
           if (f.op === 'lte') query = (query as any).lte(f.column, f.value);
         }

@@ -76,3 +76,49 @@ union all
 select 'variant_sales_90d', count(*) from variant_sales_90d
 union all
 select 'sku_receive_stats', count(*) from sku_receive_stats;
+
+-- ============================================================================
+-- v3 (2026-06-12): receive_count + 進貨明細 lazy view + 月度銷售聚合
+-- ============================================================================
+
+-- sku_receive_stats v3: 加 receive_count (distinct invoice 數) — 庫存頁「進貨次數」用
+create or replace view sku_receive_stats
+with (security_invoker = on) as
+select
+  btrim(l.item_number)        as sku,
+  min(i.posting_date)::date   as first_receive_date,
+  max(i.posting_date)::date   as last_receive_date,
+  count(distinct i.id)        as receive_count
+from bc_purchase_invoice_lines l
+join bc_purchase_invoices i on i.id = l.invoice_id
+where i.posting_date is not null
+  and l.item_number is not null
+  and btrim(l.item_number) <> ''
+group by btrim(l.item_number);
+
+-- 每個 SKU 嘅進貨明細 (庫存頁展開 row 先 lazy fetch, .eq('sku', ...))
+create or replace view sku_receive_events
+with (security_invoker = on) as
+select
+  btrim(l.item_number)                  as sku,
+  i.posting_date,
+  coalesce(l.invoice_number, i.number)  as invoice_number,
+  l.quantity,
+  l.unit_cost
+from bc_purchase_invoice_lines l
+join bc_purchase_invoices i on i.id = l.invoice_id
+where l.item_number is not null and btrim(l.item_number) <> '';
+
+-- 每月 x product_type 銷售聚合 (forecast 頁用) — 取代拉 24 個月 order_lines + orders
+-- month 用 UTC 月份, revenue 用 line_total (0/null 時 fallback price) — 同舊 client 計法一致
+create or replace view monthly_sales_by_type
+with (security_invoker = on) as
+select
+  to_char(o.created_at at time zone 'UTC', 'YYYY-MM')      as month,
+  coalesce(l.product_type, 'Unknown')                       as product_type,
+  coalesce(sum(l.quantity), 0)                              as qty,
+  coalesce(sum(coalesce(nullif(l.line_total, 0), l.price, 0)), 0) as revenue
+from shopify_order_lines l
+join shopify_orders o on o.id = l.order_id
+where o.created_at >= date_trunc('month', now()) - interval '25 months'
+group by 1, 2;

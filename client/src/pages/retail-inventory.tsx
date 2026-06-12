@@ -198,21 +198,12 @@ const DEFAULT_FILTERS: FilterState = {
 // ── Paginated Supabase fetch ──────────────────────────────
 
 async function fetchAllInventory(): Promise<any[]> {
-  let allInventory: any[] = [];
-  let from = 0;
-  const pageSize = 1000; // Supabase REST API max is 1000 rows per request
-  while (true) {
-    const { data } = await supabase
-      .from('shopify_inventory')
-      .select('variant_id, product_id, product_title, variant_title, sku, price, compare_at_price, inventory_quantity, vendor, product_type')
-      .gt('price', 0)
-      .range(from, from + pageSize - 1);
-    if (!data || data.length === 0) break;
-    allInventory = [...allInventory, ...data];
-    if (data.length < pageSize) break;
-    from += pageSize;
-  }
-  return allInventory;
+  // queryAllPages = 並行分頁 + 跨頁 cache (persistent),取代以前逐 1000 行串行拉
+  return queryAllPages(
+    'shopify_inventory',
+    'variant_id,product_id,product_title,variant_title,sku,price,compare_at_price,inventory_quantity,vendor,product_type',
+    [{ column: 'price', op: 'gt', value: '0' }]
+  );
 }
 
 // ── MultiSelect Component ─────────────────────────────────
@@ -339,6 +330,8 @@ function ProcurementRow({ procurement, colSpan }: { procurement: ItemProcurement
               ))}
             </tbody>
           </table>
+        ) : procurement.restockCount > 0 ? (
+          <p className="text-[11px] text-muted-foreground/60 ml-4">載入進貨明細…</p>
         ) : (
           <p className="text-[11px] text-muted-foreground/60 ml-4">No procurement records found</p>
         )}
@@ -378,9 +371,31 @@ export default function RetailInventoryPage() {
   // Products tab: zero-stock variants loaded on demand
   const [zeroStockVariants, setZeroStockVariants] = useState<Map<string, any[]>>(new Map());
 
+  // 進貨明細 lazy load — view 模式下 events 初始為空,展開 row 時先拉 (sku_receive_events)
+  const procEventsRequestedRef = useRef<Set<string>>(new Set());
   const toggleExpand = useCallback((sku: string) => {
     setExpandedSku((prev) => prev === sku ? null : sku);
-  }, []);
+    const proc = procurementByItem[sku];
+    if (proc && proc.events.length === 0 && proc.restockCount > 0 && !procEventsRequestedRef.current.has(sku)) {
+      procEventsRequestedRef.current.add(sku);
+      supabase
+        .from('sku_receive_events')
+        .select('posting_date,invoice_number,quantity,unit_cost')
+        .eq('sku', sku)
+        .order('posting_date', { ascending: false })
+        .limit(200)
+        .then(({ data }) => {
+          if (!data) return;
+          const events: ProcurementEvent[] = data.map((e: any) => ({
+            date: e.posting_date || '',
+            invoiceNumber: e.invoice_number || '',
+            qty: Number(e.quantity) || 0,
+            unitCost: parseFloat(e.unit_cost) || 0,
+          }));
+          setProcurementByItem(prev => prev[sku] ? { ...prev, [sku]: { ...prev[sku], events } } : prev);
+        });
+    }
+  }, [procurementByItem]);
 
   // Products tab: expand product group and load 0-stock variants on demand
   const toggleProductGroup = useCallback(async (title: string) => {
@@ -420,23 +435,31 @@ export default function RetailInventoryPage() {
     async function load() {
       setLoading(true);
       try {
-        // 優先用 server-side 聚合 view (sql/perf-views.sql v2 帶 total_qty),
-        // 一個細 request 取代 order_lines + orders 兩張最大表
-        const [inv, bcInv, purchaseLines, purchaseInvoices, salesView, shopifyProducts] = await Promise.all([
+        // 優先用 server-side 聚合 views (sql/perf-views.sql):
+        // sku_sales_stats 取代 order_lines + orders;
+        // sku_receive_stats v3 (帶 receive_count) 取代 purchase invoices 兩張表
+        const [inv, bcInv, receiveView, salesView, shopifyProducts] = await Promise.all([
           fetchAllInventory(),
           queryAllPages('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code'),
-          queryAllPages('bc_purchase_invoice_lines', 'invoice_id,invoice_number,item_number,quantity,unit_cost'),
-          queryAllPages('bc_purchase_invoices', 'id,posting_date,number'),
+          tryView('sku_receive_stats', 'sku,first_receive_date,last_receive_date,receive_count'),
           tryView('sku_sales_stats', 'sku,last_sold_date,total_qty'),
           queryAllPages('shopify_products', 'id,status,created_at'),
         ]);
-        // View 未建立 (或未係 v2) → fallback 拉原始表
+        // View 未建立 (或未係 v2/v3) → fallback 拉原始表
         let orderLines: any[] = [];
         let orders: any[] = [];
         if (salesView === null) {
           [orderLines, orders] = await Promise.all([
             queryAllPages('shopify_order_lines', 'order_id,product_id,title,sku,vendor,quantity'),
             queryAllPages('shopify_orders', 'id,created_at,financial_status,cancelled_at'),
+          ]);
+        }
+        let purchaseLines: any[] = [];
+        let purchaseInvoices: any[] = [];
+        if (receiveView === null) {
+          [purchaseLines, purchaseInvoices] = await Promise.all([
+            queryAllPages('bc_purchase_invoice_lines', 'invoice_id,invoice_number,item_number,quantity,unit_cost'),
+            queryAllPages('bc_purchase_invoices', 'id,posting_date,number'),
           ]);
         }
         if (cancelled) return;
@@ -453,61 +476,83 @@ export default function RetailInventoryPage() {
         setInventory(inv);
         setBcInventory(bcInv);
 
-        // Build invoice lookup: id → { posting_date, number }
-        const invoiceLookup: Record<string, { posting_date: string; number: string }> = {};
-        purchaseInvoices.forEach((pi: any) => {
-          invoiceLookup[pi.id] = { posting_date: pi.posting_date || '', number: pi.number || '' };
-        });
-
-        // Purchase count per item (from bc_purchase_invoice_lines)
-        const pcMap: Record<string, Set<string>> = {};
-        purchaseLines.forEach((l: any) => {
-          if (!l.item_number) return;
-          if (!pcMap[l.item_number]) pcMap[l.item_number] = new Set();
-          pcMap[l.item_number].add(l.invoice_id || l.invoice_number);
-        });
-        const countMap: Record<string, number> = {};
-        Object.entries(pcMap).forEach(([k, v]) => { countMap[k] = v.size; });
-        setPurchaseCountByItem(countMap);
-
-        // Last purchase date per item
-        const lpMap: Record<string, string> = {};
-        purchaseLines.forEach((l: any) => {
-          if (!l.item_number) return;
-          const inv = invoiceLookup[l.invoice_id];
-          const date = inv?.posting_date || '';
-          if (date && (!lpMap[l.item_number] || date > lpMap[l.item_number])) {
-            lpMap[l.item_number] = date;
-          }
-        });
-        setLastPurchaseDateByItem(lpMap);
-
-        // ── Build full procurement history per item ──
-        const historyMap: Record<string, ProcurementEvent[]> = {};
-        purchaseLines.forEach((l: any) => {
-          if (!l.item_number) return;
-          const inv = invoiceLookup[l.invoice_id];
-          if (!historyMap[l.item_number]) historyMap[l.item_number] = [];
-          historyMap[l.item_number].push({
-            date: inv?.posting_date || '',
-            invoiceNumber: l.invoice_number || inv?.number || '',
-            qty: l.quantity || 0,
-            unitCost: parseFloat(l.unit_cost) || 0,
+        if (receiveView) {
+          // Server-side 聚合 view 已經計好 進貨次數 / 首次 / 最後進貨日。
+          // 進貨明細 (events) 唔再開頁全載 — 展開 row 時先 lazy fetch (sku_receive_events)
+          const countMap: Record<string, number> = {};
+          const lpMap: Record<string, string> = {};
+          const procMap: Record<string, ItemProcurement> = {};
+          receiveView.forEach((r: any) => {
+            if (!r.sku) return;
+            countMap[r.sku] = Number(r.receive_count) || 0;
+            if (r.last_receive_date) lpMap[r.sku] = r.last_receive_date;
+            procMap[r.sku] = {
+              firstPurchaseDate: r.first_receive_date || '',
+              restockCount: Number(r.receive_count) || 0,
+              events: [],
+            };
           });
-        });
+          setPurchaseCountByItem(countMap);
+          setLastPurchaseDateByItem(lpMap);
+          setProcurementByItem(procMap);
+        } else {
+          // Fallback: client-side 聚合原始 purchase invoices + lines
+          // Build invoice lookup: id → { posting_date, number }
+          const invoiceLookup: Record<string, { posting_date: string; number: string }> = {};
+          purchaseInvoices.forEach((pi: any) => {
+            invoiceLookup[pi.id] = { posting_date: pi.posting_date || '', number: pi.number || '' };
+          });
 
-        const procMap: Record<string, ItemProcurement> = {};
-        Object.entries(historyMap).forEach(([itemNumber, events]) => {
-          events.sort((a, b) => b.date.localeCompare(a.date));
-          const firstDate = events.length > 0 ? events[events.length - 1].date : '';
-          const distinctInvoices = new Set(events.map((e) => e.invoiceNumber || e.date));
-          procMap[itemNumber] = {
-            firstPurchaseDate: firstDate,
-            restockCount: distinctInvoices.size,
-            events,
-          };
-        });
-        setProcurementByItem(procMap);
+          // Purchase count per item (from bc_purchase_invoice_lines)
+          const pcMap: Record<string, Set<string>> = {};
+          purchaseLines.forEach((l: any) => {
+            if (!l.item_number) return;
+            if (!pcMap[l.item_number]) pcMap[l.item_number] = new Set();
+            pcMap[l.item_number].add(l.invoice_id || l.invoice_number);
+          });
+          const countMap: Record<string, number> = {};
+          Object.entries(pcMap).forEach(([k, v]) => { countMap[k] = v.size; });
+          setPurchaseCountByItem(countMap);
+
+          // Last purchase date per item
+          const lpMap: Record<string, string> = {};
+          purchaseLines.forEach((l: any) => {
+            if (!l.item_number) return;
+            const inv = invoiceLookup[l.invoice_id];
+            const date = inv?.posting_date || '';
+            if (date && (!lpMap[l.item_number] || date > lpMap[l.item_number])) {
+              lpMap[l.item_number] = date;
+            }
+          });
+          setLastPurchaseDateByItem(lpMap);
+
+          // ── Build full procurement history per item ──
+          const historyMap: Record<string, ProcurementEvent[]> = {};
+          purchaseLines.forEach((l: any) => {
+            if (!l.item_number) return;
+            const inv = invoiceLookup[l.invoice_id];
+            if (!historyMap[l.item_number]) historyMap[l.item_number] = [];
+            historyMap[l.item_number].push({
+              date: inv?.posting_date || '',
+              invoiceNumber: l.invoice_number || inv?.number || '',
+              qty: l.quantity || 0,
+              unitCost: parseFloat(l.unit_cost) || 0,
+            });
+          });
+
+          const procMap: Record<string, ItemProcurement> = {};
+          Object.entries(historyMap).forEach(([itemNumber, events]) => {
+            events.sort((a, b) => b.date.localeCompare(a.date));
+            const firstDate = events.length > 0 ? events[events.length - 1].date : '';
+            const distinctInvoices = new Set(events.map((e) => e.invoiceNumber || e.date));
+            procMap[itemNumber] = {
+              firstPurchaseDate: firstDate,
+              restockCount: distinctInvoices.size,
+              events,
+            };
+          });
+          setProcurementByItem(procMap);
+        }
 
         // Sales by product
         const salesMap: Record<string, { qty: number; lastSaleDate: string }> = {};
@@ -810,7 +855,8 @@ export default function RetailInventoryPage() {
   // Helper: get procurement badge text for a SKU
   const procBadge = (sku: string) => {
     const proc = procurementByItem[sku];
-    if (!proc || proc.events.length === 0) return null;
+    // view 模式下 events lazy load,所以用 restockCount 判斷有冇進貨記錄
+    if (!proc || proc.restockCount === 0) return null;
     return proc;
   };
 
