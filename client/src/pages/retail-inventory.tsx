@@ -348,7 +348,7 @@ export default function RetailInventoryPage() {
   const [bcInventory, setBcInventory] = useState<any[]>([]);
   const [purchaseCountByItem, setPurchaseCountByItem] = useState<Record<string, number>>({});
   const [lastPurchaseDateByItem, setLastPurchaseDateByItem] = useState<Record<string, string>>({});
-  const [salesByProduct, setSalesByProduct] = useState<Record<string, { qty: number; lastSaleDate: string }>>({});
+  const [salesByProduct, setSalesByProduct] = useState<Record<string, { qty: number; lastSaleDate: string; sold90?: number }>>({});
   const [procurementByItem, setProcurementByItem] = useState<Record<string, ItemProcurement>>({});
   const [deadStockExcludedProductIds, setDeadStockExcludedProductIds] = useState<Set<string>>(new Set());
 
@@ -442,7 +442,7 @@ export default function RetailInventoryPage() {
           fetchAllInventory(),
           queryAllPages('bc_inventory', 'number,display_name,unit_price,unit_cost,item_category_code'),
           tryView('sku_receive_stats', 'sku,first_receive_date,last_receive_date,receive_count'),
-          tryView('sku_sales_stats', 'sku,last_sold_date,total_qty'),
+          tryView('sku_sales_stats', 'sku,last_sold_date,total_qty,sold_90d'),
           queryAllPages('shopify_products', 'id,status,created_at'),
         ]);
         // View 未建立 (或未係 v2/v3) → fallback 拉原始表
@@ -555,12 +555,12 @@ export default function RetailInventoryPage() {
         }
 
         // Sales by product
-        const salesMap: Record<string, { qty: number; lastSaleDate: string }> = {};
+        const salesMap: Record<string, { qty: number; lastSaleDate: string; sold90?: number }> = {};
         if (salesView) {
           // View 已經 server-side 計好 (剔除 cancelled/refunded)
           salesView.forEach((r: any) => {
             if (!r.sku) return;
-            salesMap[r.sku] = { qty: Number(r.total_qty) || 0, lastSaleDate: r.last_sold_date || '' };
+            salesMap[r.sku] = { qty: Number(r.total_qty) || 0, lastSaleDate: r.last_sold_date || '', sold90: Number(r.sold_90d) || 0 };
           });
         } else {
           const validOrders = orders.filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at);
@@ -745,6 +745,106 @@ export default function RetailInventoryPage() {
       .sort((a, b) => b.totalCostAtRisk - a.totalCostAtRisk);
   }, [filteredInventory, salesByProduct, lastPurchaseDateByItem, bcCostMap, deadStockExcludedProductIds]);
 
+  // ── 斷碼分析 (Size Gaps) ────────────────────────────────────────────────
+  // 對頭盔/人身部品: 一款貨剩低嘅碼賣唔郁,但系統話「仲有貨」— 同死貨無分別。
+  // 斷碼率 = 缺貨 variants 按「歷史銷量佔比」加權 (冇銷量記錄就按 variant 數平均)。
+  // 只列出仲有殘餘庫存嘅貨品 (全斷 = 補貨/死貨問題,唔屬呢度)。
+  interface SizeGapVariant {
+    sku: string;
+    size: string;
+    qty: number;
+    totalSold: number;
+    sold90: number;
+    lastSale: string;
+  }
+  interface SizeGapGroup {
+    title: string;
+    vendor: string;
+    productType: string;
+    variants: SizeGapVariant[];
+    totalVariants: number;
+    missingVariants: number;
+    missingShare: number;      // 0-1, 銷量加權斷碼率
+    sold90: number;            // 群組近90日銷量
+    remainingQty: number;
+    remainingCost: number;     // 殘餘庫存成本 (受影響資金)
+    severity: 'severe' | 'broken';
+    recommendation: '補碼' | '清碼' | '觀察';
+  }
+
+  const sizeGapGroups = useMemo<SizeGapGroup[]>(() => {
+    const byTitle = new Map<string, any[]>();
+    for (const i of filteredInventory) {
+      if (deadStockExcludedProductIds.has(String(i.product_id))) continue;
+      const t = i.product_title || '';
+      if (!t) continue;
+      const arr = byTitle.get(t);
+      if (arr) arr.push(i); else byTitle.set(t, [i]);
+    }
+
+    const groups: SizeGapGroup[] = [];
+    for (const [title, items] of Array.from(byTitle.entries())) {
+      // 只計多 variant 嘅貨 (有碼數先有斷碼)
+      if (items.length < 2) continue;
+      const remainingQty = items.reduce((s, i) => s + (i.inventory_quantity || 0), 0);
+      if (remainingQty <= 0) continue; // 全斷 — 唔屬斷碼分析
+
+      const variants: SizeGapVariant[] = items.map((i) => {
+        const sales = salesByProduct[i.sku] || { qty: 0, lastSaleDate: '', sold90: 0 };
+        return {
+          sku: i.sku || '',
+          size: i.variant_title || '—',
+          qty: i.inventory_quantity || 0,
+          totalSold: sales.qty || 0,
+          sold90: sales.sold90 || 0,
+          lastSale: sales.lastSaleDate ? sales.lastSaleDate.slice(0, 10) : '',
+        };
+      });
+
+      const totalWeight = variants.reduce((s, v) => s + v.totalSold, 0);
+      const missing = variants.filter(v => v.qty <= 0);
+      if (missing.length === 0) continue; // 齊碼 — 健康
+      const missingShare = totalWeight > 0
+        ? missing.reduce((s, v) => s + v.totalSold, 0) / totalWeight
+        : missing.length / variants.length;
+      if (missingShare < 0.25) continue; // 輕微 — 唔列,保持清單 actionable
+
+      const sold90 = variants.reduce((s, v) => s + v.sold90, 0);
+      const remainingCost = items.reduce((s, i) => {
+        const c = bcCostMap[i.sku];
+        return s + (c ? c.unitCost : 0) * Math.max(0, i.inventory_quantity || 0);
+      }, 0);
+
+      // 建議: 仲行緊貨 (近90日有銷) → 補返主流碼;冇乜流速 → 趁有碼清走
+      const recommendation: SizeGapGroup['recommendation'] =
+        sold90 >= 6 ? '補碼' : sold90 < 3 ? '清碼' : '觀察';
+
+      groups.push({
+        title,
+        vendor: items[0].vendor || '',
+        productType: items[0].product_type || '',
+        variants: variants.sort((a, b) => b.totalSold - a.totalSold),
+        totalVariants: variants.length,
+        missingVariants: missing.length,
+        missingShare,
+        sold90,
+        remainingQty,
+        remainingCost,
+        severity: missingShare >= 0.5 ? 'severe' : 'broken',
+        recommendation,
+      });
+    }
+    // 嚴重程度 + 受影響資金排序
+    return groups.sort((a, b) =>
+      a.severity === b.severity ? b.remainingCost - a.remainingCost : a.severity === 'severe' ? -1 : 1
+    );
+  }, [filteredInventory, salesByProduct, bcCostMap, deadStockExcludedProductIds]);
+
+  const sizeGapSevereCount = sizeGapGroups.filter(g => g.severity === 'severe').length;
+  const sizeGapTotalCost = sizeGapGroups.reduce((s, g) => s + g.remainingCost, 0);
+  const sizeGapRestockCount = sizeGapGroups.filter(g => g.recommendation === '補碼').length;
+  const [expandedSizeProduct, setExpandedSizeProduct] = useState<string | null>(null);
+
   const deadCount = deadStockData.filter((d) => d.status === 'DEAD').length;
   const warningCount = deadStockData.filter((d) => d.status === 'WARNING').length;
   const totalCostAtRisk = deadStockData.reduce((s, d) => s + d.totalCostAtRisk, 0);
@@ -882,13 +982,14 @@ export default function RetailInventoryPage() {
   return (
     <div className="space-y-4">
       <Tabs defaultValue="overview" className="w-full">
-        <TabsList className="grid w-full grid-cols-7 h-9" data-testid="inventory-tabs">
+        <TabsList className="grid w-full grid-cols-8 h-9" data-testid="inventory-tabs">
           <TabsTrigger value="overview" className="text-xs">概覽 Overview</TabsTrigger>
           <TabsTrigger value="products" className="text-xs">產品總覽 Products</TabsTrigger>
           <TabsTrigger value="evergreen" className="text-xs">車件 Parts</TabsTrigger>
           <TabsTrigger value="seasonal" className="text-xs">人身部品 Apparel</TabsTrigger>
           <TabsTrigger value="brand" className="text-xs">按品牌 By Brand</TabsTrigger>
           <TabsTrigger value="value" className="text-xs">按價值 By Value</TabsTrigger>
+          <TabsTrigger value="sizes" className="text-xs">斷碼 Sizes</TabsTrigger>
           <TabsTrigger value="dead" className="text-xs">死貨 Dead Stock</TabsTrigger>
         </TabsList>
 
@@ -1526,6 +1627,131 @@ export default function RetailInventoryPage() {
                               </td>
                             </tr>
                             {isExpanded && proc && <ProcurementRow procurement={proc} colSpan={11} />}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ═══ SIZE GAPS TAB (斷碼分析) ═══ */}
+        <TabsContent value="sizes" className="space-y-4 mt-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <KpiCard title="斷碼產品" subtitle="Broken Sizes" value={formatNumber(sizeGapGroups.length)} icon={AlertTriangle} loading={loading} testId="kpi-sizegap-count" />
+            <KpiCard title="嚴重斷碼" subtitle="Severe (≥50%)" value={formatNumber(sizeGapSevereCount)} icon={Skull} loading={loading} testId="kpi-sizegap-severe" />
+            <KpiCard title="受影響庫存成本" subtitle="Stock Cost" value={formatCurrency(sizeGapTotalCost)} icon={DollarSign} loading={loading} testId="kpi-sizegap-cost" />
+            <KpiCard title="建議補碼" subtitle="Restock Sizes" value={formatNumber(sizeGapRestockCount)} icon={RefreshCw} loading={loading} testId="kpi-sizegap-restock" />
+          </div>
+
+          <Card className="border-border/40">
+            <CardHeader className="pb-2 pt-4 px-4">
+              <CardTitle className="text-sm font-medium">
+                斷碼清單 <span className="text-xs font-normal text-muted-foreground">
+                  缺貨碼按歷史銷量加權 — 賣得最好嘅碼斷咗先至嚴重。剩低嘅碼賣唔郁,行緊嘅貨就補碼,唔行嘅趁有碼清走。Click row 睇每個碼明細
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="px-4 pb-4">
+              {loading ? <Skeleton className="h-[400px] w-full" /> : sizeGapGroups.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-8 text-center">無斷碼產品 🎉</p>
+              ) : (
+                <div className="overflow-x-auto max-h-[640px] overflow-y-auto">
+                  <table className="w-full text-xs" data-testid="table-size-gaps">
+                    <thead className="sticky top-0 bg-card z-10">
+                      <tr className="border-b border-border/50 text-muted-foreground">
+                        <th className="py-2 w-5"></th>
+                        <th className="py-2 text-left font-medium">產品 Product</th>
+                        <th className="py-2 text-left font-medium">品牌</th>
+                        <th className="py-2 text-left font-medium">碼數狀況 Sizes</th>
+                        <th className="py-2 text-right font-medium">斷碼率</th>
+                        <th className="py-2 text-right font-medium">90日銷量</th>
+                        <th className="py-2 text-right font-medium">殘餘庫存</th>
+                        <th className="py-2 text-right font-medium">庫存成本</th>
+                        <th className="py-2 text-left font-medium">建議</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sizeGapGroups.map((g) => {
+                        const isExpanded = expandedSizeProduct === g.title;
+                        return (
+                          <React.Fragment key={g.title}>
+                            <tr
+                              className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer"
+                              onClick={() => setExpandedSizeProduct(isExpanded ? null : g.title)}
+                            >
+                              <td className="py-2 pl-1">
+                                {isExpanded
+                                  ? <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
+                                  : <ChevronRight className="h-3 w-3 text-muted-foreground shrink-0" />}
+                              </td>
+                              <td className="py-2 max-w-[220px] truncate">{g.title}</td>
+                              <td className="py-2 text-muted-foreground">{g.vendor || '—'}</td>
+                              <td className="py-2">
+                                <div className="flex flex-wrap gap-1 max-w-[280px]">
+                                  {g.variants.map((v) => (
+                                    <span
+                                      key={v.sku || v.size}
+                                      title={`${v.size}: 庫存 ${v.qty} · 總銷 ${v.totalSold}`}
+                                      className={`px-1.5 py-0.5 rounded text-[10px] border ${
+                                        v.qty > 0
+                                          ? 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10'
+                                          : 'border-red-500/40 text-red-400 bg-red-500/10 line-through'
+                                      }`}
+                                    >
+                                      {v.size}
+                                    </span>
+                                  ))}
+                                </div>
+                              </td>
+                              <td className="py-2 text-right tabular-nums">
+                                <span className={g.severity === 'severe' ? 'text-red-400 font-medium' : 'text-amber-400'}>
+                                  {(g.missingShare * 100).toFixed(0)}%
+                                </span>
+                                <span className="text-muted-foreground text-[10px] ml-1">({g.missingVariants}/{g.totalVariants})</span>
+                              </td>
+                              <td className="py-2 text-right tabular-nums">{g.sold90}</td>
+                              <td className="py-2 text-right tabular-nums">{g.remainingQty}</td>
+                              <td className="py-2 text-right tabular-nums">{g.remainingCost > 0 ? formatCurrency(g.remainingCost) : '—'}</td>
+                              <td className="py-2">
+                                {g.recommendation === '補碼' && <Badge variant="default" className="text-[10px]">補碼</Badge>}
+                                {g.recommendation === '清碼' && <Badge variant="destructive" className="text-[10px]">清碼</Badge>}
+                                {g.recommendation === '觀察' && <Badge variant="secondary" className="text-[10px]">觀察</Badge>}
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr className="bg-accent/5">
+                                <td colSpan={9} className="px-4 py-2">
+                                  <table className="w-full text-[11px] ml-4">
+                                    <thead>
+                                      <tr className="text-muted-foreground/70">
+                                        <th className="py-1 text-left font-medium">碼 Size</th>
+                                        <th className="py-1 text-left font-medium">SKU</th>
+                                        <th className="py-1 text-right font-medium">庫存</th>
+                                        <th className="py-1 text-right font-medium">總銷量</th>
+                                        <th className="py-1 text-right font-medium">90日銷量</th>
+                                        <th className="py-1 text-right font-medium">最後售出</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {g.variants.map((v, j) => (
+                                        <tr key={j} className="border-t border-border/10">
+                                          <td className="py-1">{v.size}</td>
+                                          <td className="py-1 font-mono">{v.sku || '—'}</td>
+                                          <td className={`py-1 text-right tabular-nums ${v.qty <= 0 ? 'text-red-400 font-medium' : ''}`}>{v.qty}</td>
+                                          <td className="py-1 text-right tabular-nums">{v.totalSold}</td>
+                                          <td className="py-1 text-right tabular-nums">{v.sold90}</td>
+                                          <td className="py-1 text-right tabular-nums">{v.lastSale || '—'}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </td>
+                              </tr>
+                            )}
                           </React.Fragment>
                         );
                       })}

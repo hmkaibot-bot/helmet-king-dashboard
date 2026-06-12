@@ -122,3 +122,24 @@ from shopify_order_lines l
 join shopify_orders o on o.id = l.order_id
 where o.created_at >= date_trunc('month', now()) - interval '25 months'
 group by 1, 2;
+
+-- ============================================================================
+-- v4 (2026-06-12): 每月零售真毛利 (財務頁「零售毛利趨勢」+ Overview 毛利率 KPI 用)
+-- ============================================================================
+-- revenue 用 line_total (0/null fallback price*qty);剔除 cancelled / refunded
+-- matched_revenue / cogs 只計搵到 BC 成本嘅 lines — coverage 俾前端顯示成本覆蓋率
+create or replace view monthly_gross_profit
+with (security_invoker = on) as
+select
+  to_char(o.created_at at time zone 'UTC', 'YYYY-MM')                              as month,
+  sum(coalesce(nullif(l.line_total, 0), l.price * l.quantity, 0))                  as revenue,
+  sum(case when b.unit_cost is not null and b.unit_cost > 0
+        then coalesce(nullif(l.line_total, 0), l.price * l.quantity, 0) else 0 end) as matched_revenue,
+  sum(case when b.unit_cost is not null and b.unit_cost > 0
+        then b.unit_cost * l.quantity else 0 end)                                   as cogs
+from shopify_order_lines l
+join shopify_orders o on o.id = l.order_id
+left join bc_inventory b on b.number = l.sku
+where o.cancelled_at is null
+  and (o.financial_status is null or o.financial_status <> 'refunded')
+group by 1;

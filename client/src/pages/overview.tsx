@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryWithDateRange, queryAll, queryInBatches } from '@/lib/query-helpers';
+import { queryWithDateRange, queryAll, queryInBatches, tryView } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
@@ -95,7 +95,7 @@ export default function OverviewPage() {
         hkt.setDate(hkt.getDate() - 1);
         const yesterdayStr = hkt.toISOString().slice(0, 10);
 
-        const [orders, carshop, garage, adData, mtdOrdersData, bcInv, marselloAll, promoOrders, yOrders] = await Promise.all([
+        const [orders, carshop, garage, adData, mtdOrdersData, bcInv, marselloAll, promoOrders, yOrders, gpRows] = await Promise.all([
           queryWithDateRange('shopify_orders', 'created_at,total_price,financial_status,cancelled_at', 'created_at', bounds),
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bcBounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bcBounds, [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]),
@@ -105,6 +105,7 @@ export default function OverviewPage() {
           queryAll('marsello_customers', 'id,created_at', undefined, 50000),
           queryWithDateRange('shopify_orders', 'id,total_price,discount_codes,financial_status,cancelled_at', 'created_at', promoBounds),
           queryWithDateRange('shopify_orders', 'id,financial_status,cancelled_at,created_at', 'created_at', { from: yesterdayStr, to: yesterdayStr }),
+          tryView('monthly_gross_profit', 'month,matched_revenue,cogs'),
         ]);
 
         if (cancelled) return;
@@ -131,12 +132,22 @@ export default function OverviewPage() {
         setMtdRevenue(mtdRev);
         setMtdOrders(mtdValid.length);
 
-        // Gross margin from BC inventory (average unit margin)
-        const costItems = bcInv.filter((i: any) => parseFloat(i.unit_price) > 0 && parseFloat(i.unit_cost) > 0);
-        if (costItems.length > 0) {
-          const totalPrice = costItems.reduce((s: number, i: any) => s + (parseFloat(i.unit_price) || 0), 0);
-          const totalCost = costItems.reduce((s: number, i: any) => s + (parseFloat(i.unit_cost) || 0), 0);
-          setMtdGrossMargin(totalPrice > 0 ? ((totalPrice - totalCost) / totalPrice) * 100 : null);
+        // 真·本月毛利率: monthly_gross_profit view (實際銷量加權,Shopify 銷售 x BC 成本)。
+        // 以前用全部 bc_inventory 商品嘅「平均單品 margin」— 反映貨架理論毛利,
+        // 唔係實際賺幾多,而家先至係啱嘅口徑
+        const curMonth = new Date().toISOString().slice(0, 7); // UTC 月,同 view 一致
+        const gpRow = (gpRows as any[] | null)?.find((r: any) => r.month === curMonth);
+        const gpMatched = Number(gpRow?.matched_revenue) || 0;
+        if (gpMatched > 0) {
+          setMtdGrossMargin(((gpMatched - (Number(gpRow?.cogs) || 0)) / gpMatched) * 100);
+        } else {
+          // Fallback (view 未建立): 平均單品 margin — 舊口徑
+          const costItems = bcInv.filter((i: any) => parseFloat(i.unit_price) > 0 && parseFloat(i.unit_cost) > 0);
+          if (costItems.length > 0) {
+            const totalPrice = costItems.reduce((s: number, i: any) => s + (parseFloat(i.unit_price) || 0), 0);
+            const totalCost = costItems.reduce((s: number, i: any) => s + (parseFloat(i.unit_cost) || 0), 0);
+            setMtdGrossMargin(totalPrice > 0 ? ((totalPrice - totalCost) / totalPrice) * 100 : null);
+          }
         }
 
         // New members this month
