@@ -7,8 +7,8 @@ import { ChartCard } from '@/components/chart-card';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
-import { DollarSign, Eye, MousePointer, BarChart3, Percent, TrendingUp, Target, Award, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
-import { LineChart, Line, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { DollarSign, Eye, MousePointer, BarChart3, Percent, TrendingUp, Target, Award, AlertTriangle, ChevronLeft, ChevronRight, Store, Globe } from 'lucide-react';
+import { LineChart, Line, AreaChart, Area, ComposedChart, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
 /* ── Constants ── */
 const AOV = 1248; // HKD average order value
@@ -56,6 +56,7 @@ export default function MarketingPage() {
   const [loading, setLoading] = useState(true);
   const [adInsights, setAdInsights] = useState<any[]>([]);
   const [shopifyRevByDay, setShopifyRevByDay] = useState<Record<string, number>>({});
+  const [retailRevByDay, setRetailRevByDay] = useState<Record<string, number>>({});
   const [marselloCustomers, setMarselloCustomers] = useState<any[]>([]);
 
   // Campaign Performance state
@@ -71,9 +72,11 @@ export default function MarketingPage() {
     async function load() {
       setLoading(true);
       try {
-        const [ads, orders, marsello] = await Promise.all([
+        const [ads, orders, retail, marsello] = await Promise.all([
           queryWithDateRange('meta_ad_insights', 'date,spend,impressions,clicks,reach,cpm,cpc,ctr', 'date', bounds),
           queryWithDateRange('shopify_orders', 'created_at,total_price,financial_status,cancelled_at', 'created_at', bounds),
+          // 實體零售 = BC 車房店 (CARSHOP),不含車房維修 (GARAGE)。同 overview「零售 Retail」口徑一致。
+          queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
           queryAll('marsello_customers', 'id,created_at,last_seen,tier_name,subscribed'),
         ]);
         if (cancelled) return;
@@ -82,8 +85,12 @@ export default function MarketingPage() {
         const dayRevMap: Record<string, number> = {};
         validOrders.forEach((o: any) => { const d = o.created_at?.slice(0, 10); if (d) dayRevMap[d] = (dayRevMap[d] || 0) + (parseFloat(o.total_price) || 0); });
 
+        const retailDayMap: Record<string, number> = {};
+        retail.forEach((o: any) => { const d = o.invoice_date?.slice(0, 10); if (d) retailDayMap[d] = (retailDayMap[d] || 0) + (parseFloat(o.total_amount_incl_tax) || 0); });
+
         setAdInsights(ads);
         setShopifyRevByDay(dayRevMap);
+        setRetailRevByDay(retailDayMap);
         setMarselloCustomers(marsello);
       } catch (e) { console.error('Marketing error:', e); } finally { if (!cancelled) setLoading(false); }
     }
@@ -119,14 +126,23 @@ export default function MarketingPage() {
   const avgCPC = totalClicks > 0 ? totalSpend / totalClicks : 0;
   const avgCTR = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
   const totalShopifyRev = Object.values(shopifyRevByDay).reduce((s, v) => s + v, 0);
-  const roas = totalSpend > 0 ? totalShopifyRev / totalSpend : 0;
+  const roas = totalSpend > 0 ? totalShopifyRev / totalSpend : 0; // 線上 ROAS (Shopify/Spend) — 相對可歸因
 
-  const spendVsRevenue = useMemo(() => {
+  /* ── 廣告 ↔ 銷售掛勾: 線上(Shopify) + 實體零售(BC CARSHOP, 不含車房維修) ── */
+  const totalRetailRev = Object.values(retailRevByDay).reduce((s, v) => s + v, 0);
+  const totalSales = totalShopifyRev + totalRetailRev;
+  const adCostPct = totalSales > 0 ? (totalSpend / totalSales) * 100 : 0; // 廣告費佔總銷售比
+
+  const salesVsSpend = useMemo(() => {
     const adMap: Record<string, number> = {};
     adInsights.forEach((a) => { adMap[a.date] = (adMap[a.date] || 0) + (parseFloat(a.spend) || 0); });
-    const allDays = new Set([...adInsights.map((a) => a.date), ...Object.keys(shopifyRevByDay)]);
-    return Array.from(allDays).sort().map((d) => ({ date: d.slice(5), spend: adMap[d] || 0, revenue: shopifyRevByDay[d] || 0 }));
-  }, [adInsights, shopifyRevByDay]);
+    const allDays = new Set([...adInsights.map((a) => a.date), ...Object.keys(shopifyRevByDay), ...Object.keys(retailRevByDay)]);
+    return Array.from(allDays).sort().map((d) => {
+      const online = shopifyRevByDay[d] || 0;
+      const retail = retailRevByDay[d] || 0;
+      return { date: d.slice(5), online, retail, total: online + retail, spend: adMap[d] || 0 };
+    });
+  }, [adInsights, shopifyRevByDay, retailRevByDay]);
 
   const ctrTrend = adInsights.sort((a, b) => a.date.localeCompare(b.date)).map((a) => ({ date: a.date.slice(5), ctr: parseFloat(a.ctr) || 0 }));
   const costTrend = adInsights.sort((a, b) => a.date.localeCompare(b.date)).map((a) => ({ date: a.date.slice(5), cpm: parseFloat(a.cpm) || 0, cpc: parseFloat(a.cpc) || 0 }));
@@ -266,17 +282,30 @@ export default function MarketingPage() {
         <KpiCard title="廣告佔比率" subtitle="Rev/Spend" value={roas > 100 ? `>​99x` : `${roas.toFixed(1)}x`} icon={TrendingUp} loading={loading} testId="kpi-roas" />
       </div>
 
-      <ChartCard title="支出 vs 營收" subtitle="Daily Spend vs Revenue" note="* 非歸因 ROAS，為期間總收入與 Meta 廣告費之比 (Not attributed ROAS — ratio of total Shopify revenue to Meta spend)">
-        <ResponsiveContainer width="100%" height={280}>
-          <LineChart data={spendVsRevenue}>
+      {/* ═══ 💰 廣告 ↔ 銷售掛勾 Ad ↔ Sales ═══ */}
+      <h2 className="text-sm font-semibold pt-2" data-testid="section-ad-sales">
+        💰 廣告 ↔ 銷售掛勾 <span className="text-xs font-normal text-muted-foreground">Ad ↔ Sales</span>
+      </h2>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+        <KpiCard title="總銷售" subtitle="Total Sales" value={formatCurrency(totalSales)} icon={DollarSign} loading={loading} testId="kpi-total-sales" />
+        <KpiCard title="線上" subtitle="Shopify" value={formatCurrency(totalShopifyRev)} icon={Globe} loading={loading} testId="kpi-online-sales" />
+        <KpiCard title="實體零售" subtitle="BC 車房店" value={formatCurrency(totalRetailRev)} icon={Store} loading={loading} testId="kpi-retail-sales" />
+        <KpiCard title="廣告費" subtitle="Ad Spend" value={formatCurrency(totalSpend)} icon={DollarSign} loading={loading} testId="kpi-ad-spend" />
+        <KpiCard title="廣告成本佔比" subtitle="Spend/Sales" value={formatPercent(adCostPct)} icon={Percent} loading={loading} testId="kpi-ad-cost-pct" />
+      </div>
+
+      <ChartCard title="每日 總銷售 vs 廣告費" subtitle="Daily Total Sales (Online + Retail) vs Ad Spend" note="* 總銷售 = 線上 Shopify + 實體 BC 車房店(不含車房維修)。實體零售多數非廣告驅動,故以「廣告成本佔比」睇整體強度;上方「廣告佔比率」卡為線上 ROAS,相對可歸因。非逐單歸因。">
+        <ResponsiveContainer width="100%" height={300}>
+          <ComposedChart data={salesVsSpend}>
             <CartesianGrid {...GRID_STYLE} /><XAxis dataKey="date" tick={AXIS_STYLE} />
             <YAxis yAxisId="left" tick={AXIS_STYLE} tickFormatter={(v) => `${(v / 1000).toFixed(0)}K`} />
-            <YAxis yAxisId="right" orientation="right" tick={AXIS_STYLE} />
-            <Tooltip {...TOOLTIP_STYLE} formatter={(v: number, n: string) => n === 'spend' ? `HK$${v.toFixed(0)}` : formatCurrency(v)} />
-            <Line yAxisId="left" type="monotone" dataKey="revenue" name="Revenue" stroke={CHART_COLORS.primary} strokeWidth={2} dot={false} />
+            <YAxis yAxisId="right" orientation="right" tick={AXIS_STYLE} tickFormatter={(v) => `$${v.toFixed(0)}`} />
+            <Tooltip {...TOOLTIP_STYLE} formatter={(v: number, n: string) => n === 'Ad Spend' ? [`HK$${v.toFixed(0)}`, n] : [formatCurrency(v), n]} />
+            <Area yAxisId="left" type="monotone" dataKey="online" stackId="sales" name="線上 Online" stroke={CHART_COLORS.primary} fill={CHART_COLORS.primary} fillOpacity={0.25} strokeWidth={1.5} />
+            <Area yAxisId="left" type="monotone" dataKey="retail" stackId="sales" name="實體零售 Retail" stroke={CHART_COLORS.tertiary} fill={CHART_COLORS.tertiary} fillOpacity={0.25} strokeWidth={1.5} />
             <Line yAxisId="right" type="monotone" dataKey="spend" name="Ad Spend" stroke={CHART_COLORS.fifth} strokeWidth={2} dot={false} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
-          </LineChart>
+          </ComposedChart>
         </ResponsiveContainer>
       </ChartCard>
 
