@@ -2,12 +2,16 @@
 
 新 session 執行前置 — **network egress 必須允許以下 host**（喺 environment 嘅 network 設定加；參考 <https://code.claude.com/docs/en/claude-code-on-the-web>）：
 
-| Host | 用途 |
-|---|---|
-| `myrangmxyjamsupbxbba.supabase.co` | App 登入 (Auth) + 數據 (PostgREST) — browser 連唔到就過唔到登入頁 |
-| `cdn.playwright.dev` | 下載 Chromium (`npx playwright install`) — 容器內冇 system browser |
+| Host | 用途 | 一定要? |
+|---|---|---|
+| `myrangmxyjamsupbxbba.supabase.co` | App 登入 (Auth) + 數據 (PostgREST) — browser 連唔到就過唔到登入頁 | ✅ 必須 |
+| `cdn.playwright.dev` | 下載 Chromium — **只喺容器未預載 Chromium 時先需要** | ⚠️ 多數唔使 |
 
-> egress 唔通會見到 `403 host_not_allowed`。Supabase **MCP** 係另一條通道（唔行 egress proxy），所以就算 browser 連唔到 Supabase，reset 密碼 / 清理嗰啲 SQL 一樣行得到。
+> ⚠️ **egress 政策喺 session（容器）開始嗰刻就鎖定,唔會 hot-reload。** 改完 allowlist 一定要**開一個新 session** 先生效 — 喺運行緊嘅 session 度改設定係冇用嘅（照樣 `403 host_not_allowed`，唔代表你設定錯）。
+>
+> 💡 Chromium 通常已**預載**喺 `/opt/pw-browsers`（playwright 1.56.1 → `chromium-1194`）。`npx playwright install chromium` 秒回、冇下載輸出 = 已有,毋須開 `cdn.playwright.dev`。
+>
+> Supabase **MCP** 係另一條通道（唔行 egress proxy），所以就算 browser 連唔到 Supabase，reset 密碼 / 清理嗰啲 SQL 一樣行得到。
 
 1. **重設臨時 QA 帳號密碼**（帳號 `qa-test@helmetking.internal` 已存在 auth.users）:
    用 Supabase MCP 對 project `myrangmxyjamsupbxbba` 行:
@@ -20,8 +24,8 @@
 2. **裝依賴 + 起 dev server**（dev server 預設 `localhost:5173`，同 `qa-explore.mjs` 一致）:
    ```bash
    npm install                                  # 主依賴
-   npm install --no-save playwright@1.56.1
-   npx playwright install chromium
+   npm install --no-save playwright@1.56.1       # playwright 唔喺 package.json,要另裝 (npm registry 通)
+   npx playwright install chromium               # 秒回=已預載 /opt/pw-browsers;有下載=需 cdn.playwright.dev
    (npm run dev > /tmp/vite-dev.log 2>&1 &)
    # 等 Vite 真係 listen 咗先好跑掃描，否則第一個 page.goto 會掉 error
    until curl -sf http://localhost:5173 >/dev/null 2>&1; do sleep 1; done
