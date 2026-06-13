@@ -12,12 +12,39 @@
 > 💡 Chromium 通常已**預載**喺 `/opt/pw-browsers`（playwright 1.56.1 → `chromium-1194`）。`npx playwright install chromium` 秒回、冇下載輸出 = 已有,毋須開 `cdn.playwright.dev`。
 >
 > Supabase **MCP** 係另一條通道（唔行 egress proxy），所以就算 browser 連唔到 Supabase，reset 密碼 / 清理嗰啲 SQL 一樣行得到。
+>
+> 🔐 **就算 host 已 allow,headless browser 仍可能 `net::ERR_CERT_AUTHORITY_INVALID`** — 環境 egress proxy 做 TLS 攔截、出自簽 CA。系統 trust 咗(所以 `curl` 拎到 401),但 Playwright 自帶 Chromium 唔 trust,於是 browser 所有 https request fail、登入直接 abort 掃描。`qa-explore.mjs` 已喺 `newContext({ ignoreHTTPSErrors: true })` 處理。**呢個唔係 egress allowlist 設定錯,加 host 都解決唔到。**
 
-1. **重設臨時 QA 帳號密碼**（帳號 `qa-test@helmetking.internal` 已存在 auth.users）:
+1. **重設 / 建立臨時 QA 帳號**（帳號 `qa-test@helmetking.internal`;若上次 step 5 已刪,以下會自動重建,即刻可登入）:
    用 Supabase MCP 對 project `myrangmxyjamsupbxbba` 行:
    ```sql
-   update auth.users set encrypted_password = crypt('<新隨機密碼>', gen_salt('bf'))
-   where email = 'qa-test@helmetking.internal';
+   do $$
+   declare uid uuid;
+   begin
+     select id into uid from auth.users where email = 'qa-test@helmetking.internal';
+     if uid is null then
+       -- 重新建立:email provider + email_confirmed,即刻可以密碼登入
+       uid := gen_random_uuid();
+       insert into auth.users
+         (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+          created_at, updated_at, raw_app_meta_data, raw_user_meta_data)
+       values
+         (uid, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+          'qa-test@helmetking.internal', crypt('<新隨機密碼>', gen_salt('bf')), now(),
+          now(), now(), '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb);
+       insert into auth.identities
+         (user_id, provider_id, provider, identity_data, created_at, updated_at, last_sign_in_at)
+       values
+         (uid, uid::text, 'email',
+          jsonb_build_object('sub', uid::text, 'email', 'qa-test@helmetking.internal'),
+          now(), now(), now());
+     else
+       update auth.users
+         set encrypted_password = crypt('<新隨機密碼>', gen_salt('bf')),
+             email_confirmed_at = coalesce(email_confirmed_at, now())
+       where id = uid;
+     end if;
+   end $$;
    ```
    然後 `echo '<新隨機密碼>' > /tmp/qa_pw.txt`
 
@@ -46,7 +73,7 @@
    - 品牌分析: drill down 品牌 → 產品 → 返回
    - 關聯性: 死貨頁改「推廣中」checkbox ↔ 推廣商品池會唔會出現 (⚠️ 寫 DB,要還原)
 
-5. **測完清理**:
+5. **測完清理**（刪除臨時帳號 — 下次跑 step 1 會自動重建,所以可以安心清走）:
    ```sql
    delete from auth.identities where user_id = (select id from auth.users where email='qa-test@helmetking.internal');
    delete from auth.users where email = 'qa-test@helmetking.internal';
