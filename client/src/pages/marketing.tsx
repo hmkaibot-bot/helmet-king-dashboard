@@ -133,6 +133,10 @@ export default function MarketingPage() {
   const totalSales = totalShopifyRev + totalRetailRev;
   const adCostPct = totalSales > 0 ? (totalSpend / totalSales) * 100 : 0; // 廣告費佔總銷售比
 
+  // P4: Blended CAC — 期間新會員 (Marsello) 作獲客代理,廣告費 ÷ 新會員
+  const newMembersInRange = marselloCustomers.filter((c) => { const d = c.created_at?.slice(0, 10); return d && d >= bounds.from && d <= bounds.to; }).length;
+  const blendedCAC = newMembersInRange > 0 ? totalSpend / newMembersInRange : 0;
+
   const salesVsSpend = useMemo(() => {
     const adMap: Record<string, number> = {};
     adInsights.forEach((a) => { adMap[a.date] = (adMap[a.date] || 0) + (parseFloat(a.spend) || 0); });
@@ -141,6 +145,20 @@ export default function MarketingPage() {
       const online = shopifyRevByDay[d] || 0;
       const retail = retailRevByDay[d] || 0;
       return { date: d.slice(5), online, retail, total: online + retail, spend: adMap[d] || 0 };
+    });
+  }, [adInsights, shopifyRevByDay, retailRevByDay]);
+
+  // P3: 每日貢獻表 — 完整日期、廣告成本佔比,由新到舊
+  const dailyRows = useMemo(() => {
+    const adMap: Record<string, number> = {};
+    adInsights.forEach((a) => { adMap[a.date] = (adMap[a.date] || 0) + (parseFloat(a.spend) || 0); });
+    const allDays = new Set([...adInsights.map((a) => a.date), ...Object.keys(shopifyRevByDay), ...Object.keys(retailRevByDay)]);
+    return Array.from(allDays).filter(Boolean).sort((a, b) => b.localeCompare(a)).map((d) => {
+      const online = shopifyRevByDay[d] || 0;
+      const retail = retailRevByDay[d] || 0;
+      const spend = adMap[d] || 0;
+      const total = online + retail;
+      return { date: d, online, retail, total, spend, costPct: total > 0 ? (spend / total) * 100 : 0 };
     });
   }, [adInsights, shopifyRevByDay, retailRevByDay]);
 
@@ -286,12 +304,13 @@ export default function MarketingPage() {
       <h2 className="text-sm font-semibold pt-2" data-testid="section-ad-sales">
         💰 廣告 ↔ 銷售掛勾 <span className="text-xs font-normal text-muted-foreground">Ad ↔ Sales</span>
       </h2>
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <KpiCard title="總銷售" subtitle="Total Sales" value={formatCurrency(totalSales)} icon={DollarSign} loading={loading} testId="kpi-total-sales" />
         <KpiCard title="線上" subtitle="Shopify" value={formatCurrency(totalShopifyRev)} icon={Globe} loading={loading} testId="kpi-online-sales" />
         <KpiCard title="實體零售" subtitle="BC 車房店" value={formatCurrency(totalRetailRev)} icon={Store} loading={loading} testId="kpi-retail-sales" />
         <KpiCard title="廣告費" subtitle="Ad Spend" value={formatCurrency(totalSpend)} icon={DollarSign} loading={loading} testId="kpi-ad-spend" />
         <KpiCard title="廣告成本佔比" subtitle="Spend/Sales" value={formatPercent(adCostPct)} icon={Percent} loading={loading} testId="kpi-ad-cost-pct" />
+        <KpiCard title="Blended CAC" subtitle="廣告費/新會員" value={blendedCAC > 0 ? formatCurrency(blendedCAC) : '—'} icon={Target} loading={loading} testId="kpi-blended-cac" />
       </div>
 
       <ChartCard title="每日 總銷售 vs 廣告費" subtitle="Daily Total Sales (Online + Retail) vs Ad Spend" note="* 總銷售 = 線上 Shopify + 實體 BC 車房店(不含車房維修)。實體零售多數非廣告驅動,故以「廣告成本佔比」睇整體強度;上方「廣告佔比率」卡為線上 ROAS,相對可歸因。非逐單歸因。">
@@ -308,6 +327,58 @@ export default function MarketingPage() {
           </ComposedChart>
         </ResponsiveContainer>
       </ChartCard>
+
+      {/* ── P3: 每日貢獻表 Daily Contribution ── */}
+      <Card className="border-border/40 overflow-hidden">
+        <CardContent className="p-0">
+          <div className="px-4 pt-3 pb-2 flex items-baseline justify-between">
+            <h3 className="text-sm font-semibold">每日貢獻表 <span className="text-xs font-normal text-muted-foreground">Daily Contribution</span></h3>
+            <span className="text-[11px] text-muted-foreground">由新到舊 · 廣告成本佔比 &gt;30% 標橙</span>
+          </div>
+          <div className="overflow-auto max-h-[440px]">
+            <table className="w-full text-xs" data-testid="daily-contribution-table">
+              <thead className="sticky top-0 z-10 bg-card">
+                <tr className="border-b border-border/40 bg-muted/30">
+                  <th className="text-left px-3 py-2 font-medium text-muted-foreground">日期 Date</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">廣告費 Spend</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">線上 Online</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">實體零售 Retail</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">總銷售 Total</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">廣告成本佔比</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">載入中...</td></tr>
+                ) : dailyRows.length === 0 ? (
+                  <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">此期間冇數據</td></tr>
+                ) : (
+                  <>
+                    <tr className="border-b border-border/40 bg-muted/40 font-semibold" data-testid="daily-row-total">
+                      <td className="px-3 py-2">合計 Total</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalSpend)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalShopifyRev)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalRetailRev)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalSales)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{totalSpend > 0 ? formatPercent(adCostPct) : '—'}</td>
+                    </tr>
+                    {dailyRows.map((r) => (
+                      <tr key={r.date} className="border-b border-border/20 hover:bg-muted/20" data-testid={`daily-row-${r.date}`}>
+                        <td className="px-3 py-2 tabular-nums">{r.date}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{r.spend > 0 ? formatCurrency(r.spend) : '—'}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(r.online)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(r.retail)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums font-medium">{formatCurrency(r.total)}</td>
+                        <td className={`px-3 py-2 text-right tabular-nums ${r.spend > 0 && r.total > 0 ? (r.costPct > 30 ? 'text-orange-400' : 'text-green-400') : 'text-muted-foreground'}`}>{r.spend > 0 && r.total > 0 ? formatPercent(r.costPct) : '—'}</td>
+                      </tr>
+                    ))}
+                  </>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <ChartCard title="CTR 趨勢" subtitle="Click-Through Rate" loading={loading}>
