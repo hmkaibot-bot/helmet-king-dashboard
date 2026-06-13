@@ -36,16 +36,16 @@ const TABLES: TableSpec[] = [
   { table: 'bc_invoice_lines',           label: 'BC 銷售明細', tsCols: ['created_at'],                          cadence: 'daily',  source: 'BC' },
   { table: 'bc_purchase_invoices',       label: 'BC 購貨單',   tsCols: ['updated_at'],                          cadence: 'daily',  source: 'BC' },
   { table: 'bc_purchase_invoice_lines',  label: 'BC 購貨明細', tsCols: ['created_at'],                          cadence: 'daily',  source: 'BC' },
-  { table: 'bc_customers',               label: 'BC 客戶',     tsCols: ['updated_at', 'created_at', 'synced_at'], cadence: 'daily', source: 'BC' },
+  { table: 'bc_customers',               label: 'BC 客戶',     tsCols: ['synced_at'], cadence: 'daily', source: 'BC' },
   // Marsello / Meta (n8n)
   { table: 'marsello_customers',         label: '會員',        tsCols: ['updated_at', 'synced_at', 'created_at'], cadence: 'daily', source: 'Marsello' },
-  { table: 'meta_campaigns',             label: '廣告活動',    tsCols: ['updated_at', 'created_at', 'date'],    cadence: 'manual', source: 'Meta' },
-  { table: 'meta_ad_insights',           label: '廣告成效',    tsCols: ['updated_at', 'created_at', 'date'],    cadence: 'manual', source: 'Meta' },
+  { table: 'meta_campaigns',             label: '廣告活動',    tsCols: ['synced_at'],    cadence: 'manual', source: 'Meta' },
+  { table: 'meta_ad_insights',           label: '廣告成效',    tsCols: ['synced_at', 'date'],    cadence: 'manual', source: 'Meta' },
   // Dashboard 內部 (用戶操作)
   { table: 'promotions',                 label: '推廣活動',    tsCols: ['updated_at', 'created_at'],            cadence: 'manual', source: '內部' },
-  { table: 'promotion_items',            label: '推廣商品',    tsCols: ['updated_at', 'created_at'],            cadence: 'manual', source: '內部' },
+  { table: 'promotion_items',            label: '推廣商品',    tsCols: ['assigned_at'],            cadence: 'manual', source: '內部' },
   { table: 'dead_stock_reviews',         label: '死貨審核',    tsCols: ['updated_at', 'created_at'],            cadence: 'manual', source: '內部' },
-  { table: 'dead_stock_audit_log',       label: '死貨記錄',    tsCols: ['created_at'],                          cadence: 'manual', source: '內部' },
+  { table: 'dead_stock_audit_log',       label: '死貨記錄',    tsCols: ['changed_at'],                          cadence: 'manual', source: '內部' },
   { table: 'garage_marsello_queue',      label: '積分隊列',    tsCols: ['updated_at', 'created_at'],            cadence: 'manual', source: '內部' },
 ];
 
