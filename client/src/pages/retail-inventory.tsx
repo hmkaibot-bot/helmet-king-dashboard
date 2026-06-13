@@ -1692,9 +1692,9 @@ export default function RetailInventoryPage() {
                               <td className="py-2 text-muted-foreground">{g.vendor || '—'}</td>
                               <td className="py-2">
                                 <div className="flex flex-wrap gap-1 max-w-[280px]">
-                                  {g.variants.map((v) => (
+                                  {g.variants.map((v, vi) => (
                                     <span
-                                      key={v.sku || v.size}
+                                      key={`${v.sku || v.size}-${vi}`}
                                       title={`${v.size}: 庫存 ${v.qty} · 總銷 ${v.totalSold}`}
                                       className={`px-1.5 py-0.5 rounded text-[10px] border ${
                                         v.qty > 0
