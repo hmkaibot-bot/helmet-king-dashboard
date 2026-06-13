@@ -96,37 +96,39 @@ const run = async () => {
   currentRoute = '/login';
   await page.goto(BASE + '/#/');
   await page.waitForTimeout(2500);
-  const hasLogin = await page.locator('[data-testid="input-email"]').count();
+  const emailBox = page.locator('[data-testid="input-email"]');
+  const pwBox = page.locator('[data-testid="input-password"]');
+  const loginBtn = page.locator('[data-testid="button-login"]');
+  const hasLogin = await emailBox.count();
   if (hasLogin) {
-    // 1a. 空白提交
-    await page.locator('[data-testid="button-login"]').click();
-    await page.waitForTimeout(800);
-    const stillOnLogin = await page.locator('[data-testid="input-email"]').count();
-    log({ where: '登入頁', action: '空白提交', expected: '不通過/留在登入頁', actual: stillOnLogin ? '留在登入頁 (HTML5 required 或無反應)' : '竟然通過!', status: stillOnLogin ? 'PASS' : 'FAIL' });
+    // 1a. 空白表單 → 登入掣應 disabled (login.tsx: disabled={loading || !password || !email})
+    //     ⚠️ 唔好 click 一個 disabled 嘅掣 — Playwright 會等佢 enable 直到 timeout (30s) 而 abort 成個掃描。
+    const disabledWhenEmpty = await loginBtn.isDisabled();
+    log({ where: '登入頁', action: '空白表單', expected: '登入掣 disabled,阻止空白提交', actual: disabledWhenEmpty ? '登入掣 disabled (正確阻止)' : '登入掣可點擊 (應為 disabled)', status: disabledWhenEmpty ? 'PASS' : 'FAIL' });
 
-    // 1b. 錯誤密碼
-    await page.fill('[data-testid="input-email"]', EMAIL);
-    await page.fill('[data-testid="input-password"]', 'wrong-password-123');
-    await page.locator('[data-testid="button-login"]').click();
-    await page.waitForTimeout(3500);
-    const errText = await page.locator('[data-testid="text-error"]').count()
+    // 1b. 錯誤密碼 → 顯示錯誤訊息
+    await emailBox.fill(EMAIL);
+    await pwBox.fill('wrong-password-123');
+    await loginBtn.click();
+    await page.waitForTimeout(4000);
+    const errText = (await page.locator('[data-testid="text-error"]').count())
       ? await page.locator('[data-testid="text-error"]').innerText() : '';
-    log({ where: '登入頁', action: '錯誤密碼', expected: '顯示錯誤訊息', actual: errText ? `錯誤訊息: ${errText.slice(0, 60)}` : '無錯誤訊息顯示', status: errText ? 'PASS' : 'FAIL' });
+    log({ where: '登入頁', action: '錯誤密碼', expected: '顯示錯誤訊息', actual: errText ? `錯誤訊息: ${errText.slice(0, 80)}` : '無錯誤訊息顯示', status: errText ? 'PASS' : 'FAIL' });
 
-    // 1c. 超長/特殊字元 email
-    await page.fill('[data-testid="input-email"]', "x'\"<script>@".padEnd(80, 'a') + '.com');
-    await page.fill('[data-testid="input-password"]', 'x');
-    await page.locator('[data-testid="button-login"]').click();
-    await page.waitForTimeout(2000);
+    // 1c. 超長/特殊字元 email → 不崩潰 (掣可能因格式驗證而 disabled,所以先檢查再 click)
+    await emailBox.fill("x'\"<script>@".padEnd(80, 'a') + '.com');
+    await pwBox.fill('x');
+    if (await loginBtn.isEnabled()) await loginBtn.click().catch(() => {});
+    await page.waitForTimeout(1800);
     const crashed = (await bodyText(page)).length < 20;
     log({ where: '登入頁', action: '特殊字元 email', expected: '正常顯示驗證/錯誤,不崩潰', actual: crashed ? '頁面空白/崩潰' : '正常處理', status: crashed ? 'FAIL' : 'PASS' });
 
     // 1d. 正確登入
-    await page.fill('[data-testid="input-email"]', EMAIL);
-    await page.fill('[data-testid="input-password"]', PASSWORD);
-    await page.locator('[data-testid="button-login"]').click();
+    await emailBox.fill(EMAIL);
+    await pwBox.fill(PASSWORD);
+    await loginBtn.click();
     await page.waitForTimeout(5000);
-    const loggedIn = (await page.locator('[data-testid="input-email"]').count()) === 0;
+    const loggedIn = (await emailBox.count()) === 0;
     log({ where: '登入頁', action: '正確帳密登入', expected: '進入 dashboard', actual: loggedIn ? '成功進入' : '登入失敗', status: loggedIn ? 'PASS' : 'FAIL' });
     if (!loggedIn) { await page.screenshot({ path: `${SHOTS}/login-fail.png` }); throw new Error('login failed — abort'); }
   } else {
