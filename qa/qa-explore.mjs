@@ -88,7 +88,9 @@ async function bodyText(page) {
 
 const run = async () => {
   const browser = await chromium.launch();
-  const ctx = await browser.newContext({ viewport: { width: 1500, height: 950 } });
+  // ignoreHTTPSErrors: 環境 egress proxy 做 TLS 攔截,presents 自簽 CA。
+  // 系統 trust 咗(curl 通),但 Playwright Chromium 唔 trust → 唔加呢個全部 https request 會 ERR_CERT_AUTHORITY_INVALID。
+  const ctx = await browser.newContext({ viewport: { width: 1500, height: 950 }, ignoreHTTPSErrors: true });
   const page = await ctx.newPage();
   attachCollectors(page);
 
