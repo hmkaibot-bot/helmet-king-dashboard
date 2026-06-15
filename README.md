@@ -41,6 +41,22 @@ Foorir 客流 ──────────────────────
 
 見 `.env.example`。本地開發 copy 做 `.env`；production 喺 Vercel project settings 設定。
 
+### Shopify 價格同步（推廣詳情頁「同步去 Shopify」掣）
+
+推廣詳情頁可將推廣價直接推上 / 還原 Shopify，經 `api/shopify-sync-price.ts`
+（Vercel serverless function — Shopify token 只留 **server side**，呼叫者必須帶有效
+Supabase 登入 JWT，即只有登入用戶 call 到）。要啟用，喺 Vercel → Settings →
+Environment Variables 加：
+
+| 變數 | 例 | 備註 |
+|---|---|---|
+| `SHOPIFY_SHOP` | `helmetking-0001.myshopify.com` | 商店網域 |
+| `SHOPIFY_ADMIN_TOKEN` | `shpca_...` | Admin API token，**需要 `write_products` scope** |
+
+- **同步去 Shopify**：售價 = 推廣價、原價存做 compare-at（劃線價）。
+- **還原原價**：由 compare-at 還原售價、清走劃線價（促銷結束用）。
+- ⚠️ 會即時改網店實際售價。未設 env var 前，個掣會回「Shopify 未設定」（唔會搞亂數據）。
+
 ## 開發
 
 ```bash

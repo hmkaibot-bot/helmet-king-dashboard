@@ -3,6 +3,7 @@ import { useRoute, Link } from 'wouter';
 import { supabase } from '@/lib/supabase';
 import { queryAllPages } from '@/lib/query-helpers';
 import { formatCurrency, formatNumber } from '@/lib/format';
+import { syncPromoPrices, type SyncItem } from '@/lib/shopify-sync';
 import {
   Megaphone,
   RefreshCw,
@@ -14,6 +15,8 @@ import {
   ArrowUp,
   ArrowDown,
   Download,
+  Upload,
+  RotateCcw,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { MultiSelectChipFilter } from '@/components/multi-select-chip-filter';
@@ -106,6 +109,8 @@ export default function PromotionDetailPage() {
   const [bcInv, setBcInv] = useState<BcInvRow[]>([]);
   const [priceEdits, setPriceEdits] = useState<Map<string, number | null>>(new Map());
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
@@ -535,6 +540,41 @@ export default function PromotionDetailPage() {
     URL.revokeObjectURL(url);
   }, [sortedStats, promo]);
 
+  // ── 同步推廣價去 Shopify (經 serverless function,Shopify token 留 server) ──
+  const handleShopifySync = useCallback(async (action: 'apply' | 'restore') => {
+    const items: SyncItem[] = sortedStats
+      .filter((g) => g.promo_price != null && g.promo_price > 0)
+      .map((g) => ({ productId: g.product_id, promoPrice: g.promo_price as number }));
+    if (items.length === 0) {
+      alert('目前列表冇設定推廣價嘅商品可以同步。');
+      return;
+    }
+    const msg = action === 'apply'
+      ? `確定將 ${items.length} 件商品嘅推廣價推上 Shopify？\n\n⚠️ 會即時改你網店嘅實際售價（客人睇到）。原價會存做 compare-at（劃線價）。`
+      : `確定將 ${items.length} 件商品還原 Shopify 原價？\n\n（促銷結束用 — 售價由 compare-at 還原並清走劃線價。）`;
+    if (!confirm(msg)) return;
+    setSyncing(true);
+    setSyncMsg(`同步中 0/${items.length}…`);
+    try {
+      const r = await syncPromoPrices(items, action, (done, total) =>
+        setSyncMsg(`同步中 ${done}/${total}…`)
+      );
+      const fails = r.results
+        .filter((x) => !x.ok)
+        .slice(0, 6)
+        .map((x) => `· ${x.productId}: ${x.error}`);
+      alert(
+        `完成：成功 ${r.ok} · 失敗 ${r.failed}（共 ${r.total}）` +
+          (fails.length ? `\n\n失敗例子：\n${fails.join('\n')}` : '')
+      );
+    } catch (e) {
+      alert(`同步失敗：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSyncing(false);
+      setSyncMsg(null);
+    }
+  }, [sortedStats]);
+
   if (!promoId) return null;
 
   return (
@@ -584,7 +624,26 @@ export default function PromotionDetailPage() {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 flex-wrap justify-end shrink-0">
+          <button
+            onClick={() => handleShopifySync('apply')}
+            disabled={loading || syncing || sortedStats.length === 0}
+            title="將推廣價推上 Shopify（會改網店實際售價）"
+            className="text-xs px-3 py-1.5 rounded-md border border-primary/50 bg-primary/10 text-primary hover:bg-primary/20 transition-colors inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Upload className={`h-3.5 w-3.5 ${syncing ? 'animate-pulse' : ''}`} />
+            同步去 Shopify
+          </button>
+          <button
+            onClick={() => handleShopifySync('restore')}
+            disabled={loading || syncing || sortedStats.length === 0}
+            title="還原 Shopify 原價（促銷完用）"
+            className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 transition-colors inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            還原原價
+          </button>
+          <span className="w-px h-5 bg-border/60" />
           <button
             onClick={exportCsv}
             disabled={loading || sortedStats.length === 0}
@@ -615,6 +674,13 @@ export default function PromotionDetailPage() {
         <div className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-rose-200 text-sm flex items-center gap-2">
           <AlertCircle className="h-4 w-4" />
           {error}
+        </div>
+      )}
+
+      {syncMsg && (
+        <div className="rounded-md border border-primary/40 bg-primary/10 p-2 text-xs text-primary inline-flex items-center gap-2">
+          <Upload className="h-3.5 w-3.5 animate-pulse" />
+          {syncMsg}
         </div>
       )}
 
