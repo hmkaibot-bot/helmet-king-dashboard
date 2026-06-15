@@ -12,6 +12,7 @@ import {
   type EditorProduct,
   type EditorCollection,
 } from '@/lib/shopify-editor';
+import { reviewCopy, type CopyReview } from '@/lib/ai-copy';
 import {
   FileEdit,
   RefreshCw,
@@ -25,6 +26,7 @@ import {
   ExternalLink,
   X,
   ArrowLeft,
+  Sparkles,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -59,6 +61,10 @@ export default function ProductEditorPage() {
 
   const [addColId, setAddColId] = useState('');
   const [busyCol, setBusyCol] = useState(false);
+
+  const [reviewing, setReviewing] = useState(false);
+  const [review, setReview] = useState<CopyReview | null>(null);
+  const [reviewErr, setReviewErr] = useState<string | null>(null);
 
   const loadList = useCallback(async () => {
     setLoadingList(true);
@@ -125,6 +131,23 @@ export default function ProductEditorPage() {
       alert(`儲存失敗：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setSavingText(false);
+    }
+  };
+
+  // ── AI 文案校對 ──
+  const handleReview = async () => {
+    if (!selectedId) return;
+    const vendor = list.find((p) => p.id === selectedId)?.vendor || '';
+    setReviewing(true);
+    setReviewErr(null);
+    setReview(null);
+    try {
+      const r = await reviewCopy({ title, vendor, productType: ptype, descriptionHtml: desc });
+      setReview(r);
+    } catch (e) {
+      setReviewErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReviewing(false);
     }
   };
 
@@ -302,14 +325,91 @@ export default function ProductEditorPage() {
               <label className="text-[11px] text-muted-foreground">描述 Description（HTML 格式）</label>
               <textarea value={desc} onChange={(e) => setDesc(e.target.value)} rows={8} className="w-full mt-0.5 px-2 py-1.5 text-xs font-mono rounded-md border border-border bg-background" />
             </div>
-            <button
-              onClick={handleSaveText}
-              disabled={savingText}
-              className="text-xs px-3 py-1.5 rounded-md border border-primary/50 bg-primary/10 text-primary hover:bg-primary/20 inline-flex items-center gap-1 disabled:opacity-50"
-            >
-              <Save className="h-3.5 w-3.5" />
-              {savingText ? '儲存中…' : '儲存文案去 Shopify'}
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={handleSaveText}
+                disabled={savingText}
+                className="text-xs px-3 py-1.5 rounded-md border border-primary/50 bg-primary/10 text-primary hover:bg-primary/20 inline-flex items-center gap-1 disabled:opacity-50"
+              >
+                <Save className="h-3.5 w-3.5" />
+                {savingText ? '儲存中…' : '儲存文案去 Shopify'}
+              </button>
+              <button
+                onClick={handleReview}
+                disabled={reviewing}
+                title="Claude 上網搵官方資料核對 + 出更正中英文案"
+                className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 inline-flex items-center gap-1 disabled:opacity-50"
+              >
+                <Sparkles className={`h-3.5 w-3.5 ${reviewing ? 'animate-pulse' : ''}`} />
+                {reviewing ? 'AI 校對中…(約 30 秒)' : 'AI 校對文案'}
+              </button>
+            </div>
+            {reviewErr && <div className="text-xs text-rose-300">{reviewErr}</div>}
+            {review && (
+              <div className="rounded-md border border-border/60 bg-muted/20 p-3 space-y-2 text-xs">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold">AI 校對結果</span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded border text-[10px] ${
+                      review.confidence === 'high'
+                        ? 'border-emerald-500/40 text-emerald-300'
+                        : review.confidence === 'medium'
+                          ? 'border-amber-500/40 text-amber-300'
+                          : 'border-rose-500/40 text-rose-300'
+                    }`}
+                  >
+                    信心 {review.confidence}
+                  </span>
+                  {!review.found && <span className="text-muted-foreground">（搵唔到官方資料,請人手核實）</span>}
+                </div>
+                {review.discrepancies.length > 0 && (
+                  <div>
+                    <div className="text-muted-foreground mb-1">疑似錯漏 {review.discrepancies.length}:</div>
+                    <ul className="space-y-1">
+                      {review.discrepancies.map((d, i) => (
+                        <li key={i} className="border-l-2 border-amber-500/40 pl-2">
+                          <span className="text-foreground">{d.field}</span>:{' '}
+                          <span className="text-rose-300 line-through">{d.current}</span> →{' '}
+                          <span className="text-emerald-300">{d.correct}</span>
+                          {d.source && (
+                            <a href={d.source} target="_blank" rel="noreferrer" className="text-primary hover:underline ml-1">
+                              來源
+                            </a>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  <div>
+                    <div className="text-muted-foreground mb-0.5">更正中文</div>
+                    <div className="rounded border border-border/40 bg-background p-2 max-h-32 overflow-y-auto whitespace-pre-wrap">{review.correctedZh || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground mb-0.5">Corrected English</div>
+                    <div className="rounded border border-border/40 bg-background p-2 max-h-32 overflow-y-auto whitespace-pre-wrap">{review.correctedEn || '—'}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button onClick={() => setDesc(review.correctedZh)} disabled={!review.correctedZh} className="text-[11px] px-2 py-1 rounded-md border border-border bg-card hover:bg-accent/60 disabled:opacity-50">套用中文</button>
+                  <button onClick={() => setDesc(review.correctedEn)} disabled={!review.correctedEn} className="text-[11px] px-2 py-1 rounded-md border border-border bg-card hover:bg-accent/60 disabled:opacity-50">套用英文</button>
+                  <button onClick={() => setDesc(`${review.correctedZh}\n\n${review.correctedEn}`)} className="text-[11px] px-2 py-1 rounded-md border border-primary/50 bg-primary/10 text-primary hover:bg-primary/20">套用(中+英)</button>
+                  <span className="text-[10px] text-muted-foreground">套用後記得撳「儲存文案去 Shopify」</span>
+                </div>
+                {review.sources.length > 0 && (
+                  <div className="text-[10px] text-muted-foreground">
+                    來源:{' '}
+                    {review.sources.map((s, i) => (
+                      <a key={i} href={s} target="_blank" rel="noreferrer" className="text-primary hover:underline mr-2">[{i + 1}]</a>
+                    ))}
+                  </div>
+                )}
+                <div className="text-[10px] text-muted-foreground">
+                  ⚠️ 若英文用 Langify 翻譯儲存,「套用」只改主語言 body_html — 英文要喺 Langify 度更新。AI 可能出錯,請對返來源。
+                </div>
+              </div>
+            )}
           </section>
 
           {/* 圖片 */}
