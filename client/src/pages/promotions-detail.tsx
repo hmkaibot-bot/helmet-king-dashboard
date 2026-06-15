@@ -13,6 +13,7 @@ import {
   ChevronRight,
   ArrowUp,
   ArrowDown,
+  Download,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { MultiSelectChipFilter } from '@/components/multi-select-chip-filter';
@@ -476,6 +477,64 @@ export default function PromotionDetailPage() {
   // ── Use snapshot for ended promos ────────────────────────────────────────
   const isEnded = promo?.status === 'ended';
 
+  // ── CSV 匯出 (匯出目前篩選 / 排序後嘅商品列表,欄位同畫面一致) ──────────────
+  const exportCsv = useCallback(() => {
+    if (sortedStats.length === 0) return;
+    const cell = (v: string | number | null | undefined) => {
+      const s = v == null ? '' : String(v);
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const round = (n: number, d = 0) => {
+      const f = Math.pow(10, d);
+      return Math.round(n * f) / f;
+    };
+    const headers = [
+      '產品名稱', '品牌', 'SKU數', '現庫存', '建議零售價', '零售價', '單件成本',
+      '利潤%', '推廣價', '推廣%', '推廣後利潤金額', '推廣期銷量', '推廣期營收',
+      '推廣前90d銷量', '日均比較', '評級',
+    ];
+    const rows = sortedStats.map((g) => {
+      const baseline = g.compare_at_price > 0 ? g.compare_at_price : g.retail_price;
+      const marginPct = g.retail_price > 0 && g.unit_cost > 0
+        ? round(((g.retail_price - g.unit_cost) / g.retail_price) * 100, 1) : '';
+      const promoPct = g.promo_price != null && baseline > 0
+        ? round(((baseline - g.promo_price) / baseline) * 100, 1) : '';
+      const unitProfit = g.promo_price != null && g.unit_cost > 0 ? g.promo_price - g.unit_cost : null;
+      const promoProfit = unitProfit != null
+        ? round(g.promo_qty > 0 ? unitProfit * g.promo_qty : unitProfit, 0) : '';
+      const lift = g.lift_ratio === 999 ? '∞' : g.lift_ratio === 0 ? '' : round(g.lift_ratio, 2);
+      return [
+        g.product_title,
+        g.vendor,
+        g.num_skus,
+        g.total_inventory,
+        g.compare_at_price > 0 ? round(g.compare_at_price, 0) : '',
+        g.retail_price > 0 ? round(g.retail_price, 0) : '',
+        g.unit_cost > 0 ? round(g.unit_cost, 0) : '',
+        marginPct,
+        g.promo_price != null ? round(g.promo_price, 0) : '',
+        promoPct,
+        promoProfit,
+        g.promo_qty,
+        round(g.promo_revenue, 0),
+        g.pre_promo_qty,
+        lift,
+        RATING_LABEL[g.rating],
+      ];
+    });
+    const csv = '﻿' + [headers, ...rows].map((r) => r.map(cell).join(',')).join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const safeName = (promo?.name ?? 'promotion').replace(/[\\/:*?"<>|]+/g, '_');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${safeName}_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [sortedStats, promo]);
+
   if (!promoId) return null;
 
   return (
@@ -525,14 +584,25 @@ export default function PromotionDetailPage() {
             </div>
           )}
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 transition-colors inline-flex items-center gap-1"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-          重新整理
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={exportCsv}
+            disabled={loading || sortedStats.length === 0}
+            title="匯出目前篩選後嘅商品列表做 CSV"
+            className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 transition-colors inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Download className="h-3.5 w-3.5" />
+            輸出 CSV
+          </button>
+          <button
+            onClick={load}
+            disabled={loading}
+            className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 transition-colors inline-flex items-center gap-1"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            重新整理
+          </button>
+        </div>
       </div>
 
       {promo?.notes && (
