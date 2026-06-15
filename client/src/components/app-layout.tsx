@@ -40,6 +40,7 @@ import {
   Package,
   RefreshCw,
   Tags,
+  FileEdit,
 } from 'lucide-react';
 import { clearQueryCache } from '@/lib/query-helpers';
 import { Button } from '@/components/ui/button';
@@ -73,6 +74,7 @@ const NAV_ITEMS: NavItem[] = [
       { path: '/retail/customers', label: '客戶', sublabel: 'Customers', icon: Users },
       { path: '/retail/brands', label: '品牌分析', sublabel: 'Brands', icon: Tag },
       { path: '/retail/category-qc', label: '分類清理', sublabel: 'Category QC', icon: Tags },
+      { path: '/retail/product-editor', label: '商品編輯', sublabel: 'Product Editor', icon: FileEdit },
       { path: '/retail/restock', label: '補貨管理', sublabel: 'Restock', icon: PackageSearch },
       { path: '/retail/dead-stock', label: '死貨管理', sublabel: 'Dead Stock', icon: Archive },
       { path: '/retail/promotions', label: '推廣活動', sublabel: 'Promotions', icon: Megaphone },

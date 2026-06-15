@@ -38,6 +38,7 @@ const MarselloApprovalPage = lazy(() => import("@/pages/marsello-approval"));
 const ProductAnalyticsPage = lazy(() => import("@/pages/product-analytics"));
 const ForecastPage = lazy(() => import("@/pages/forecast"));
 const CategoryQcPage = lazy(() => import("@/pages/category-qc"));
+const ProductEditorPage = lazy(() => import("@/pages/product-editor"));
 const SyncStatusPage = lazy(() => import("@/pages/sync-status"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
@@ -72,6 +73,7 @@ function AppRouter() {
         <Route path="/retail/promotions/:id" component={PromotionDetailPage} />
         <Route path="/retail/returns" component={ReturnsPage} />
         <Route path="/retail/category-qc" component={CategoryQcPage} />
+        <Route path="/retail/product-editor" component={ProductEditorPage} />
         <Route path="/procurement/vendors" component={VendorsPage} />
         <Route path="/performance/daily" component={DailyWeeklyPage} />
         <Route path="/performance/velocity" component={VelocityPage} />
