@@ -20,7 +20,9 @@ const SUPABASE_URL =
 const SUPABASE_ANON_KEY =
   process.env.SUPABASE_ANON_KEY ||
   process.env.VITE_SUPABASE_ANON_KEY ||
-  '';
+  // 公開 anon key (同 client/src/lib/config.ts; RLS 保護資料)。必須有值, 否則
+  // verifyUser 嘅 apikey header 會空, Supabase 回 401 "No API key found" → 所有用戶被當未授權。
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15cmFuZ214eWphbXN1cGJ4YmJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MzA0NjQsImV4cCI6MjA5MTMwNjQ2NH0.RmMZyuLZrddw7kL4y2qFY8XaI6zGXPx5D9xCi58-iSY';
 const SHOPIFY_SHOP = process.env.SHOPIFY_SHOP || '';
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN || '';
 const API_VERSION = '2026-01';
