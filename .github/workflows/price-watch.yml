@@ -21,4 +21,5 @@ jobs:
       - name: Refresh FX + scrape competitor prices
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: python scripts/price_watch.py
