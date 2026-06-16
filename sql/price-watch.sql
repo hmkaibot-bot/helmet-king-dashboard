@@ -88,3 +88,22 @@ select c.our_product_id,
   max(c.scraped_at) last_scraped
 from product_price_comparison c
 group by c.our_product_id;
+
+-- 跨品牌類近比較: 全部在售頭盔, 分「類型」段 (供前端再按價格層分 入門/中階/高階/旗艦),
+-- 帶最平水貨到手價 — 睇同一段裡各品牌嘅價格階梯
+create or replace view helmet_cross_brand as
+select p.id::text as our_product_id, p.vendor, p.title, p.product_type,
+  min(i.price) as our_price,
+  case
+    when p.product_type ilike '%MODULAR%' then '揭面'
+    when p.product_type ilike '%OPEN%'    then '半面'
+    when p.product_type ~* 'DIRT|OFF|ADV|DUAL|CROSS|MX' then '越野/ADV'
+    when p.product_type ilike '%FULL%'    then '全面'
+    else '其他'
+  end as seg_type,
+  (p.title ilike '%carbon%') as is_carbon,
+  (select min(c.landed_hkd) from product_price_comparison c where c.our_product_id = p.id::text) as cheapest_landed
+from shopify_products p
+join shopify_inventory i on i.product_id = p.id
+where p.status='active' and p.product_type ilike 'HELMET%' and i.price > 0
+group by p.id, p.vendor, p.title, p.product_type;
