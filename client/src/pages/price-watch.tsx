@@ -227,7 +227,7 @@ export default function PriceWatchPage() {
       <div className="rounded-md border border-border/40 bg-muted/20 p-2.5 text-[11px] text-muted-foreground leading-relaxed">
         對手「到手價」= 標價 − 出口退稅(EU VAT 等) + 去 HK 運費估算 × 即日匯率（HK 免關稅）。
         運費/退稅為估算、配對由 AI 逐件核對型號（<span className="text-emerald-300">high</span> 為主，色款可能略有出入）。
-        對手：FC-Moto（德）· Motardinn/Tradeinn（歐/國際）· 利力（港）· Google Shopping（美旗艦參考）。
+        對手：FC-Moto（德）· Motardinn/Tradeinn（歐/國際）· 利力（港）· 車迷城（港·會員9折）· Google Shopping（美旗艦參考）。
       </div>
 
       {/* Tabs */}

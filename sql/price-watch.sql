@@ -25,15 +25,16 @@ create table if not exists competitor_merchants (
 );
 
 -- 對手設定 (到手價參數)。自動抓取: fcmoto / lilik / tradeinn (sitemap, scripts/price_watch.py)。
+-- chemei 車迷城 = Magento + Cloudflare(只放行香港 IP) → Apify CF actor + HK residential 抓 (scripts/price_watch_chemei.py, 較慢)。
 -- other = Google Shopping (US) flagship 參考 (Apify 人手快照, 配對較粗故唔入自動排程)。
--- 受阻 (anti-bot, 暫無法可靠抓): chemei 車迷城 (Cloudflare 403), webike (reCAPTCHA), titkei 鐵騎 (本身無同款品牌)。
+-- 受阻 (暫無法可靠抓): webike (全站 reCAPTCHA), titkei 鐵騎 (本身無同款品牌, 只賣 KYT/M2R/SOL)。
 insert into competitor_merchants (key,name,country,currency,export_vat_pct,ship_to_hk_hkd,free_ship_over_hkd,delivery_days_min,delivery_days_max,notes) values
   ('fcmoto','FC-Moto','DE','EUR',19,260,2600,5,10,'德國; 出口扣 19% VAT; sitemap.xml.gz og:price'),
   ('lilik','利力電單車 Lee Lik','HK','HKD',0,0,0,0,1,'香港同行 (SHOPLINE); 標價即到手價'),
   ('tradeinn','Motardinn/Tradeinn','US','USD',0,170,1700,7,14,'USD 顯示價 (VAT & duties included → 視作 ex-VAT 出口價); 國際運費平'),
   ('other','Google Shopping (US 市場)','US','USD',0,320,null,7,21,'US 廣告最低價聚合 (旗艦參考); 美→港運費估算'),
-  ('chemei','車迷城 Moto Mart','HK','HKD',0,0,0,0,1,'香港同行; 會員9折; Cloudflare 阻擋自動抓取'),
-  ('webike','Webike HK','JP','JPY',10,200,null,7,14,'香港站; reCAPTCHA anti-bot 阻擋自動抓取'),
+  ('chemei','車迷城 Moto Mart','HK','HKD',11.1111,0,0,0,1,'香港同行 (Magento); 會員9折→到手價=標價×0.9 (export_vat 11.11% 模擬); 經 HK IP + Cloudflare actor 抓'),
+  ('webike','Webike HK','JP','JPY',10,200,null,7,14,'香港站; 全站 reCAPTCHA anti-bot 阻擋自動抓取'),
   ('titkei','鐵騎部品 Rider Shop','HK','HKD',0,0,0,0,1,'香港同行; 主打 KYT/M2R/SOL, 與本店品牌無重疊')
 on conflict (key) do update set
   name=excluded.name, country=excluded.country, currency=excluded.currency,
