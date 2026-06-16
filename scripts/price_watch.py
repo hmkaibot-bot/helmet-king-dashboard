@@ -70,14 +70,27 @@ def fc_candidates():
         except: continue
         for url in re.findall(r"<loc>(https://www\.fc-moto\.com/de-de/p/[^<]+)</loc>",xml):
             slug=re.sub(r"-[A-Z0-9]{2,3}-[0-9].*$","",url.split("/p/",1)[1]).lower()
-            if "helm" in slug: out.append((url,slug,toks(slug)))
+            if "helm" in slug and not ACC.search(slug): out.append((url,slug,toks(slug)))
     return out
 def sl_candidates(base):
     return [(u,u.rsplit('/products/',1)[1].lower(),toks(u.rsplit('/products/',1)[1])) for u in dict.fromkeys(re.findall(r'(https://[^< ]+/products/[^< ]+)',fetch(base+"/sitemap.xml").decode("utf-8","ignore")))]
+# 部件/配件關鍵字 (EN/DE/ES) — 過濾鏡片/護顎/帽簷/內襯等, 只留頭盔本體
+ACC=re.compile(r'inner|padding|visor|spare|cheek|pinlock|screen|\bbag\b|liner|strap|sticker|peak|spoiler|mount|pump|recambio|interior|chinguard|chin-guard|\bvent\b|air-vent|duct|decal|\blens\b|gasket|holder|\bplate\b|\btrim\b|curtain|breath|\bkit\b|\bset\b|cover|cap\b|wind|deflector|schirm|visier|ersatz|polster|wangen|nacken|blende',re.I)
+def md_candidates():  # Motardinn/Tradeinn EN sitemaps → helmet pages (exclude parts)
+    out=[]
+    for s in ("1","2"):
+        try: xml=fetch(f"https://www.tradeinn.com/motardinn/sitemaps/sitemap_productos_{s}_eng_motardinn.xml").decode("utf-8","ignore")
+        except: continue
+        for u in re.findall(r'https://www\.tradeinn\.com/motardinn/en/[^<]+/p',xml):
+            slug=u.split("/en/",1)[1].rsplit("/",2)[0]
+            if "helmet" in slug and not ACC.search(slug): out.append((u,slug,toks(slug)))
+    return out
+def ogtitle(html, strip=r'\s*\|[^|]*$'):
+    m=re.search(r'og:title" content="([^"]+)"',html); return re.sub(strip,'',m.group(1)).strip() if m else None
 def fc_price(html):
     mp=re.search(r'product:price:amount" content="([0-9.]+)"',html); cur=re.search(r'product:price:currency" content="([A-Z]+)"',html)
-    return (float(mp.group(1)), cur.group(1) if cur else "EUR", "OutOfStock" not in html) if mp else None
-def sl_price(html):
+    return (float(mp.group(1)), cur.group(1) if cur else "EUR", "OutOfStock" not in html, ogtitle(html)) if mp else None
+def ld_price(html, default_cur):  # JSON-LD Product offers.price (SHOPLINE 利力 / Tradeinn)
     for m in re.findall(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',html,re.S):
         try: d=json.loads(m.strip())
         except: continue
@@ -87,9 +100,15 @@ def sl_price(html):
                 of=it.get('offers') or {}
                 if isinstance(of,list): of=of[0] if of else {}
                 if of.get('price'):
-                    try: return float(of['price']), of.get('priceCurrency','HKD'), True
+                    try: return float(of['price']), of.get('priceCurrency',default_cur), ('InStock' in str(of.get('availability','')) or not of.get('availability')), it.get('name')
                     except: pass
     return None
+def sl_price(html): return ld_price(html,"HKD")
+def md_price(html):  # Tradeinn/Motardinn: JSON-LD, fallback regex; clean og:title
+    info=ld_price(html,"USD")
+    if info: return (info[0],info[1],info[2], ogtitle(html) or info[3])
+    mp=re.search(r'"price":\s*"([0-9.]+)"',html); mc=re.search(r'"priceCurrency":\s*"([A-Z]+)"',html)
+    return (float(mp.group(1)),(mc.group(1) if mc else "USD"),True, ogtitle(html)) if mp else None
 
 def run_merchant(key, loadc, pricef, products):
     sbdel(key); cand=loadc(); print(f"{key}: {len(cand)} candidates")
@@ -106,10 +125,11 @@ def run_merchant(key, loadc, pricef, products):
         except: continue
         info=pricef(html)
         if not info: continue
-        lp,cur,ins=info
-        if cur=="HKD" and lp<800: continue
+        lp,cur,ins,name=info
+        if cur=="HKD" and lp<800: continue          # SHOPLINE: skip cheap accessories
+        if cur in ("EUR","USD","GBP") and lp<60: continue   # overseas: 真頭盔最少 ~$60; 以下多為部件
         rows.append({"our_product_id":str(pr["id"]),"our_title":pr["title"],"our_price":price,"merchant":key,
-          "competitor_title":slug[:120],"url":u,"currency":cur,"listed_price":lp,"in_stock":ins,
+          "competitor_title":(name or slug)[:120],"url":u,"currency":cur,"listed_price":lp,"in_stock":ins,
           "match_confidence":conf or "medium","match_method":"ai"})
         time.sleep(0.25)
         if len(rows)>=CAP: break
@@ -125,7 +145,13 @@ def main():
     for r in inv: pmin[r["product_id"]]=min(pmin.get(r["product_id"],9e9),float(r["price"]))
     products=[(p,pmin[p["id"]]) for p in prods if p["id"] in pmin]
     print("our helmets:",len(products))
-    run_merchant("fcmoto", fc_candidates, fc_price, products)
-    run_merchant("lilik", lambda: sl_candidates("https://www.leelik.hk"), sl_price, products)
+    # PW_ONLY=fcmoto,tradeinn 可只跑指定對手 (預設全部)
+    only=set(filter(None,os.environ.get("PW_ONLY","").split(",")))
+    jobs=[("fcmoto",fc_candidates,fc_price),
+          ("lilik",lambda: sl_candidates("https://www.leelik.hk"),sl_price),
+          ("tradeinn",md_candidates,md_price)]
+    for key,loadc,pricef in jobs:
+        if only and key not in only: continue
+        run_merchant(key, loadc, pricef, products)
 
 if __name__=="__main__": main()
