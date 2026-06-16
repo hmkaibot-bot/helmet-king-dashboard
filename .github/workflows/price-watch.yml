@@ -1,0 +1,24 @@
+name: Price Watch
+
+# 一鍵刷新所有對手價: Actions tab → Run workflow, 或 dashboard 格價頁「更新數據」掣
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 1 * * *'   # 每日 ~09:00 HKT
+
+permissions:
+  contents: read
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Refresh FX + scrape competitor prices
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/price_watch.py

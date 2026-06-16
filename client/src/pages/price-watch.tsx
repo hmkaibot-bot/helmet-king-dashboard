@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { queryAllPages } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
-import { Scale, AlertCircle, ExternalLink, ChevronDown, ChevronRight, Trophy } from 'lucide-react';
+import { Scale, AlertCircle, ExternalLink, ChevronDown, ChevronRight, Trophy, RefreshCw } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 
 interface Comp {
@@ -39,6 +39,8 @@ export default function PriceWatchPage() {
   const [fxAt, setFxAt] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'over' | 'win'>('all');
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,6 +93,24 @@ export default function PriceWatchPage() {
     };
   }, [enriched]);
 
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    setRefreshMsg(null);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error('未登入');
+      const r = await fetch('/api/refresh-prices', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || j?.ok === false) throw new Error(j?.error || `HTTP ${r.status}`);
+      setRefreshMsg('已觸發更新 ✓ 抓取約 5-10 分鐘，完成後重新整理頁面即見新數。');
+    } catch (e) {
+      setRefreshMsg(`觸發失敗：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -99,10 +119,22 @@ export default function PriceWatchPage() {
           <h1 className="text-lg font-semibold">格價系統</h1>
           <span className="text-xs text-muted-foreground">Price Watch · HK 到手價對比</span>
         </div>
-        <div className="text-[11px] text-muted-foreground">
-          匯率更新：{fxAt ? new Date(fxAt).toLocaleString('zh-HK') : '—'}
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-muted-foreground">匯率：{fxAt ? new Date(fxAt).toLocaleDateString('zh-HK') : '—'}</span>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="觸發 GitHub Actions 重抓所有對手價（約 5-10 分鐘）"
+            className="text-xs px-3 py-1.5 rounded-md border border-primary/50 bg-primary/10 text-primary hover:bg-primary/20 transition-colors inline-flex items-center gap-1 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            更新數據
+          </button>
         </div>
       </div>
+      {refreshMsg && (
+        <div className="rounded-md border border-primary/40 bg-primary/10 p-2 text-xs text-primary">{refreshMsg}</div>
+      )}
 
       {err && (
         <div className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-rose-200 text-sm flex items-center gap-2">
