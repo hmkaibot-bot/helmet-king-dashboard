@@ -44,8 +44,11 @@ async function gql(query: string, variables: Record<string, unknown>): Promise<a
     headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': SHOPIFY_TOKEN },
     body: JSON.stringify({ query, variables }),
   });
-  const j = await r.json();
-  if (!r.ok || j.errors) throw new Error(typeof j.errors === 'object' ? JSON.stringify(j.errors) : `HTTP ${r.status}`);
+  const j = await r.json().catch(() => ({} as any));
+  if (!r.ok || j.errors) {
+    const detail = j?.errors ?? j?.error ?? '';
+    throw new Error(`HTTP ${r.status}${detail ? ` — ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''}`);
+  }
   return j.data;
 }
 

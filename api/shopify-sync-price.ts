@@ -55,9 +55,13 @@ async function shopifyGraphQL(query: string, variables: Record<string, unknown>)
     },
     body: JSON.stringify({ query, variables }),
   });
-  const j = await r.json();
+  const j = await r.json().catch(() => ({} as any));
   if (!r.ok || j.errors) {
-    throw new Error(typeof j.errors === 'object' ? JSON.stringify(j.errors) : `HTTP ${r.status}`);
+    // Shopify 嘅錯誤可以係 string (e.g. 401 "[API] Invalid API key or access token")
+    // 或 object (GraphQL userErrors) — 兩種都要顯示出嚟, 否則淨係見到 "HTTP 401" 好難 debug。
+    const detail = j?.errors ?? j?.error ?? '';
+    const msg = typeof detail === 'string' ? detail : JSON.stringify(detail);
+    throw new Error(`HTTP ${r.status}${msg ? ` — ${msg}` : ''}`);
   }
   return j.data;
 }

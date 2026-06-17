@@ -43,9 +43,11 @@ async function shopifyGraphQL(query: string, variables: Record<string, unknown>)
     headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': SHOPIFY_TOKEN },
     body: JSON.stringify({ query, variables }),
   });
-  const j = await r.json();
+  const j = await r.json().catch(() => ({} as any));
   if (!r.ok || j.errors) {
-    throw new Error(typeof j.errors === 'object' ? JSON.stringify(j.errors) : `HTTP ${r.status}`);
+    const detail = j?.errors ?? j?.error ?? '';
+    const msg = typeof detail === 'string' ? detail : JSON.stringify(detail);
+    throw new Error(`HTTP ${r.status}${msg ? ` — ${msg}` : ''}`);
   }
   return j.data;
 }
