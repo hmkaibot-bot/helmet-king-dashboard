@@ -3,7 +3,7 @@
  * 文字欄 (title / 描述 / product_type / tags) 用另一支 api/shopify-update-product.ts。
  *
  * 安全: Shopify token 留 server-side; 呼叫者要帶 Supabase 用戶 JWT。
- * env: SHOPIFY_SHOP, SHOPIFY_ADMIN_TOKEN (需 write_products scope)
+ * env: SHOPIFY_SHOP + (SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET 或 SHOPIFY_ADMIN_TOKEN), 需 write_products scope
  *
  * action:
  *  - get             { productId }                      → 商品詳情 (含 media / collections)
@@ -23,7 +23,13 @@ const SUPABASE_ANON_KEY =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15cmFuZ214eWphbXN1cGJ4YmJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MzA0NjQsImV4cCI6MjA5MTMwNjQ2NH0.RmMZyuLZrddw7kL4y2qFY8XaI6zGXPx5D9xCi58-iSY';
 const SHOPIFY_SHOP = process.env.SHOPIFY_SHOP || '';
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN || '';
+const SHOPIFY_CLIENT_ID = process.env.SHOPIFY_CLIENT_ID || '';
+const SHOPIFY_CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET || '';
 const API_VERSION = '2026-01';
+
+// 有靜態 token, 或者有 Client ID + Secret (Dev Dashboard app) 就算設定好。
+const SHOPIFY_READY =
+  !!SHOPIFY_SHOP && (!!SHOPIFY_TOKEN || (!!SHOPIFY_CLIENT_ID && !!SHOPIFY_CLIENT_SECRET));
 
 export const config = { maxDuration: 60 };
 
@@ -38,10 +44,40 @@ async function verifyUser(token: string): Promise<boolean> {
   }
 }
 
+// Dev Dashboard app 冇靜態 token — 要用 Client ID + Secret 行 client credentials grant
+// 即時換領 access token (約 24h 過期), 所以 cache 住、夠鐘先再換。
+// 若有設定舊式 SHOPIFY_ADMIN_TOKEN 就直接用 (向後相容)。
+let _tok = '';
+let _tokExp = 0; // epoch ms
+async function getShopifyToken(): Promise<string> {
+  if (SHOPIFY_CLIENT_ID && SHOPIFY_CLIENT_SECRET) {
+    if (_tok && Date.now() < _tokExp) return _tok;
+    const r = await fetch(`https://${SHOPIFY_SHOP}/admin/oauth/access_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: SHOPIFY_CLIENT_ID,
+        client_secret: SHOPIFY_CLIENT_SECRET,
+        grant_type: 'client_credentials',
+      }),
+    });
+    const j = await r.json().catch(() => ({} as any));
+    if (!r.ok || !j.access_token) {
+      const detail = j?.error_description || j?.error || JSON.stringify(j);
+      throw new Error(`攞 Shopify token 失敗 — HTTP ${r.status}${detail ? ` — ${detail}` : ''}`);
+    }
+    _tok = j.access_token;
+    _tokExp = Date.now() + (Number(j.expires_in || 86400) - 300) * 1000; // 提早 5 分鐘 refresh
+    return _tok;
+  }
+  return SHOPIFY_TOKEN; // 向後相容: 靜態 admin custom app token
+}
+
 async function gql(query: string, variables: Record<string, unknown>): Promise<any> {
+  const accessToken = await getShopifyToken();
   const r = await fetch(`https://${SHOPIFY_SHOP}/admin/api/${API_VERSION}/graphql.json`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': SHOPIFY_TOKEN },
+    headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': accessToken },
     body: JSON.stringify({ query, variables }),
   });
   const j = await r.json().catch(() => ({} as any));
@@ -57,8 +93,8 @@ const firstErr = (arr: any[]) => (arr && arr.length ? arr.map((e) => e.message).
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-  if (!SHOPIFY_SHOP || !SHOPIFY_TOKEN)
-    return res.status(500).json({ error: 'Shopify 未設定 (請喺 Vercel 加 SHOPIFY_SHOP / SHOPIFY_ADMIN_TOKEN)' });
+  if (!SHOPIFY_READY)
+    return res.status(500).json({ error: 'Shopify 未設定 (請喺 Vercel 加 SHOPIFY_SHOP + SHOPIFY_CLIENT_ID / SHOPIFY_CLIENT_SECRET)' });
 
   const authHeader = String(req.headers.authorization || '');
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
