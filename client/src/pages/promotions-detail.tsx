@@ -564,7 +564,11 @@ export default function PromotionDetailPage() {
       // 只清「Shopify 還原成功」嗰幾件,避免出現「售價未還到原價但推廣價已消失」嘅唔一致。
       let cleared = 0;
       if (action === 'restore' && promoId) {
-        const okIds = r.results.filter((x) => x.ok).map((x) => String(x.productId));
+        // 只清「真正還原咗」(updated > 0) 嗰幾件 — 若新版 restore 因冇 snapshot 而
+        // skip 咗 (updated 0),Shopify 價照舊,就唔好清推廣價,免得 dashboard 同 Shopify 脫節。
+        const okIds = r.results
+          .filter((x) => x.ok && (x.updated ?? 0) > 0)
+          .map((x) => String(x.productId));
         if (okIds.length) {
           const { error: clrErr } = await supabase
             .from('promotion_items')

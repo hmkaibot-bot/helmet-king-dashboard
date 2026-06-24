@@ -9,7 +9,8 @@ export interface SyncResult {
   total: number;
   ok: number;
   failed: number;
-  results: { productId: string; ok: boolean; error?: string }[];
+  // updated = 實際改咗幾多個 variant;skipped = 冇 snapshot 而跳過 (還原時先有)。
+  results: { productId: string; ok: boolean; updated?: number; skipped?: number; error?: string }[];
 }
 
 // 每批商品數 — Shopify 每件要 2 個 GraphQL call,細批避免 Vercel function timeout
