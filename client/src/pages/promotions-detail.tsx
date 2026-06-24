@@ -551,7 +551,7 @@ export default function PromotionDetailPage() {
     }
     const msg = action === 'apply'
       ? `確定將 ${items.length} 件商品嘅推廣價推上 Shopify？\n\n⚠️ 會即時改你網店嘅實際售價（客人睇到）。原價會存做 compare-at（劃線價）。`
-      : `確定將 ${items.length} 件商品還原 Shopify 原價？\n\n（促銷結束用 — 售價由 compare-at 還原並清走劃線價。）`;
+      : `確定將 ${items.length} 件商品還原 Shopify 原價？\n\n（促銷結束用 — 售價由 compare-at 還原並清走劃線價，完成後一併清除 dashboard 嘅推廣價。）`;
     if (!confirm(msg)) return;
     setSyncing(true);
     setSyncMsg(`同步中 0/${items.length}…`);
@@ -559,12 +559,48 @@ export default function PromotionDetailPage() {
       const r = await syncPromoPrices(items, action, (done, total) =>
         setSyncMsg(`同步中 ${done}/${total}…`)
       );
+
+      // 還原成功後,順手清走 dashboard 嘅推廣價 (100 → —),反映促銷已完結。
+      // 只清「Shopify 還原成功」嗰幾件,避免出現「售價未還到原價但推廣價已消失」嘅唔一致。
+      let cleared = 0;
+      if (action === 'restore' && promoId) {
+        const okIds = r.results.filter((x) => x.ok).map((x) => String(x.productId));
+        if (okIds.length) {
+          const { error: clrErr } = await supabase
+            .from('promotion_items')
+            .update({ promo_price: null })
+            .eq('promotion_id', promoId)
+            .in('product_id', okIds.map(Number))
+            .eq('is_archived', false);
+          if (clrErr) {
+            // 還原本身已成功 — 清推廣價失敗唔當致命,記低就算,唔好擋住完成提示。
+            console.warn('還原後清除推廣價失敗:', clrErr);
+          } else {
+            cleared = okIds.length;
+            const okSet = new Set(okIds);
+            setItems((prev) =>
+              prev.map((it) =>
+                okSet.has(String(it.product_id)) ? { ...it, promo_price: null } : it
+              )
+            );
+            // 清走未 commit 嘅輸入框 override,確保 cell 真係 fallback 去 null (顯示「—」)
+            setPriceEdits((prev) => {
+              if (!okIds.some((id) => prev.has(id))) return prev;
+              const next = new Map(prev);
+              for (const id of okIds) next.delete(id);
+              return next;
+            });
+          }
+        }
+      }
+
       const fails = r.results
         .filter((x) => !x.ok)
         .slice(0, 6)
         .map((x) => `· ${x.productId}: ${x.error}`);
       alert(
         `完成：成功 ${r.ok} · 失敗 ${r.failed}（共 ${r.total}）` +
+          (cleared ? `\n已清除 ${cleared} 件推廣價（→ —）` : '') +
           (fails.length ? `\n\n失敗例子：\n${fails.join('\n')}` : '')
       );
     } catch (e) {
@@ -573,7 +609,7 @@ export default function PromotionDetailPage() {
       setSyncing(false);
       setSyncMsg(null);
     }
-  }, [sortedStats]);
+  }, [sortedStats, promoId]);
 
   if (!promoId) return null;
 
