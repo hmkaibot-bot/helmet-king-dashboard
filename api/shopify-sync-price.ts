@@ -104,8 +104,24 @@ async function shopifyGraphQL(query: string, variables: Record<string, unknown>)
   return j.data;
 }
 
+// 推廣快照 metafield — apply 時記低 variant 嘅 (原售價, 原建議零售價),令 restore
+// 可以精準還原。舊 bug: restore 當 compareAt 一定係 promo 撐起嘅原價 → 會將真正嘅
+// 建議零售價 (MSRP) / 死貨手動減價當成 promo 還原,毁掉劃線價兼推高售價。
+const SNAP_NS = 'hk_promo';
+const SNAP_KEY = 'snapshot';
+
 const VARIANTS_QUERY = `query($id: ID!) {
-  product(id: $id) { id variants(first: 100) { nodes { id price compareAtPrice } } }
+  product(id: $id) {
+    id
+    variants(first: 100) {
+      nodes {
+        id
+        price
+        compareAtPrice
+        metafield(namespace: "${SNAP_NS}", key: "${SNAP_KEY}") { value }
+      }
+    }
+  }
 }`;
 
 const BULK_UPDATE = `mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
@@ -115,33 +131,91 @@ const BULK_UPDATE = `mutation($productId: ID!, $variants: [ProductVariantsBulkIn
   }
 }`;
 
+interface VariantNode {
+  id: string;
+  price: string | null;
+  compareAtPrice: string | null;
+  metafield: { value: string | null } | null;
+}
+
+// 解析快照 → { p: 原售價, c: 原建議零售價|null }。冇 / 已清走 ('{}') / 壞 JSON
+// 一律當 null,即「未被本工具 apply 過」。
+function parseSnapshot(v: VariantNode): { p: number; c: number | null } | null {
+  const raw = v.metafield?.value;
+  if (!raw) return null;
+  try {
+    const o = JSON.parse(raw);
+    if (o && typeof o.p === 'number') {
+      return { p: o.p, c: typeof o.c === 'number' ? o.c : null };
+    }
+  } catch {
+    /* 壞 JSON → 當未 apply */
+  }
+  return null;
+}
+
 async function syncOneProduct(item: SyncItem, action: 'apply' | 'restore') {
   const gid = `gid://shopify/Product/${item.productId}`;
   const data = await shopifyGraphQL(VARIANTS_QUERY, { id: gid });
   const product = data?.product;
   if (!product) throw new Error('搵唔到商品');
 
-  const variants: { id: string; price: string; compareAtPrice: string | null }[] =
-    product.variants?.nodes ?? [];
+  const variants: VariantNode[] = product.variants?.nodes ?? [];
   if (variants.length === 0) throw new Error('冇 variant');
 
-  const variantInputs = variants.map((v) => {
+  const variantInputs: Record<string, unknown>[] = [];
+  let skipped = 0;
+
+  for (const v of variants) {
     const curPrice = Number(v.price) || 0;
-    const curCompare = Number(v.compareAtPrice) || 0;
+    const cmp = Number(v.compareAtPrice);
+    const curCompare = v.compareAtPrice != null && cmp > 0 ? cmp : null;
+    const snap = parseSnapshot(v);
+
     if (action === 'restore') {
-      // 還原: 售價 = 原價 (compareAt 有值就用,否則保持現價),清走 compareAt
-      const original = curCompare > 0 ? curCompare : curPrice;
-      return { id: v.id, price: original.toFixed(2), compareAtPrice: null };
+      // 只還原本工具 apply 過 (有 snapshot) 嘅 variant;其餘一概唔郁,
+      // 杜絕毁掉手動建議零售價 / 死貨減價。
+      if (!snap) {
+        skipped++;
+        continue;
+      }
+      variantInputs.push({
+        id: v.id,
+        price: snap.p.toFixed(2),
+        compareAtPrice: snap.c != null ? snap.c.toFixed(2) : null,
+        // 清走快照 (空 object) → 下次 restore 會當佢未 apply,避免重複還原
+        metafields: [{ namespace: SNAP_NS, key: SNAP_KEY, type: 'json', value: '{}' }],
+      });
+      continue;
     }
-    // 套用推廣: compareAt = 原價 (現價同 compareAt 取大者),售價 = 推廣價
-    const original = Math.max(curPrice, curCompare);
-    return { id: v.id, price: Number(item.promoPrice).toFixed(2), compareAtPrice: original.toFixed(2) };
-  });
+
+    // ── apply ──
+    // 第一次 apply 先 capture 真正 pre-promo 狀態;已 apply 過就沿用原快照,
+    // 避免再 apply 時將「原價」覆蓋成上次嘅 promo 價 (idempotent)。
+    const baseP = snap ? snap.p : curPrice;
+    const baseC = snap ? snap.c : curCompare;
+    const strike = Math.max(baseP, baseC ?? 0); // 劃線價 = 原售價同建議零售價取大者
+    variantInputs.push({
+      id: v.id,
+      price: Number(item.promoPrice).toFixed(2),
+      compareAtPrice: strike > 0 ? strike.toFixed(2) : null,
+      metafields: [
+        {
+          namespace: SNAP_NS,
+          key: SNAP_KEY,
+          type: 'json',
+          value: JSON.stringify({ p: baseP, c: baseC }),
+        },
+      ],
+    });
+  }
+
+  if (variantInputs.length === 0) return { updated: 0, skipped };
 
   const res = await shopifyGraphQL(BULK_UPDATE, { productId: gid, variants: variantInputs });
   const ue = res?.productVariantsBulkUpdate?.userErrors ?? [];
   if (ue.length) throw new Error(ue.map((e: any) => e.message).join('; '));
-  return variantInputs.length;
+  return { updated: variantInputs.length, skipped };
 }
 
 export default async function handler(req: any, res: any) {
@@ -173,16 +247,17 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
-  const results: { productId: string; ok: boolean; updated?: number; error?: string }[] = [];
+  const results: { productId: string; ok: boolean; updated?: number; skipped?: number; error?: string }[] = [];
   for (const it of items) {
     try {
-      const updated = await syncOneProduct(it, action);
-      results.push({ productId: it.productId, ok: true, updated });
+      const { updated, skipped } = await syncOneProduct(it, action);
+      results.push({ productId: it.productId, ok: true, updated, skipped });
     } catch (e: any) {
       results.push({ productId: it.productId, ok: false, error: e?.message || String(e) });
     }
   }
 
   const ok = results.filter((r) => r.ok).length;
-  res.status(200).json({ action, total: items.length, ok, failed: items.length - ok, results });
+  const skipped = results.reduce((s, r) => s + (r.skipped || 0), 0);
+  res.status(200).json({ action, total: items.length, ok, failed: items.length - ok, skipped, results });
 }
