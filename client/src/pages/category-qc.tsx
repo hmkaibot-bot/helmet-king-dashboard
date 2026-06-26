@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { queryAllPages } from '@/lib/query-helpers';
+import { queryAllPages, clearQueryCache } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
 import { updateProducts, type ProductUpdate } from '@/lib/shopify-update';
 import { Tags, RefreshCw, AlertCircle, Upload, Search } from 'lucide-react';
@@ -243,7 +243,7 @@ export default function CategoryQcPage() {
             套用去 Shopify{pendingCount > 0 ? ` (${pendingCount})` : ''}
           </button>
           <button
-            onClick={load}
+            onClick={async () => { await clearQueryCache(); load(); }}
             disabled={loading}
             className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 transition-colors inline-flex items-center gap-1"
           >

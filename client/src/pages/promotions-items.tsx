@@ -21,6 +21,10 @@ import {
   fetchAllRows,
 } from '@/lib/promotions-shared';
 
+// Bulk-assign sentinel：揀「未分派」= 移除現有推廣分派（用獨立 sentinel,
+// 因為 value="" 已經係 placeholder「揀推廣…」）。
+const UNASSIGN = '__unassign__';
+
 interface InventoryRow {
   sku: string;
   // DB 係 bigint, Supabase 可能 return number/string
@@ -56,6 +60,7 @@ export default function PromotionsItemsPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [filterAssignment, setFilterAssignment] = useState<'all' | 'assigned' | 'unassigned'>('all');
+  const [filterPromo, setFilterPromo] = useState<string>(''); // '' = 全部活動;否則 promo id
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
   const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -156,6 +161,7 @@ export default function PromotionsItemsPage() {
     let list = products;
     if (filterAssignment === 'assigned') list = list.filter(p => p.assigned_promo);
     else if (filterAssignment === 'unassigned') list = list.filter(p => !p.assigned_promo);
+    if (filterPromo) list = list.filter(p => p.assigned_promo?.id === filterPromo);
     if (selectedTypes.size > 0) {
       list = list.filter(p => selectedTypes.has(p.product_type || '(未分類)'));
     }
@@ -172,7 +178,7 @@ export default function PromotionsItemsPage() {
       );
     }
     return list;
-  }, [products, filterAssignment, search, selectedTypes, selectedVendors]);
+  }, [products, filterAssignment, filterPromo, search, selectedTypes, selectedVendors]);
 
   // Filter options —按推廣商品數量降序
   const typeOptions = useMemo(() => {
@@ -236,15 +242,36 @@ export default function PromotionsItemsPage() {
 
   const handleBulkAssign = async () => {
     if (!bulkPromo || selected.size === 0) return;
-    if (!confirm(`將 ${selected.size} 個商品分派到推廣？`)) return;
+    const unassign = bulkPromo === UNASSIGN;
+
+    // 防護:數吓所揀商品有幾多件已經喺「第二個」推廣 —— 呢啲會被搬走 / 移除。
+    // (每件商品只可入一個推廣,分派去新推廣 = 由原本嗰個刪走;避免一 click 掃晒)
+    const movedFromOther = Array.from(selected).filter(pid => {
+      const p = products.find(x => x.product_id === pid);
+      if (!p?.assigned_promo) return false;
+      return unassign ? true : p.assigned_promo.id !== bulkPromo;
+    });
+
+    let msg: string;
+    if (unassign) {
+      msg = movedFromOther.length > 0
+        ? `⚠️ 所揀 ${selected.size} 件入面,有 ${movedFromOther.length} 件目前已分派到推廣。\n繼續會將佢哋全部設為「未分派」(移除現有推廣)。\n\n確定?`
+        : `將 ${selected.size} 件商品設為未分派？`;
+    } else {
+      const targetName = activePromos.find(p => p.id === bulkPromo)?.name ?? '所揀推廣';
+      msg = movedFromOther.length > 0
+        ? `⚠️ 將 ${selected.size} 件分派到「${targetName}」。\n其中 ${movedFromOther.length} 件目前已經喺第二個推廣 —— 繼續會將呢 ${movedFromOther.length} 件由原本嘅推廣「搬走」(每件商品只可入一個推廣)。\n\n確定?`
+        : `將 ${selected.size} 件商品分派到「${targetName}」？`;
+    }
+    if (!confirm(msg)) return;
     try {
       for (const productId of selected) {
-        await handleAssign(productId, bulkPromo);
+        await handleAssign(productId, unassign ? null : bulkPromo);
       }
       setSelected(new Set());
       setBulkPromo('');
     } catch (e) {
-      alert(`批次分派失敗：${e instanceof Error ? e.message : String(e)}`);
+      alert(`批次操作失敗：${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -347,6 +374,18 @@ export default function PromotionsItemsPage() {
             </button>
           ))}
         </div>
+        <select
+          value={filterPromo}
+          onChange={e => setFilterPromo(e.target.value)}
+          className="text-xs px-2 py-1 rounded-md border border-border bg-card"
+          title="按推廣活動篩選"
+          data-testid="filter-promo"
+        >
+          <option value="">全部活動</option>
+          {activePromos.map(p => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
       </div>
 
       {/* Chip filter：分類 + 品牌 (死貨頁同款「+ 加」搜尋彈窗,唔再全部攤開) */}
@@ -380,6 +419,7 @@ export default function PromotionsItemsPage() {
             className="text-xs px-2 py-1 rounded-md border border-border bg-background"
           >
             <option value="">揀推廣…</option>
+            <option value={UNASSIGN}>— 未分派 —</option>
             {activePromos.map(p => (
               <option key={p.id} value={p.id}>
                 {p.name} ({p.start_date} → {p.end_date})
@@ -391,7 +431,7 @@ export default function PromotionsItemsPage() {
             disabled={!bulkPromo}
             className="text-xs px-3 py-1 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1"
           >
-            批次分派 <ArrowRight className="h-3 w-3" />
+            {bulkPromo === UNASSIGN ? '批次移除' : '批次分派'} <ArrowRight className="h-3 w-3" />
           </button>
           <button
             onClick={() => setSelected(new Set())}

@@ -124,10 +124,15 @@ function _isPersistable(table: string): boolean {
   return PERSIST_PREFIXES.some(p => table.startsWith(p));
 }
 
-/** 最近一次同步邊界 = 04:00 HKT (= 20:00 UTC 前一日)。cache 喺邊界之後寫入先算新鮮。 */
+/**
+ * 最近一次同步邊界 = 06:00 HKT (= 22:00 UTC 前一日)。cache 喺邊界之後寫入先算新鮮。
+ * 排程同步係 02:30 HKT 開跑,但 GitHub Actions 排隊經常延到 ~04:30 先完成。
+ * 邊界放喺 06:00 (留足 margin),避免有人喺同步未完成嘅 04:00–04:30 窗口載入,
+ * 將前一日數據當成「新鮮」cache 釘住成日。
+ */
 function _lastSyncBoundary(): number {
   const b = new Date();
-  b.setUTCHours(20, 0, 0, 0);
+  b.setUTCHours(22, 0, 0, 0); // 22:00 UTC = 06:00 HKT
   if (b.getTime() > Date.now()) b.setUTCDate(b.getUTCDate() - 1);
   return b.getTime();
 }
@@ -188,20 +193,35 @@ async function _purgeStaleIdb(): Promise<void> {
 async function _idbClear(prefix?: string): Promise<void> {
   const db = await _openIdb();
   if (!db) return;
-  try {
-    const store = db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE);
-    if (!prefix) { store.clear(); return; }
-    const req = store.getAllKeys();
-    req.onsuccess = () => {
-      for (const k of req.result) {
-        if (String(k).startsWith(`${prefix}|`)) store.delete(k);
+  // 等 transaction 真正 commit 先 resolve — 否則 clear 未落地,
+  // caller 即刻 re-query 會喺 _idbGet 攞返舊資料 (race)。
+  await new Promise<void>(resolve => {
+    try {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      const store = tx.objectStore(IDB_STORE);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+      if (!prefix) {
+        store.clear();
+      } else {
+        const req = store.getAllKeys();
+        req.onsuccess = () => {
+          for (const k of req.result) {
+            if (String(k).startsWith(`${prefix}|`)) store.delete(k);
+          }
+        };
       }
-    };
-  } catch { /* ignore */ }
+    } catch { resolve(); }
+  });
 }
 
-/** Manually invalidate cache (call after data sync or user clicks refresh). */
-export function clearQueryCache(tablePrefix?: string) {
+/**
+ * Manually invalidate cache (call after data sync or user clicks refresh).
+ * 回傳 Promise:await 佢確保 memory + IndexedDB 都清乾淨先再 query,
+ * 否則 clear 同 re-fetch 會 race (見 _idbClear)。
+ */
+export function clearQueryCache(tablePrefix?: string): Promise<void> {
   if (!tablePrefix) {
     _cache.clear();
   } else {
@@ -209,7 +229,7 @@ export function clearQueryCache(tablePrefix?: string) {
       if (k.startsWith(`${tablePrefix}|`)) _cache.delete(k);
     }
   }
-  void _idbClear(tablePrefix); // fire-and-forget
+  return _idbClear(tablePrefix);
 }
 
 export async function queryAllPages(

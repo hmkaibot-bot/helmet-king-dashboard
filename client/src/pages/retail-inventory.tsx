@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { queryAll, queryAllPages, queryWithDateRange, tryView } from '@/lib/query-helpers';
+import { queryAll, queryAllPages, queryWithDateRange, tryView, clearQueryCache } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
@@ -430,6 +430,8 @@ export default function RetailInventoryPage() {
       : <ChevronDown className="h-3 w-3 text-primary inline ml-0.5" />;
   };
 
+  const [reloadKey, setReloadKey] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -585,7 +587,7 @@ export default function RetailInventoryPage() {
     }
     load();
     return () => { cancelled = true; };
-  }, []);
+  }, [reloadKey]);
 
   // ── Filter logic ────────────────────────────────────────
 
@@ -1074,6 +1076,16 @@ export default function RetailInventoryPage() {
               <span className="text-[11px] text-muted-foreground tabular-nums whitespace-nowrap" data-testid="filter-count">
                 Showing <span className={hasActiveFilters ? 'text-amber-400 font-medium' : ''}>{formatNumber(filteredInventory.length)}</span> / {formatNumber(inventory.length)} items
               </span>
+              <button
+                onClick={async () => { await clearQueryCache(); setReloadKey(k => k + 1); }}
+                disabled={loading}
+                className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-muted border border-border text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                title="清快取並即時由 Supabase 重新拉最新數據"
+                data-testid="button-refresh-inventory"
+              >
+                <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+                重新整理
+              </button>
               {hasActiveFilters && (
                 <button
                   onClick={() => setFilters({ ...DEFAULT_FILTERS })}

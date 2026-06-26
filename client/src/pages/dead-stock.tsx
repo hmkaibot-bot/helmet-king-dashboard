@@ -616,7 +616,7 @@ export default function DeadStockPage() {
   // Review 寫入後 refetch + 清 queryAllPages cache — 否則其他頁 (loadData 路徑)
   // 喺 cache TTL 內會見到舊 review
   const refreshReviews = async (): Promise<DeadStockReview[]> => {
-    clearQueryCache('dead_stock_reviews');
+    await clearQueryCache('dead_stock_reviews');
     return fetchAllRows<DeadStockReview>('dead_stock_reviews');
   };
 
