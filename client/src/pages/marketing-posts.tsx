@@ -1,12 +1,11 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
-import { supabase } from '@/lib/supabase';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { formatNumber } from '@/lib/format';
 import {
   Megaphone, RefreshCw, AlertCircle, Search, Sparkles, Copy, Check,
   PackageOpen, Store, BadgePercent, CloudSun, Loader2, X,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
-import { fetchAllRows, type Promotion, type PromotionItem } from '@/lib/promotions-shared';
+import { fetchAllRows, todayISO, type Promotion, type PromotionItem } from '@/lib/promotions-shared';
 import {
   generateMarketingPost, fetchLiveProduct, variantToClipboard,
   PLATFORM_LABEL, TONE_LABEL, LANG_LABEL, SCENARIO_LABEL,
@@ -18,6 +17,9 @@ import {
  * 營銷貼文 Post Studio — P1 文案 MVP。
  * 流程:揀類型 → 揀產品(每類型有智能候選)→ 設定 → AI 生成 → 逐格編輯 → copy。
  * 生成嗰刻經 /api/shopify-product 攞 live 價,唔用隔夜 snapshot。
+ *
+ * 價格合規:price/comparePrice/cost 一律嚟自「最平嗰個 variant」(同一個 SKU),
+ * 唔准跨 variant 溝數 — 否則 min 價配 max 劃線價會誇大折扣。
  */
 
 interface InvRow {
@@ -39,12 +41,18 @@ interface PickerProduct {
   vendor: string;
   product_type: string;
   qty: number;
-  minPrice: number;
-  maxCompare: number | null;
-  maxCost: number; // 同產品 SKU 之中最高成本 — 安全欄用最保守值
+  // 以下三個欄一律嚟自最平嗰行(同一個 SKU)
+  price: number;
+  comparePrice: number | null;
+  cost: number;
+  sku: string;
   createdAt: string | null;
   promo: { name: string; promoPrice: number | null; endDate: string } | null;
 }
+
+// 編輯用 variant — hashtags 以原始文字保存,唔好喺每下 keystroke 就 split
+// (split(/\s+/) on change 會令空格打唔出)
+type EditableVariant = PostVariant & { hashtagsText: string };
 
 const CORE_TYPES: { key: PostType; label: string; desc: string; icon: any }[] = [
   { key: 'new_arrival', label: '新品介紹', desc: '90 日內新貨,自動候選', icon: PackageOpen },
@@ -53,12 +61,13 @@ const CORE_TYPES: { key: PostType; label: string; desc: string; icon: any }[] = 
   { key: 'scenario', label: '情境貼', desc: '雨天/夏日等場景組合', icon: CloudSun },
 ];
 
+// 英文關鍵字用 \b 綁字界 — 免 air→Airoh、vent→Adventure、led→shielded 呢類誤中
 const SCENARIO_MATCH: Record<ScenarioKey, RegExp> = {
-  rainy: /rain|waterproof|防水|雨|anti-?fog|防霧|pinlock/i,
-  summer: /mesh|vent|air|summer|cool|透氣|涼|夏/i,
-  night: /reflect|led|light|night|反光|夜|photochromic|變色/i,
-  touring: /tour|comfort|luggage|bag|tank|touring|長途|袋|尾箱/i,
-  beginner: /protector|ce level|glove|護具|護膝|護肘|入門/i,
+  rainy: /\b(rain|waterproof|pinlock|anti-?fog)\b|防水|雨|防霧/i,
+  summer: /\b(mesh|vent|vented|airflow|air|summer|cool)\b|透氣|涼|夏/i,
+  night: /\b(reflect|reflective|led|night|photochromic)\b|反光|夜|變色/i,
+  touring: /\b(tour|touring|luggage|comfort)\b|長途|袋|尾箱/i,
+  beginner: /\b(protector|gloves?)\b|ce level|護具|護膝|護肘|入門/i,
 };
 
 const MAX_SELECT = 6;
@@ -66,6 +75,7 @@ const MAX_SELECT = 6;
 export default function MarketingPostsPage() {
   // ── 數據 ──
   const [products, setProducts] = useState<PickerProduct[]>([]);
+  const [costBySku, setCostBySku] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -78,13 +88,16 @@ export default function MarketingPostsPage() {
   const [tone, setTone] = useState<Tone>('value');
   const [lang, setLang] = useState<Lang>('yue');
   const [platforms, setPlatforms] = useState<Set<Platform>>(new Set(['ig_post']));
+  const [capMsg, setCapMsg] = useState(false);
 
   // ── 生成 ──
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [genNotice, setGenNotice] = useState<string | null>(null);
-  const [variants, setVariants] = useState<PostVariant[]>([]);
+  const [variants, setVariants] = useState<EditableVariant[]>([]);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  // 生成上下文序號 — 換類型/情境後,飛行中嘅舊 request 結果一律作廢
+  const genSeqRef = useRef(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -101,15 +114,19 @@ export default function MarketingPostsPage() {
         fetchAllRows<BcRow>('bc_inventory', 'number,unit_cost'),
       ]);
 
-      const costBySku = new Map<string, number>();
+      const costMap = new Map<string, number>();
       for (const b of bc) {
         const c = Number(b.unit_cost) || 0;
-        if (b.number && c > 0) costBySku.set(b.number, c);
+        if (b.number && c > 0) costMap.set(b.number, c);
       }
+      setCostBySku(costMap);
+
       const metaById = new Map<string, ShopifyProductRow>();
       for (const sp of shopifyProducts) metaById.set(String(sp.id), sp);
 
-      const today = new Date().toISOString().slice(0, 10);
+      // 用 HKT 本地日期(todayISO),唔用 UTC — 半夜 12 點至朝早 8 點 UTC 日期仲係「琴日」,
+      // 會令啱啱過咗期嘅優惠繼續當生效
+      const today = todayISO();
       const activePromoById = new Map<string, Promotion>(
         promos.filter(p => p.status === 'active' && p.end_date >= today).map(p => [p.id, p])
       );
@@ -139,18 +156,23 @@ export default function MarketingPostsPage() {
       for (const [pid, rows] of byProduct.entries()) {
         const meta = metaById.get(pid);
         if (meta?.status && meta.status.toLowerCase() !== 'active') continue; // draft/archived 唔推
-        const prices = rows.map(r => Number(r.price) || 0).filter(n => n > 0);
-        const compares = rows.map(r => Number(r.compare_at_price) || 0).filter(n => n > 0);
-        const costs = rows.map(r => (r.sku ? costBySku.get(r.sku) ?? 0 : 0));
+        // 揀最平嗰行,price/compare/cost/sku 全部用佢一個嘅
+        const pricedRows = rows.filter(r => (Number(r.price) || 0) > 0);
+        const cheapest = pricedRows.length
+          ? pricedRows.reduce((a, b) => (Number(b.price) < Number(a.price) ? b : a))
+          : null;
+        if (!cheapest) continue; // 冇有效價唔入候選
+        const cheapCompare = Number(cheapest.compare_at_price) || 0;
         out.push({
           product_id: pid,
           title: rows[0].product_title ?? '—',
           vendor: rows[0].vendor ?? '—',
           product_type: rows[0].product_type ?? '—',
           qty: rows.reduce((s, r) => s + (r.inventory_quantity ?? 0), 0),
-          minPrice: prices.length ? Math.min(...prices) : 0,
-          maxCompare: compares.length ? Math.max(...compares) : null,
-          maxCost: Math.max(0, ...costs),
+          price: Number(cheapest.price),
+          comparePrice: cheapCompare > 0 ? cheapCompare : null,
+          cost: cheapest.sku ? costMap.get(cheapest.sku) ?? 0 : 0,
+          sku: cheapest.sku || '',
           createdAt: meta?.created_at ?? null,
           promo: promoByProduct.get(pid) ?? null,
         });
@@ -166,13 +188,29 @@ export default function MarketingPostsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // 換類型:清返選擇,免帶錯產品過去
-  const pickType = (t: PostType) => {
-    setPostType(t);
+  // 換上下文(類型/情境/品牌)→ 清選擇 + 作廢飛行中嘅生成
+  const resetContext = () => {
+    genSeqRef.current++;
     setSelected(new Set());
-    setVariants([]);
     setGenError(null);
     setGenNotice(null);
+  };
+
+  const pickType = (t: PostType) => {
+    if (t === postType) return; // 撳返同一張卡唔好清嘢
+    setPostType(t);
+    setVariants([]);
+    resetContext();
+  };
+  const pickScenario = (s: ScenarioKey) => {
+    if (s === scenario) return;
+    setScenario(s);
+    resetContext();
+  };
+  const pickVendor = (v: string) => {
+    if (v === vendorFilter) return;
+    setVendorFilter(v);
+    resetContext();
   };
 
   // ── 每類型嘅智能候選名單 ──
@@ -186,7 +224,8 @@ export default function MarketingPostsPage() {
           .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
         break;
       case 'brand_story':
-        if (vendorFilter) list = list.filter(p => p.vendor === vendorFilter);
+        // 未揀品牌 → 唔出候選(同「先揀一個品牌」提示一致)
+        list = vendorFilter ? list.filter(p => p.vendor === vendorFilter) : [];
         break;
       case 'weekly_deal':
         list = list.filter(p => p.promo != null);
@@ -215,11 +254,25 @@ export default function MarketingPostsPage() {
     return Array.from(m.entries()).sort((a, b) => b[1] - a[1]).map(([k]) => k);
   }, [products]);
 
+  const selectedProducts = useMemo(
+    () => products.filter(p => selected.has(p.product_id)),
+    [products, selected]
+  );
+
   const toggleSelect = (pid: string) => {
     setSelected(s => {
+      if (s.has(pid)) {
+        const next = new Set(s);
+        next.delete(pid);
+        return next;
+      }
+      if (s.size >= MAX_SELECT) {
+        setCapMsg(true);
+        setTimeout(() => setCapMsg(false), 2500);
+        return s; // 回傳原 set — 唔觸發冇意義嘅 re-render
+      }
       const next = new Set(s);
-      if (next.has(pid)) next.delete(pid);
-      else if (next.size < MAX_SELECT) next.add(pid);
+      next.add(pid);
       return next;
     });
   };
@@ -236,75 +289,89 @@ export default function MarketingPostsPage() {
   // ── 生成 ──
   const handleGenerate = async () => {
     if (selected.size === 0 || generating) return;
+    const mySeq = ++genSeqRef.current; // 呢輪生成嘅序號
     setGenerating(true);
     setGenError(null);
     setGenNotice(null);
-    setVariants([]);
+    // 注意:唔喺呢度清 variants — 舊(可能已人手改)嘅版本保留到新版成功先替換
     try {
-      const picked = products.filter(p => selected.has(p.product_id));
+      const picked = selectedProducts;
 
       // 生成嗰刻攞 live 數據(並行);失敗就用 snapshot + 提示
       const lives = await Promise.all(picked.map(p => fetchLiveProduct(p.product_id)));
       let staleCount = 0;
-      const genProducts: GenProduct[] = picked.map((p, i) => {
+      const allGen: GenProduct[] = picked.map((p, i) => {
         const live = lives[i];
         if (!live) staleCount++;
-        const price = live?.price ?? p.minPrice;
+        const price = live?.price ?? p.price;
         const qty = live ? live.totalQty : p.qty;
+        // 成本同售價配對同一個 SKU:live 攞到就用 live 嗰個 variant 嘅 sku 搵成本
+        const sku = live?.sku || p.sku;
+        const cost = sku ? costBySku.get(sku) ?? 0 : 0;
         return {
           title: live?.title || p.title,
           vendor: live?.vendor || p.vendor,
           productType: live?.productType || p.product_type,
           price,
-          comparePrice: live ? live.comparePrice : p.maxCompare,
+          comparePrice: live ? live.comparePrice : p.comparePrice,
           promoPrice: p.promo?.promoPrice ?? null,
           promoEndDate: p.promo?.endDate ?? null,
           qty,
           sellingPoints: live?.descriptionText || '',
-          cost: p.maxCost > 0 ? p.maxCost : null,
+          cost: cost > 0 ? cost : null,
         };
       });
 
-      // 前置安全欄(server 會再驗一次)
-      const belowCost = genProducts.filter(
-        g => g.cost != null && (g.promoPrice ?? g.price) < g.cost
-      );
+      // 前置安全欄(server 會再驗一次)— 順序:先剔缺貨/冇價,先唔好俾佢哋擋死成單
+      const inStock = allGen.filter(g => g.qty > 0);
+      const droppedOos = allGen.length - inStock.length;
+      const withPrice = inStock.filter(g => (g.promoPrice ?? g.price) > 0);
+      const droppedNoPrice = inStock.length - withPrice.length;
+      const belowCost = withPrice.filter(g => g.cost != null && (g.promoPrice ?? g.price) < g.cost);
       if (belowCost.length > 0) {
         throw new Error(`以下產品售價低過成本,唔可以出貼文:${belowCost.map(b => b.title).join('、')}`);
       }
-      const inStock = genProducts.filter(g => g.qty > 0);
-      if (inStock.length === 0) throw new Error('所揀產品全部缺貨(以 live 庫存為準)');
-      const droppedOos = genProducts.length - inStock.length;
+      if (withPrice.length === 0) {
+        throw new Error(droppedOos > 0 ? '所揀產品全部缺貨(以 live 庫存為準)' : '所揀產品冇有效售價');
+      }
 
       const result = await generateMarketingPost({
         postType,
-        products: inStock,
+        products: withPrice,
         scenario: postType === 'scenario' ? scenario : null,
         tone,
         lang,
         platforms: Array.from(platforms),
       });
-      setVariants(result.variants);
+
+      // 用戶喺等緊嗰陣換咗類型/情境 → 呢個結果已經唔啱 context,棄掉
+      if (genSeqRef.current !== mySeq) return;
+
+      setVariants(result.variants.map(v => ({ ...v, hashtagsText: v.hashtags.join(' ') })));
 
       const notices: string[] = [];
       if (staleCount > 0) notices.push(`${staleCount} 件產品攞唔到 live 價,用咗每日 snapshot 數(出街前請自行核對價錢)`);
       if (droppedOos > 0) notices.push(`${droppedOos} 件缺貨產品已自動剔走`);
+      if (droppedNoPrice > 0 || result.dropped.noPrice > 0) notices.push(`${droppedNoPrice + result.dropped.noPrice} 件冇有效售價已剔走`);
       if (result.dropped.belowCost.length > 0) notices.push(`已擋(低過成本):${result.dropped.belowCost.join('、')}`);
       if (notices.length > 0) setGenNotice(notices.join(' · '));
     } catch (e) {
-      setGenError(e instanceof Error ? e.message : String(e));
+      if (genSeqRef.current === mySeq) setGenError(e instanceof Error ? e.message : String(e));
     } finally {
-      setGenerating(false);
+      setGenerating(false); // 無論結果有冇被作廢,spinner 都要熄
     }
   };
 
-  const updateVariant = (idx: number, patch: Partial<PostVariant>) => {
+  const updateVariant = (idx: number, patch: Partial<EditableVariant>) => {
     setVariants(vs => vs.map((v, i) => (i === idx ? { ...v, ...patch } : v)));
   };
 
   const copyVariant = async (idx: number) => {
+    const v = variants[idx];
     try {
-      await navigator.clipboard.writeText(variantToClipboard(variants[idx]));
+      await navigator.clipboard.writeText(
+        variantToClipboard({ ...v, hashtags: v.hashtagsText.split(/\s+/).filter(Boolean) })
+      );
       setCopiedIdx(idx);
       setTimeout(() => setCopiedIdx(c => (c === idx ? null : c)), 2000);
     } catch {
@@ -377,7 +444,7 @@ export default function MarketingPostsPage() {
           {postType === 'brand_story' && (
             <select
               value={vendorFilter}
-              onChange={e => setVendorFilter(e.target.value)}
+              onChange={e => pickVendor(e.target.value)}
               className="text-xs px-2 py-1.5 rounded-md border border-border bg-background"
             >
               <option value="">揀品牌…</option>
@@ -387,7 +454,7 @@ export default function MarketingPostsPage() {
           {postType === 'scenario' && (
             <select
               value={scenario}
-              onChange={e => setScenario(e.target.value as ScenarioKey)}
+              onChange={e => pickScenario(e.target.value as ScenarioKey)}
               className="text-xs px-2 py-1.5 rounded-md border border-border bg-background"
             >
               {(Object.keys(SCENARIO_LABEL) as ScenarioKey[]).map(k => (
@@ -395,18 +462,33 @@ export default function MarketingPostsPage() {
               ))}
             </select>
           )}
-          <span className="text-[11px] text-muted-foreground ml-auto tabular-nums">
-            候選 {formatNumber(candidates.length)} · 已揀 {selected.size}/{MAX_SELECT}
+          <span className={`text-[11px] ml-auto tabular-nums ${capMsg ? 'text-amber-300 font-medium' : 'text-muted-foreground'}`}>
+            候選 {formatNumber(candidates.length)} · 已揀 {selected.size}/{MAX_SELECT}{capMsg ? '(最多咁多喇)' : ''}
           </span>
-          {selected.size > 0 && (
+        </div>
+
+        {/* 已揀 chips — 就算 filter 換咗睇唔到嗰行,揀咗啲乜一目了然 */}
+        {selectedProducts.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {selectedProducts.map(p => (
+              <span
+                key={p.product_id}
+                className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/30"
+              >
+                {p.title.length > 36 ? p.title.slice(0, 36) + '…' : p.title}
+                <button onClick={() => toggleSelect(p.product_id)} className="hover:text-rose-300">
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
             <button
               onClick={() => setSelected(new Set())}
-              className="text-[11px] px-2 py-1 rounded-md border border-border hover:bg-accent/60 inline-flex items-center gap-1"
+              className="text-[11px] px-2 py-0.5 rounded-full border border-border text-muted-foreground hover:bg-accent/60"
             >
-              <X className="h-3 w-3" /> 清空
+              清空
             </button>
-          )}
-        </div>
+          </div>
+        )}
 
         {loading ? (
           <Skeleton className="h-48 w-full" />
@@ -437,7 +519,7 @@ export default function MarketingPostsPage() {
                       className={`border-t border-border/30 cursor-pointer hover:bg-accent/30 ${isSel ? 'bg-primary/5' : ''}`}
                     >
                       <td className="px-2 py-1.5">
-                        <input type="checkbox" readOnly checked={isSel} className="cursor-pointer" />
+                        <input type="checkbox" readOnly checked={isSel} className="cursor-pointer pointer-events-none" />
                       </td>
                       <td className="px-2 py-1.5 font-medium">{p.title}</td>
                       <td className="px-2 py-1.5 text-muted-foreground">{p.vendor}</td>
@@ -445,7 +527,7 @@ export default function MarketingPostsPage() {
                         {p.promo?.promoPrice ? (
                           <span className="text-amber-300">${p.promo.promoPrice}</span>
                         ) : (
-                          <>${p.minPrice}</>
+                          <>${p.price}</>
                         )}
                       </td>
                       <td className={`px-2 py-1.5 text-right tabular-nums ${p.qty <= 3 ? 'text-amber-300' : ''}`}>{p.qty}</td>
@@ -546,8 +628,8 @@ export default function MarketingPostsPage() {
                 placeholder="CTA"
               />
               <textarea
-                value={v.hashtags.join(' ')}
-                onChange={e => updateVariant(idx, { hashtags: e.target.value.split(/\s+/).filter(Boolean) })}
+                value={v.hashtagsText}
+                onChange={e => updateVariant(idx, { hashtagsText: e.target.value })}
                 rows={2}
                 className="w-full px-2 py-1.5 text-xs rounded-md border border-border bg-background resize-y text-sky-300"
                 placeholder="#hashtags"

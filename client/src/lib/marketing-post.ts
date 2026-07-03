@@ -38,7 +38,7 @@ export interface PostVariant {
 
 export interface GenResult {
   variants: PostVariant[];
-  dropped: { belowCost: string[]; outOfStock: number };
+  dropped: { belowCost: string[]; outOfStock: number; noPrice: number };
 }
 
 async function getToken(): Promise<string> {
@@ -80,6 +80,7 @@ export async function generateMarketingPost(input: {
     dropped: {
       belowCost: Array.isArray(j?.dropped?.belowCost) ? j.dropped.belowCost : [],
       outOfStock: Number(j?.dropped?.outOfStock) || 0,
+      noPrice: Number(j?.dropped?.noPrice) || 0,
     },
   };
 }
@@ -89,8 +90,11 @@ export interface LiveProduct {
   vendor: string;
   productType: string;
   descriptionText: string; // 已 strip HTML
-  price: number | null;        // 最平 variant
-  comparePrice: number | null; // 最高 compareAtPrice
+  // 價格三兄弟一律嚟自「最平嗰個 variant」— 唔准跨 variant 溝數,
+  // 否則會出現「min 價配 max 劃線價」嘅誇大折扣(折扣聲明合規)
+  price: number | null;
+  comparePrice: number | null;
+  sku: string; // 同一個 variant 嘅 sku,配對成本用
   totalQty: number;
   imageUrls: string[];
 }
@@ -111,16 +115,22 @@ export async function fetchLiveProduct(productId: string): Promise<LiveProduct |
     const p = j?.product;
     if (!resp.ok || !p) return null;
     const variants: any[] = Array.isArray(p.variants) ? p.variants : [];
-    const prices = variants.map(v => Number(v.price)).filter(n => Number.isFinite(n) && n > 0);
-    const compares = variants.map(v => Number(v.compareAtPrice)).filter(n => Number.isFinite(n) && n > 0);
+    const priced = variants
+      .map(v => ({ price: Number(v.price), compare: Number(v.compareAtPrice), sku: String(v.sku || '') }))
+      .filter(v => Number.isFinite(v.price) && v.price > 0);
+    // 揀最平嗰個 variant,price/compare/sku 全部用佢一個嘅 — 唔跨 variant 溝數
+    const cheapest = priced.length
+      ? priced.reduce((a, b) => (b.price < a.price ? b : a))
+      : null;
     const totalQty = variants.reduce((s, v) => s + (Number(v.inventoryQuantity) || 0), 0);
     return {
       title: p.title || '',
       vendor: p.vendor || '',
       productType: p.productType || '',
       descriptionText: stripHtml(p.descriptionHtml || '').slice(0, 1500),
-      price: prices.length ? Math.min(...prices) : null,
-      comparePrice: compares.length ? Math.max(...compares) : null,
+      price: cheapest?.price ?? null,
+      comparePrice: cheapest && Number.isFinite(cheapest.compare) && cheapest.compare > 0 ? cheapest.compare : null,
+      sku: cheapest?.sku ?? '',
       totalQty,
       imageUrls: (Array.isArray(p.media) ? p.media : [])
         .map((m: any) => m?.url)

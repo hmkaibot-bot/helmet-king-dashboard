@@ -56,6 +56,8 @@ const SCENARIO_DESC: Record<string, string> = {
   touring: '長途旅行 — 痛點:攰、周身痛、行李。裝備賣點圍繞舒適、人體工學、儲物',
   beginner: '新手上路 — 痛點:唔識揀、怕跌。裝備賣點圍繞保護、認證、入門價',
 };
+// handler 用嚟做 whitelist — 防止 'constructor' 呢類 prototype-chain key 混入 prompt
+export const SCENARIO_KEYS = Object.keys(SCENARIO_DESC);
 
 /** 每個 postType 嘅「角度」段落 */
 const TYPE_ANGLE: Record<PostType, string> = {
@@ -64,7 +66,7 @@ const TYPE_ANGLE: Record<PostType, string> = {
   brand_story:
     '貼文類型:【品牌介紹】。用 web_search 搵呢個品牌嘅官方背景(創立年份/國家/專長領域),寫一段簡短品牌故事,再自然帶出店內呢幾件貨。品牌資料搵唔到就只寫產品,唔好作。',
   weekly_deal:
-    '貼文類型:【本周優惠】。折扣數字行先(如有 promoPrice 同 comparePrice 先可以講折扣),必須寫明優惠期限(promoEndDate)。庫存 ≤3 件嘅可以講「最後 N 件」製造合理急迫感。',
+    '貼文類型:【本周優惠】。折扣數字行先(如有 promoPrice 同 comparePrice 先可以講折扣)。如產品數據有「優惠期至」就必須寫明期限;冇提供期限嘅唔好作一個出嚟。庫存 ≤3 件嘅可以講「最後 N 件」製造合理急迫感。',
   scenario:
     '貼文類型:【情境貼】。開頭先講場景痛點(唔好一開波就 sell 嘢),中段先自然帶出裝備點樣解決,將幾件產品串成一套裝備組合。',
   clearance:
@@ -72,7 +74,7 @@ const TYPE_ANGLE: Record<PostType, string> = {
   price_beat:
     '貼文類型:【格價擂台】。重點係「香港行貨、門市現貨即買即取,價錢仲要有優勢」。唔好點名講對手,只講自己抵。',
   last_size:
-    '貼文類型:【斷碼最後尺寸】。重點係「呢個款剩返邊幾個 size」,呼籲啱 size 嘅人即刻入手,錯過冇下次。',
+    '貼文類型:【斷碼最後尺寸】。重點係呢個款已斷碼、剩返少量尺碼,呼籲啱 size 嘅人即刻入手。產品數據冇列明具體 size 嘅話,只可以講「剩返最後幾個尺碼」,唔准自己作 size 出嚟。',
 };
 
 const PLATFORM_RULES = `## 平台格式
@@ -113,7 +115,7 @@ export function buildPrompt(opts: {
   }).join('\n\n');
 
   const scenarioLine =
-    postType === 'scenario' && scenario && SCENARIO_DESC[scenario]
+    postType === 'scenario' && scenario && Object.prototype.hasOwnProperty.call(SCENARIO_DESC, scenario)
       ? `\n## 情境\n${SCENARIO_DESC[scenario]}\n`
       : '';
 

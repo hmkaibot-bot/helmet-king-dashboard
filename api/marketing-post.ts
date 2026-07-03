@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import {
   buildPrompt,
-  POST_TYPES, TONES, LANGS, PLATFORMS,
+  POST_TYPES, TONES, LANGS, PLATFORMS, SCENARIO_KEYS,
   type PostType, type Tone, type Lang, type Platform, type PromptProduct,
 } from './_marketing-prompts';
 
@@ -38,8 +38,14 @@ async function verifyUser(token: string): Promise<boolean> {
   }
 }
 
+// 所有 regex 之前先硬 slice 一刀 — 唔好俾未截斷嘅超長 input 落 regex(quadratic DoS)
 const stripHtml = (s: string) =>
-  (s || '').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim();
+  String(s || '').slice(0, 20000)
+    .replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/gi, ' ').replace(/\s+/g, ' ').trim();
+
+// 短欄位:單行化 + 收乾空白 — 防止 title/vendor 內嘅換行扮 prompt 結構(prompt injection)
+const cleanLine = (v: any, n: number) =>
+  String(v ?? '').slice(0, n * 4).replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
 
 function extractJson(text: string): any {
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -82,35 +88,44 @@ export default async function handler(req: any, res: any) {
     ? body.platforms.filter((p: any) => PLATFORMS.includes(p)).slice(0, 3)
     : [];
   if (platforms.length === 0) return res.status(400).json({ error: '至少揀一個平台' });
-  const scenario = body?.scenario ? String(body.scenario).slice(0, 30) : null;
+  // scenario 一定要喺 whitelist 內 — 防 'constructor' 等 prototype-chain key 混入 prompt
+  const scenario = SCENARIO_KEYS.includes(String(body?.scenario)) ? String(body.scenario) : null;
+  if (postType === 'scenario' && !scenario) {
+    return res.status(400).json({ error: `情境貼要指定有效情境(${SCENARIO_KEYS.join('/')})` });
+  }
 
   const rawProducts: any[] = Array.isArray(body?.products) ? body.products.slice(0, 6) : [];
   if (rawProducts.length === 0) return res.status(400).json({ error: '冇產品資料' });
 
   // ── 安全欄(server-side 再驗)──────────────────────────────
+  // 信任模型:呼叫者係已登入嘅內部員工 dashboard,數據可信度由 client 攞 live 數保證;
+  // 呢度嘅檢查係「防止出錯」多過「防惡意」— 惡意員工本身有 Shopify 權限,唔係呢層防到。
   const blockedBelowCost: string[] = [];
+  let droppedNoPrice = 0;
+  let droppedOos = 0;
   const products: PromptProduct[] = [];
   for (const p of rawProducts) {
     const qty = num(p?.qty);
-    if (qty <= 0) continue; // 缺貨直接剔走
+    if (qty <= 0) { droppedOos++; continue; } // 缺貨直接剔走
     const price = num(p?.price);
-    const promoPrice = p?.promoPrice != null ? num(p.promoPrice) : null;
-    const cost = p?.cost != null ? num(p.cost) : 0; // 只用嚟檢查,唔入 prompt
+    const promoPrice = p?.promoPrice != null && num(p.promoPrice) > 0 ? num(p.promoPrice) : null;
     const effective = promoPrice ?? price;
-    if (cost > 0 && effective > 0 && effective < cost) {
-      blockedBelowCost.push(String(p?.title || '').slice(0, 100));
+    if (effective <= 0) { droppedNoPrice++; continue; } // 冇有效價 — 費事出「HK$0」
+    const cost = p?.cost != null ? num(p.cost) : 0; // 只用嚟檢查,唔入 prompt
+    if (cost > 0 && effective < cost) {
+      blockedBelowCost.push(cleanLine(p?.title, 100));
       continue;
     }
     const comparePrice = p?.comparePrice != null ? num(p.comparePrice) : null;
     products.push({
-      title: String(p?.title || '').slice(0, 300),
-      vendor: String(p?.vendor || '').slice(0, 100),
-      productType: String(p?.productType || '').slice(0, 100),
+      title: cleanLine(p?.title, 300),
+      vendor: cleanLine(p?.vendor, 100),
+      productType: cleanLine(p?.productType, 100),
       price,
       // 折扣聲明合規:compare 要真係高過售價先入 prompt
       comparePrice: comparePrice && comparePrice > effective ? comparePrice : null,
       promoPrice,
-      promoEndDate: p?.promoEndDate ? String(p.promoEndDate).slice(0, 20) : null,
+      promoEndDate: p?.promoEndDate ? cleanLine(p.promoEndDate, 20) : null,
       qty,
       sellingPoints: stripHtml(String(p?.sellingPoints || '')).slice(0, 1500),
     });
@@ -118,7 +133,9 @@ export default async function handler(req: any, res: any) {
   if (products.length === 0) {
     const reason = blockedBelowCost.length > 0
       ? `全部產品被安全欄擋住(售價低過成本): ${blockedBelowCost.join('、')}`
-      : '所揀產品全部缺貨 — 缺貨產品唔可以出貼文';
+      : droppedNoPrice > 0
+        ? '所揀產品冇有效售價 — 請先喺 Shopify 補返價錢'
+        : '所揀產品全部缺貨 — 缺貨產品唔可以出貼文';
     return res.status(400).json({ error: reason });
   }
 
@@ -135,7 +152,9 @@ export default async function handler(req: any, res: any) {
     for (let i = 0; i < 4; i++) {
       const stream = client.messages.stream({
         model: 'claude-opus-4-8',
-        max_tokens: 4000,
+        // adaptive thinking 同 output 共用 budget — 3 個平台 variants 嘅 JSON 可以幾長,
+        // 4000 有機會中途截斷(表徵係「AI 回覆解析失敗」),俾鬆啲
+        max_tokens: 8000,
         thinking: { type: 'adaptive' },
         ...(tools ? { tools } : {}),
         messages,
@@ -158,7 +177,7 @@ export default async function handler(req: any, res: any) {
       ok: true,
       variants,
       // 俾前端顯示邊啲產品被剔走
-      dropped: { belowCost: blockedBelowCost, outOfStock: rawProducts.length - products.length - blockedBelowCost.length },
+      dropped: { belowCost: blockedBelowCost, outOfStock: droppedOos, noPrice: droppedNoPrice },
     });
   } catch (e: any) {
     return res.status(200).json({ ok: false, error: e?.message || String(e) });

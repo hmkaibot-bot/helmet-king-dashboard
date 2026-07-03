@@ -143,13 +143,16 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 function findCurrentPage(location: string): { label: string; sublabel: string } {
+  // child 行先 — '/marketing' 同時係 group path 同 child path,header 應該顯示 child 個名
   for (const item of NAV_ITEMS) {
-    if (item.path === location) return item;
     if (item.children) {
       for (const child of item.children) {
         if (child.path === location) return child;
       }
     }
+  }
+  for (const item of NAV_ITEMS) {
+    if (item.path === location) return item;
   }
   return NAV_ITEMS[0];
 }
