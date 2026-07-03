@@ -21,6 +21,7 @@ const RetailBrandsPage = lazy(() => import("@/pages/retail-brands"));
 const GarageOrdersPage = lazy(() => import("@/pages/garage-orders"));
 const GarageServicesPage = lazy(() => import("@/pages/garage-services"));
 const MarketingPage = lazy(() => import("@/pages/marketing"));
+const MarketingPostsPage = lazy(() => import("@/pages/marketing-posts"));
 const FinancePage = lazy(() => import("@/pages/finance"));
 const RestockPage = lazy(() => import("@/pages/restock"));
 const DeadStockPage = lazy(() => import("@/pages/dead-stock"));
@@ -65,6 +66,7 @@ function AppRouter() {
         <Route path="/garage/orders" component={GarageOrdersPage} />
         <Route path="/garage/services" component={GarageServicesPage} />
         <Route path="/marketing" component={MarketingPage} />
+        <Route path="/marketing/posts" component={MarketingPostsPage} />
         <Route path="/finance" component={FinancePage} />
         <Route path="/retail/restock" component={RestockPage} />
         <Route path="/retail/dead-stock" component={DeadStockPage} />

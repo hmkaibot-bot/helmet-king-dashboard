@@ -111,9 +111,10 @@ export default async function handler(req: any, res: any) {
       const data = await gql(
         `query($id: ID!) {
           product(id: $id) {
-            id title descriptionHtml productType tags status handle onlineStoreUrl
+            id title descriptionHtml productType vendor tags status handle onlineStoreUrl
             media(first: 50) { nodes { id mediaContentType status preview { image { url } } } }
             collections(first: 50) { nodes { id title } }
+            variants(first: 100) { nodes { id sku price compareAtPrice inventoryQuantity } }
           }
         }`,
         { id: pid(body.productId) }
@@ -126,6 +127,7 @@ export default async function handler(req: any, res: any) {
           title: p.title,
           descriptionHtml: p.descriptionHtml || '',
           productType: p.productType || '',
+          vendor: p.vendor || '',
           tags: p.tags || [],
           status: p.status,
           handle: p.handle,
@@ -137,6 +139,14 @@ export default async function handler(req: any, res: any) {
             status: m.status,
           })),
           collections: (p.collections?.nodes || []).map((c: any) => ({ id: c.id, title: c.title })),
+          // 營銷貼文用 — 生成嗰刻攞 live 價,唔用隔夜 snapshot
+          variants: (p.variants?.nodes || []).map((v: any) => ({
+            id: v.id,
+            sku: v.sku || '',
+            price: v.price != null ? Number(v.price) : null,
+            compareAtPrice: v.compareAtPrice != null ? Number(v.compareAtPrice) : null,
+            inventoryQuantity: v.inventoryQuantity ?? null,
+          })),
         },
       });
     }

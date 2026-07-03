@@ -42,6 +42,7 @@ import {
   Tags,
   FileEdit,
   Scale,
+  PenLine,
 } from 'lucide-react';
 import { clearQueryCache } from '@/lib/query-helpers';
 import { Button } from '@/components/ui/button';
@@ -127,7 +128,16 @@ const NAV_ITEMS: NavItem[] = [
       { path: '/crm/marsello-approval', label: 'Marsello 積分', sublabel: 'Points Approval', icon: Award },
     ],
   },
-  { path: '/marketing', label: '營銷', sublabel: 'Marketing', icon: Megaphone },
+  {
+    path: '/marketing',
+    label: '營銷',
+    sublabel: 'Marketing',
+    icon: Megaphone,
+    children: [
+      { path: '/marketing', label: '營銷效果', sublabel: 'Marketing', icon: BarChart3 },
+      { path: '/marketing/posts', label: '營銷貼文', sublabel: 'Post Studio', icon: PenLine },
+    ],
+  },
   { path: '/finance', label: '財務', sublabel: 'Finance', icon: Receipt },
   { path: '/system/sync-status', label: '同步狀態', sublabel: 'Sync Status', icon: Activity },
 ];
@@ -151,7 +161,7 @@ function isParentActive(item: NavItem, location: string): boolean {
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true, '/procurement': true, '/performance': true, '/crm': true });
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true, '/procurement': true, '/performance': true, '/crm': true, '/marketing': true });
   const [location] = useLocation();
   const { dateRange, setDateRange, customFrom, customTo, setCustomFrom, setCustomTo } = useDateRange();
 
@@ -161,6 +171,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
     '/retail/promotions',
     '/retail/promotions/items',
     '/retail/promotions/history',
+    '/marketing/posts',
     '/retail/inventory',
     '/retail/restock',
     '/performance/daily',
