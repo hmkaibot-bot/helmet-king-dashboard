@@ -43,6 +43,7 @@ import {
   FileEdit,
   Scale,
   PenLine,
+  Coins,
 } from 'lucide-react';
 import { clearQueryCache } from '@/lib/query-helpers';
 import { Button } from '@/components/ui/button';
@@ -138,7 +139,16 @@ const NAV_ITEMS: NavItem[] = [
       { path: '/marketing/posts', label: '營銷貼文', sublabel: 'Post Studio', icon: PenLine },
     ],
   },
-  { path: '/finance', label: '財務', sublabel: 'Finance', icon: Receipt },
+  {
+    path: '/finance',
+    label: '財務',
+    sublabel: 'Finance',
+    icon: Receipt,
+    children: [
+      { path: '/finance', label: '財務概覽', sublabel: 'Overview', icon: Receipt },
+      { path: '/finance/retail-commission', label: '零售佣金', sublabel: 'Retail Commission', icon: Coins },
+    ],
+  },
   { path: '/system/sync-status', label: '同步狀態', sublabel: 'Sync Status', icon: Activity },
 ];
 
@@ -164,7 +174,7 @@ function isParentActive(item: NavItem, location: string): boolean {
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true, '/procurement': true, '/performance': true, '/crm': true, '/marketing': true });
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true, '/procurement': true, '/performance': true, '/crm': true, '/marketing': true, '/finance': true });
   const [location] = useLocation();
   const { dateRange, setDateRange, customFrom, customTo, setCustomFrom, setCustomTo } = useDateRange();
 
@@ -181,6 +191,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
     '/performance/velocity',
     '/performance/new-products',
     '/performance/weekly-review',
+    '/finance/retail-commission',
     '/performance/product-analytics',
     '/performance/forecast',
     '/crm/marsello-approval',
