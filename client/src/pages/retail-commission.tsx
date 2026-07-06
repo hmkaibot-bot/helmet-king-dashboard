@@ -18,7 +18,7 @@ function Money({ v, className = '' }: { v: number; className?: string }) {
   return <span className={`tabular-nums ${v > 0 ? '' : 'text-muted-foreground'} ${className}`}>{formatCurrency(v)}</span>;
 }
 
-function StaffRow({ s }: { s: CommissionStaff }) {
+function StaffRow({ s, isSnapshot }: { s: CommissionStaff; isSnapshot?: boolean }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -55,7 +55,7 @@ function StaffRow({ s }: { s: CommissionStaff }) {
           <td colSpan={10} className="px-3 py-2">
             <div className="text-[11px] text-muted-foreground mb-1">品牌明細(NET,代理品牌以 ● 標示)</div>
             <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {s.brands.length === 0 && <span className="text-xs text-muted-foreground">冇銷售</span>}
+              {s.brands.length === 0 && <span className="text-xs text-muted-foreground">{isSnapshot ? '快照模式暫無品牌明細（開通 read_reports 後 live 模式先有）' : '冇銷售'}</span>}
               {s.brands.map(b => (
                 <span key={b.vendor} className="text-xs tabular-nums">
                   <span className={b.agent ? 'text-primary' : 'text-muted-foreground'}>{b.agent ? '● ' : '○ '}</span>
@@ -136,6 +136,17 @@ export default function RetailCommissionPage() {
         </div>
       )}
 
+      {data?.isSnapshot && (
+        <div className="rounded-md border border-sky-500/40 bg-sky-500/10 p-2.5 text-xs text-sky-200 flex items-start gap-2">
+          <span>📸</span>
+          <span>
+            <b>快照數據</b> —— ShopifyQL <code>read_reports</code> 未開通,暫時顯示由後台預先計好嘅數
+            {data.computedAt ? `(計算於 ${new Date(data.computedAt).toLocaleString('zh-HK', { dateStyle: 'medium', timeStyle: 'short' })})` : ''}。
+            開通 <code>read_reports</code> 之後會自動轉返即時計算。當月數只計到快照嗰刻為止。
+          </span>
+        </div>
+      )}
+
       {/* 門市目標狀態 */}
       {data && (
         <div className={`rounded-md border p-3 flex items-center gap-3 flex-wrap ${
@@ -187,7 +198,7 @@ export default function RetailCommissionPage() {
               </tr>
             </thead>
             <tbody>
-              {data.staff.map(s => <StaffRow key={s.code} s={s} />)}
+              {data.staff.map(s => <StaffRow key={s.code} s={s} isSnapshot={data.isSnapshot} />)}
             </tbody>
           </table>
         </div>
