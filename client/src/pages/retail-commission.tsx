@@ -41,7 +41,7 @@ function StaffRow({ s, isSnapshot }: { s: CommissionStaff; isSnapshot?: boolean 
         <td className="px-3 py-2 text-right"><Money v={s.nonAgentComm} /></td>
         {/* ④ 平均件數 */}
         <td className="px-3 py-2 text-right tabular-nums">
-          {s.avgItems.toFixed(2)}
+          {s.avgItems.toFixed(1)}
           <span className="text-[10px] text-muted-foreground ml-1">({formatNumber(s.items)}/{formatNumber(s.orders)})</span>
         </td>
         <td className="px-3 py-2 text-right"><Money v={s.avgBonus} /></td>

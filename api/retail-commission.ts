@@ -245,7 +245,8 @@ export default async function handler(req: any, res: any) {
       const agentRate = agentTierRate(a.agentTotal);
       const agentComm = a.agentTotal * agentRate;
       const nonAgentComm = a.nonAgentTotal >= NONAGENT_TARGET ? a.nonAgentTotal * NONAGENT_RATE : 0;
-      const avgItems = a.orders > 0 ? a.items / a.orders : 0;
+      // 平均件數 4捨5入到 1 個小數位,tier(1.8/2.2/2.6)以呢個 rounded 值判斷(同老闆 sheet 一致)
+      const avgItems = a.orders > 0 ? Math.round((a.items / a.orders) * 10) / 10 : 0;
       const avgBonus = avgItemsBonus(avgItems);
       const targetBonus = storeHit ? STORE_BONUS : 0;
       const total = agentComm + nonAgentComm + avgBonus + targetBonus;
