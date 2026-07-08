@@ -20,6 +20,7 @@ import {
   RATING_LABEL,
   RATING_COLOR,
   fetchAllRows,
+  effectiveStatus,
 } from '@/lib/promotions-shared';
 
 type SortKey = 'end_date' | 'lift' | 'revenue' | 'qty';
@@ -42,7 +43,10 @@ export default function PromotionsHistoryPage() {
         fetchAllRows<Promotion>('promotions'),
         fetchAllRows<PromotionItem>('promotion_items'),
       ]);
-      setPromos(allPromos.filter(p => p.status === 'ended' || p.status === 'cancelled'));
+      setPromos(allPromos.filter(p => {
+        const st = effectiveStatus(p);
+        return st === 'ended' || st === 'cancelled';
+      }));
       setItems(allItems);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -57,7 +61,7 @@ export default function PromotionsHistoryPage() {
 
   // ── KPI: cross-promo analytics ────────────────────────────────────────
   const kpi = useMemo(() => {
-    const endedWithSnapshot = promos.filter(p => p.status === 'ended' && p.snapshotted_at);
+    const endedWithSnapshot = promos.filter(p => effectiveStatus(p) === 'ended' && p.snapshotted_at);
     if (endedWithSnapshot.length === 0) return null;
 
     const totalRev = endedWithSnapshot.reduce((s, p) => s + (p.final_revenue ?? 0), 0);

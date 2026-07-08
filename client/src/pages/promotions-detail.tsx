@@ -31,6 +31,7 @@ import {
   ratingFromLift,
   fetchAllRows,
   daysBetween,
+  effectiveStatus,
 } from '@/lib/promotions-shared';
 
 interface InventoryRow {
@@ -480,7 +481,7 @@ export default function PromotionDetailPage() {
   }, [promo, sortedStats]);
 
   // ── Use snapshot for ended promos ────────────────────────────────────────
-  const isEnded = promo?.status === 'ended';
+  const isEnded = promo != null && effectiveStatus(promo) === 'ended';
 
   // ── CSV 匯出 (匯出目前篩選 / 排序後嘅商品列表,欄位同畫面一致) ──────────────
   const exportCsv = useCallback(() => {
@@ -645,9 +646,9 @@ export default function PromotionDetailPage() {
             <h1 className="text-lg font-semibold truncate">{promo?.name ?? '...'}</h1>
             {promo && (
               <span
-                className={`px-1.5 py-0.5 rounded text-[10px] border ${STATUS_COLOR[promo.status]}`}
+                className={`px-1.5 py-0.5 rounded text-[10px] border ${STATUS_COLOR[effectiveStatus(promo)]}`}
               >
-                {STATUS_LABEL[promo.status]}
+                {STATUS_LABEL[effectiveStatus(promo)]}
               </span>
             )}
             {isEnded && promo?.snapshotted_at && (
