@@ -115,3 +115,10 @@ export function deriveStatusFromDates(startISO: string, endISO: string): Promoti
   if (startISO > today) return 'planned';
   return 'active';
 }
+
+// 讀取時嘅「實際狀態」— DB 個 status 欄只喺 create/edit 嗰下寫一次,唔會自動
+// 跟日子轉(planned→active→ended),所以顯示/篩選一律用呢個即場由日期計,
+// 唔好直接信 p.status。cancelled 係手動狀態,照舊保留。
+export function effectiveStatus(p: Pick<Promotion, 'status' | 'start_date' | 'end_date'>): Promotion['status'] {
+  return p.status === 'cancelled' ? 'cancelled' : deriveStatusFromDates(p.start_date, p.end_date);
+}

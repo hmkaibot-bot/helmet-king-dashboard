@@ -26,6 +26,7 @@ import {
   todayISO,
   addDays,
   deriveStatusFromDates,
+  effectiveStatus,
 } from '@/lib/promotions-shared';
 
 // ── Page ─────────────────────────────────────────────────────────────────────
@@ -46,6 +47,16 @@ export default function PromotionsListPage() {
         fetchAllRows<Promotion>('promotions'),
         fetchAllRows<PromotionItem>('promotion_items'),
       ]);
+      // 自我修復:日子過咗但 DB status 未跟上(planned→active / active→ended)就寫返落去。
+      // 顯示唔等呢步 — 畫面一律用 effectiveStatus 即場計,呢度純粹令 DB 同畫面一致。
+      const stale = promos.filter(p => effectiveStatus(p) !== p.status);
+      if (stale.length > 0) {
+        void Promise.allSettled(
+          stale.map(p =>
+            supabase.from('promotions').update({ status: effectiveStatus(p) }).eq('id', p.id)
+          )
+        );
+      }
       setPromotions(promos);
       setItems(pItems);
     } catch (e) {
@@ -62,7 +73,10 @@ export default function PromotionsListPage() {
   // ── Filter: only show active + planned (not ended) ───────────────────────
   const activePromos = useMemo(() => {
     return promotions
-      .filter(p => p.status === 'active' || p.status === 'planned')
+      .filter(p => {
+        const st = effectiveStatus(p);
+        return st === 'active' || st === 'planned';
+      })
       .sort((a, b) => a.start_date.localeCompare(b.start_date));
   }, [promotions]);
 
@@ -224,9 +238,9 @@ export default function PromotionsListPage() {
                     </Link>
                     <div className="flex items-center gap-1.5 mt-1">
                       <span
-                        className={`px-1.5 py-0.5 rounded text-[10px] border ${STATUS_COLOR[promo.status]}`}
+                        className={`px-1.5 py-0.5 rounded text-[10px] border ${STATUS_COLOR[effectiveStatus(promo)]}`}
                       >
-                        {STATUS_LABEL[promo.status]}
+                        {STATUS_LABEL[effectiveStatus(promo)]}
                       </span>
                       {promo.discount_type && (
                         <span className="text-[10px] text-muted-foreground">

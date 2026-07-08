@@ -19,6 +19,7 @@ import {
   STATUS_LABEL,
   STATUS_COLOR,
   fetchAllRows,
+  effectiveStatus,
 } from '@/lib/promotions-shared';
 
 // Bulk-assign sentinel：揀「未分派」= 移除現有推廣分派（用獨立 sentinel,
@@ -143,7 +144,10 @@ export default function PromotionsItemsPage() {
       setProducts(promotingProducts);
       setActivePromos(
         promos
-          .filter(p => p.status === 'active' || p.status === 'planned')
+          .filter(p => {
+            const st = effectiveStatus(p);
+            return st === 'active' || st === 'planned';
+          })
           .sort((a, b) => a.start_date.localeCompare(b.start_date))
       );
     } catch (e) {
@@ -536,10 +540,10 @@ export default function PromotionsItemsPage() {
                           >
                             <span
                               className={`px-1.5 py-0.5 rounded text-[10px] border ${
-                                STATUS_COLOR[p.assigned_promo.status]
+                                STATUS_COLOR[effectiveStatus(p.assigned_promo)]
                               }`}
                             >
-                              {STATUS_LABEL[p.assigned_promo.status]}
+                              {STATUS_LABEL[effectiveStatus(p.assigned_promo)]}
                             </span>
                           </Link>
                         )}
