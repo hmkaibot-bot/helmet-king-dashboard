@@ -80,6 +80,16 @@ export default function PromotionsListPage() {
       .sort((a, b) => a.start_date.localeCompare(b.start_date));
   }, [promotions]);
 
+  // Header 顯示實際分項(唔好靜態寫死「進行中 + 計劃中」,冇計劃中都咁寫會誤導)
+  const headerLabel = useMemo(() => {
+    const active = activePromos.filter(p => effectiveStatus(p) === 'active').length;
+    const planned = activePromos.length - active;
+    const parts: string[] = [];
+    if (active > 0) parts.push(`進行中 ${active}`);
+    if (planned > 0) parts.push(`計劃中 ${planned}`);
+    return parts.length > 0 ? parts.join(' · ') : '0 個';
+  }, [activePromos]);
+
   const itemCountByPromo = useMemo(() => {
     const m = new Map<string, number>();
     for (const it of items) {
@@ -143,7 +153,7 @@ export default function PromotionsListPage() {
           <Megaphone className="h-5 w-5 text-primary" />
           <h1 className="text-lg font-semibold">推廣活動</h1>
           <span className="text-xs text-muted-foreground">
-            （進行中 + 計劃中 · 共 {activePromos.length}）
+            （{headerLabel}）
           </span>
         </div>
         <div className="flex items-center gap-2">
