@@ -8,6 +8,7 @@
  * action:
  *  - get             { productId }                      → 商品詳情 (含 media / collections)
  *  - featuredImages  { productIds[] (≤250) }            → 批量攞商品主圖 URL (推廣監察頁)
+ *  - variants        { productId }                      → 子產品列表 (選項/圖/即時庫存,推廣監察彈窗)
  *  - listCollections {}                                 → 所有 collection (落揀單)
  *  - addMedia        { productId, urls[] }              → 由圖片 URL 加相
  *  - deleteMedia     { productId, mediaIds[] }          → 刪相
@@ -172,6 +173,49 @@ export default async function handler(req: any, res: any) {
         if (numeric) images[numeric] = n?.featuredImage?.url || null;
       }
       return res.status(200).json({ ok: true, images });
+    }
+
+    if (action === 'variants') {
+      // 子產品彈窗 — 攞晒每個 variant 嘅選項(顏色/尺寸)、圖、即時庫存
+      const data = await gql(
+        `query($id: ID!) {
+          product(id: $id) {
+            id title
+            featuredImage { url }
+            options { name }
+            variants(first: 250) {
+              nodes {
+                id sku title
+                selectedOptions { name value }
+                inventoryQuantity
+                image { url }
+              }
+            }
+          }
+        }`,
+        { id: pid(body.productId) }
+      );
+      const p = data?.product;
+      if (!p) return res.status(404).json({ error: '搵唔到商品' });
+      return res.status(200).json({
+        ok: true,
+        product: {
+          title: p.title,
+          featuredImage: p.featuredImage?.url || null,
+          // "Title" 係 Shopify 冇選項時嘅 placeholder,前端會照 filter 走
+          optionNames: (p.options || []).map((o: any) => String(o?.name || '')),
+          variants: (p.variants?.nodes || []).map((v: any) => ({
+            id: v.id,
+            sku: v.sku || '',
+            title: v.title || '',
+            options: Object.fromEntries(
+              (v.selectedOptions || []).map((o: any) => [String(o?.name || ''), String(o?.value || '')])
+            ),
+            inventoryQuantity: v.inventoryQuantity ?? null,
+            imageUrl: v.image?.url || null,
+          })),
+        },
+      });
     }
 
     if (action === 'listCollections') {
