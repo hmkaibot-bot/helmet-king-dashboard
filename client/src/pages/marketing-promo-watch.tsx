@@ -39,6 +39,7 @@ interface InventoryRow {
   sku: string;
   product_id: number | string | null;
   product_title: string | null;
+  variant_title: string | null;
   vendor: string | null;
   product_type: string | null;
   inventory_quantity: number | null;
@@ -76,6 +77,58 @@ interface ProductRow {
 
 // 主圖 URL cache(module-level — 轉活動/轉頁唔使重新問 Shopify)
 const _imgCache = new Map<string, string | null>();
+
+// ── 子產品(variant)彈窗數據 ─────────────────────────────────────────────────
+export interface VariantInfo {
+  sku: string;
+  title: string;
+  options: Record<string, string>;   // 選項名 → 值(例 Colour → BLACK, Size → M)
+  inventoryQuantity: number | null;
+  imageUrl: string | null;
+}
+export interface VariantProduct {
+  title: string;
+  featuredImage: string | null;
+  optionNames: string[];             // 產品選項名(有序,例 [Colour, Size])
+  variants: VariantInfo[];
+  live: boolean;                     // true = Shopify 即時;false = 每日同步 fallback
+}
+const _variantCache = new Map<string, VariantProduct>();
+
+async function fetchVariants(productId: string): Promise<VariantProduct | null> {
+  const hit = _variantCache.get(productId);
+  if (hit) return hit;
+  try {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) return null;
+    const resp = await fetch('/api/shopify-product', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action: 'variants', productId }),
+    });
+    const j: any = await resp.json().catch(() => null);
+    const p = j?.product;
+    if (!resp.ok || !p) return null;
+    const out: VariantProduct = {
+      title: String(p.title || ''),
+      featuredImage: p.featuredImage || null,
+      optionNames: Array.isArray(p.optionNames) ? p.optionNames.map(String) : [],
+      variants: (Array.isArray(p.variants) ? p.variants : []).map((v: any) => ({
+        sku: String(v?.sku || ''),
+        title: String(v?.title || ''),
+        options: v?.options && typeof v.options === 'object' ? v.options : {},
+        inventoryQuantity: v?.inventoryQuantity ?? null,
+        imageUrl: v?.imageUrl || null,
+      })),
+      live: true,
+    };
+    _variantCache.set(productId, out);
+    return out;
+  } catch {
+    return null;
+  }
+}
 
 // Shopify CDN 圖可以用 width param 攞細圖,慳流量
 function thumbUrl(u: string, w = 120): string {
@@ -141,6 +194,9 @@ export default function MarketingPromoWatchPage() {
   const [sortBy, setSortBy] = useState<SortKey>('soldQty');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [lightbox, setLightbox] = useState<{ url: string; title: string } | null>(null);
+  // 子產品彈窗:撳商品名開,顯示每個 variant 嘅圖/顏色/尺寸/庫存
+  const [variantModal, setVariantModal] = useState<{ productId: string; title: string } | null>(null);
+  const [variantData, setVariantData] = useState<{ loading: boolean; data: VariantProduct | null } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -151,7 +207,7 @@ export default function MarketingPromoWatchPage() {
         fetchAllRows<PromotionItem>('promotion_items'),
         queryAllPages(
           'shopify_inventory',
-          'sku,product_id,product_title,vendor,product_type,inventory_quantity,price,compare_at_price'
+          'sku,product_id,product_title,variant_title,vendor,product_type,inventory_quantity,price,compare_at_price'
         ) as Promise<InventoryRow[]>,
         queryAllPages('shopify_order_lines', 'sku,quantity,price,order_id') as Promise<OrderLineRow[]>,
         queryAllPages('shopify_orders', 'id,created_at,cancelled_at') as Promise<OrderRow[]>,
@@ -292,6 +348,50 @@ export default function MarketingPromoWatchPage() {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [lightbox]);
+
+  // 子產品彈窗 ESC 關閉(lightbox 開緊嗰陣唔郁 — 等 lightbox 先閂)
+  useEffect(() => {
+    if (!variantModal || lightbox) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setVariantModal(null); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [variantModal, lightbox]);
+
+  // 開子產品彈窗:即時去 Shopify 攞 variant 選項/圖/庫存;
+  // 攞唔到就 fallback 用每日同步嘅 variant_title + 庫存(冇圖)
+  const openVariantModal = useCallback((r: ProductRow) => {
+    setVariantModal({ productId: r.product_id, title: r.title });
+    setVariantData({ loading: true, data: null });
+    fetchVariants(r.product_id).then(v => {
+      setVariantModal(cur => {
+        if (!cur || cur.productId !== r.product_id) return cur; // 已閂/已轉第二款
+        if (v) {
+          setVariantData({ loading: false, data: v });
+        } else {
+          const fallbackRows = inventory.filter(
+            i => i.product_id != null && String(i.product_id) === r.product_id
+          );
+          setVariantData({
+            loading: false,
+            data: {
+              title: r.title,
+              featuredImage: images.get(r.product_id) ?? null,
+              optionNames: [],
+              variants: fallbackRows.map(i => ({
+                sku: i.sku,
+                title: i.variant_title ?? '',
+                options: {},
+                inventoryQuantity: i.inventory_quantity ?? null,
+                imageUrl: null,
+              })),
+              live: false,
+            },
+          });
+        }
+        return cur;
+      });
+    });
+  }, [inventory, images]);
 
   // ── 品牌 / 類別選項(由現時活動嘅商品嚟) ─────────────────────────────────
   const vendorOptions = useMemo(
@@ -590,7 +690,13 @@ export default function MarketingPromoWatchPage() {
                       )}
                     </td>
                     <td className="px-3 py-1.5 max-w-[320px]">
-                      <div className="font-medium truncate" title={r.title}>{r.title}</div>
+                      <button
+                        onClick={() => openVariantModal(r)}
+                        className="font-medium truncate block w-full text-left hover:underline hover:text-primary transition-colors"
+                        title="撳嚟睇子產品庫存(顏色/尺寸)"
+                      >
+                        {r.title}
+                      </button>
                       <div className="text-[10px] text-muted-foreground truncate">
                         {r.vendor} · {r.product_type} · {r.numSkus} SKU
                       </div>
@@ -639,10 +745,149 @@ export default function MarketingPromoWatchPage() {
         訂單數據每日清晨同步一次,今日即市單未計 · 圖片即時由 Shopify 攞 · 建議零售價/零售價/庫存嚟自每日同步。
       </p>
 
-      {/* 圖片放大 lightbox */}
+      {/* 子產品(variant)庫存彈窗 */}
+      {variantModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          onClick={() => setVariantModal(null)}
+        >
+          <div
+            className="bg-card border border-border rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* 彈窗 header */}
+            <div className="flex items-center gap-3 p-4 border-b border-border/60">
+              {(variantData?.data?.featuredImage || images.get(variantModal.productId)) ? (
+                <button
+                  onClick={() => {
+                    const u = variantData?.data?.featuredImage || images.get(variantModal.productId);
+                    if (u) setLightbox({ url: u, title: variantModal.title });
+                  }}
+                  className="cursor-zoom-in shrink-0"
+                  title="撳嚟放大"
+                >
+                  <img
+                    src={thumbUrl((variantData?.data?.featuredImage || images.get(variantModal.productId))!, 120)}
+                    alt={variantModal.title}
+                    className="h-12 w-12 rounded-md object-cover border border-border/40"
+                  />
+                </button>
+              ) : (
+                <div className="h-12 w-12 rounded-md border border-border/40 bg-muted/30 flex items-center justify-center shrink-0">
+                  <ImageOff className="h-4 w-4 text-muted-foreground/50" />
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <h2 className="text-sm font-semibold truncate">{variantModal.title}</h2>
+                <p className="text-[11px] text-muted-foreground">
+                  子產品庫存
+                  {variantData?.data && (
+                    <> · 共 {variantData.data.variants.length} 個 SKU · 合計{' '}
+                      <b className="tabular-nums">
+                        {formatNumber(variantData.data.variants.reduce((s, v) => s + (v.inventoryQuantity ?? 0), 0))}
+                      </b> 件
+                    </>
+                  )}
+                </p>
+              </div>
+              <button
+                onClick={() => setVariantModal(null)}
+                className="p-1.5 rounded hover:bg-accent/60 transition-colors text-muted-foreground shrink-0"
+                title="關閉 (Esc)"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            {/* 彈窗 body */}
+            <div className="overflow-y-auto p-2">
+              {variantData?.loading ? (
+                <div className="space-y-2 p-2">
+                  {[...Array(4)].map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+                </div>
+              ) : variantData?.data && variantData.data.variants.length > 0 ? (() => {
+                const vd = variantData.data;
+                // "Title" 係 Shopify 冇選項時嘅 placeholder — 唔顯示做欄
+                const optCols = vd.optionNames.filter(n => n && n.toLowerCase() !== 'title');
+                const showStyleCol = optCols.length === 0;
+                return (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-[11px] text-muted-foreground uppercase tracking-wide">
+                        <th className="px-2 py-1.5 text-left font-medium w-[48px]">圖片</th>
+                        {optCols.map(n => (
+                          <th key={n} className="px-2 py-1.5 text-left font-medium">{n}</th>
+                        ))}
+                        {showStyleCol && <th className="px-2 py-1.5 text-left font-medium">款式</th>}
+                        <th className="px-2 py-1.5 text-left font-medium">SKU</th>
+                        <th className="px-2 py-1.5 text-right font-medium">庫存</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {vd.variants.map((v, i) => (
+                        <tr key={`${v.sku}-${i}`} className="border-t border-border/30 hover:bg-accent/20">
+                          <td className="px-2 py-1">
+                            {v.imageUrl ? (
+                              <button
+                                onClick={() => setLightbox({ url: v.imageUrl!, title: `${vd.title} — ${v.title}` })}
+                                className="block cursor-zoom-in"
+                                title="撳嚟放大"
+                              >
+                                <img
+                                  src={thumbUrl(v.imageUrl, 96)}
+                                  alt={v.title}
+                                  loading="lazy"
+                                  className="h-9 w-9 rounded object-cover border border-border/40 bg-background hover:border-primary/60 transition-colors"
+                                />
+                              </button>
+                            ) : (
+                              <div className="h-9 w-9 rounded border border-border/40 bg-muted/30 flex items-center justify-center">
+                                <ImageOff className="h-3.5 w-3.5 text-muted-foreground/40" />
+                              </div>
+                            )}
+                          </td>
+                          {optCols.map(n => (
+                            <td key={n} className="px-2 py-1 text-xs">{v.options[n] || '—'}</td>
+                          ))}
+                          {showStyleCol && (
+                            <td className="px-2 py-1 text-xs">
+                              {v.title === 'Default Title' ? '—' : (v.title || '—')}
+                            </td>
+                          )}
+                          <td className="px-2 py-1 text-[11px] text-muted-foreground tabular-nums">{v.sku || '—'}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">
+                            {v.inventoryQuantity == null ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : v.inventoryQuantity <= 0 ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] border text-rose-400 border-rose-500/40 bg-rose-500/10">售罄</span>
+                            ) : (
+                              <span className={v.inventoryQuantity <= 2 ? 'text-amber-400 font-medium' : 'font-medium'}>
+                                {formatNumber(v.inventoryQuantity)}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                );
+              })() : (
+                <div className="p-6 text-center text-sm text-muted-foreground">攞唔到子產品資料</div>
+              )}
+            </div>
+            {/* 彈窗 footer */}
+            <div className="px-4 py-2 border-t border-border/60 text-[10px] text-muted-foreground">
+              {variantData?.data?.live === false
+                ? '⚠️ 攞唔到 Shopify 即時數據 — 顯示每日同步嘅庫存(冇子產品圖)'
+                : '庫存為 Shopify 即時數據 · 撳圖可放大 · 少過 3 件會標橙色'}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 圖片放大 lightbox(z-60:要浮喺子產品彈窗上面) */}
       {lightbox && (
         <div
-          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-6"
+          className="fixed inset-0 z-[60] bg-black/85 flex items-center justify-center p-6"
           onClick={() => setLightbox(null)}
         >
           <div className="max-w-3xl max-h-full flex flex-col items-center gap-3" onClick={e => e.stopPropagation()}>
