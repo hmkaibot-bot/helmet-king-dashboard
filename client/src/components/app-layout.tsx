@@ -44,6 +44,7 @@ import {
   Scale,
   PenLine,
   Coins,
+  Radar,
 } from 'lucide-react';
 import { clearQueryCache } from '@/lib/query-helpers';
 import { Button } from '@/components/ui/button';
@@ -137,6 +138,7 @@ const NAV_ITEMS: NavItem[] = [
     children: [
       { path: '/marketing', label: '營銷效果', sublabel: 'Marketing', icon: BarChart3 },
       { path: '/marketing/posts', label: '營銷貼文', sublabel: 'Post Studio', icon: PenLine },
+      { path: '/marketing/promo-watch', label: '推廣監察', sublabel: 'Promo Watch', icon: Radar },
     ],
   },
   {
@@ -185,6 +187,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
     '/retail/promotions/items',
     '/retail/promotions/history',
     '/marketing/posts',
+    '/marketing/promo-watch',
     '/retail/inventory',
     '/retail/restock',
     '/performance/daily',

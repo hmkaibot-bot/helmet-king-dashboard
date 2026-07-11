@@ -7,6 +7,7 @@
  *
  * action:
  *  - get             { productId }                      → 商品詳情 (含 media / collections)
+ *  - featuredImages  { productIds[] (≤250) }            → 批量攞商品主圖 URL (推廣監察頁)
  *  - listCollections {}                                 → 所有 collection (落揀單)
  *  - addMedia        { productId, urls[] }              → 由圖片 URL 加相
  *  - deleteMedia     { productId, mediaIds[] }          → 刪相
@@ -149,6 +150,28 @@ export default async function handler(req: any, res: any) {
           })),
         },
       });
+    }
+
+    if (action === 'featuredImages') {
+      // 批量攞主圖 — nodes() 一次過查多個 product,每批上限 250 (cost 限制內)
+      const ids: string[] = (Array.isArray(body.productIds) ? body.productIds : [])
+        .map((x: any) => String(x).replace(/\D/g, ''))
+        .filter((x: string) => x.length > 0)
+        .slice(0, 250);
+      if (ids.length === 0) return res.status(400).json({ error: '冇商品 ID' });
+      const data = await gql(
+        `query($ids: [ID!]!) {
+          nodes(ids: $ids) { ... on Product { id featuredImage { url } } }
+        }`,
+        { ids: ids.map((id) => pid(id)) }
+      );
+      const images: Record<string, string | null> = {};
+      for (const n of data?.nodes || []) {
+        if (!n?.id) continue;
+        const numeric = String(n.id).split('/').pop() || '';
+        if (numeric) images[numeric] = n?.featuredImage?.url || null;
+      }
+      return res.status(200).json({ ok: true, images });
     }
 
     if (action === 'listCollections') {
