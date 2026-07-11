@@ -15,8 +15,11 @@ import {
   PenLine,
   ArrowUp,
   ArrowDown,
+  ArrowUpDown,
+  X,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import { MultiSelectChipFilter } from '@/components/multi-select-chip-filter';
 import {
   Promotion,
   PromotionItem,
@@ -29,7 +32,7 @@ import {
 /**
  * 推廣監察 — marketing 做 post 選品 + 監察推廣成效。
  * 揀推廣活動 → 商品列表(Shopify 主圖、庫存、建議零售價、推廣價)
- * + 推廣期內實際售出(咩商品、幾多件、幾多錢)。
+ * + 可自訂日期範圍嘅實際售出(咩商品、幾多件、幾多錢)。
  */
 
 interface InventoryRow {
@@ -130,8 +133,14 @@ export default function MarketingPromoWatchPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [soldFilter, setSoldFilter] = useState<SoldFilter>('all');
+  const [selectedVendors, setSelectedVendors] = useState<string[]>([]);
+  const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
+  // 成效日期範圍(default = 推廣期,可用月曆自訂)
+  const [rangeStart, setRangeStart] = useState('');
+  const [rangeEnd, setRangeEnd] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('soldQty');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [lightbox, setLightbox] = useState<{ url: string; title: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -180,7 +189,19 @@ export default function MarketingPromoWatchPage() {
     [promos, selectedPromoId]
   );
 
-  // ── 計每個商品:庫存/價/推廣價/推廣期售出 ─────────────────────────────────
+  // 轉活動 → 成效日期重設做推廣期,品牌/類別 filter 清空(選項唔同咗)
+  useEffect(() => {
+    if (!promo) return;
+    setRangeStart(promo.start_date);
+    setRangeEnd(promo.end_date);
+    setSelectedVendors([]);
+    setSelectedTypes([]);
+  }, [promo?.id, promo?.start_date, promo?.end_date]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const rangeValid = !!rangeStart && !!rangeEnd && rangeStart <= rangeEnd;
+  const isCustomRange = !!promo && (rangeStart !== promo.start_date || rangeEnd !== promo.end_date);
+
+  // ── 計每個商品:庫存/價/推廣價/所選日期範圍內售出 ────────────────────────
   const rows = useMemo<ProductRow[]>(() => {
     if (!promo) return [];
     const myItems = items.filter(i => i.promotion_id === promo.id);
@@ -201,13 +222,14 @@ export default function MarketingPromoWatchPage() {
       byProduct.set(key, arr);
     }
 
-    // 推廣期銷售(同 promotions-detail 一樣:訂單建立時間落喺 start 00:00 → end 23:59,排除已取消)
+    // 售出(同 promotions-detail 一樣計法:訂單建立時間落喺範圍內,排除已取消);
+    // 範圍 default = 推廣期,可自訂
     const skuToProduct = new Map<string, string>();
     for (const [pidKey, skuRows] of byProduct.entries()) {
       for (const s of skuRows) skuToProduct.set(s.sku, pidKey);
     }
-    const startDate = new Date(promo.start_date + 'T00:00:00');
-    const endDate = new Date(promo.end_date + 'T23:59:59');
+    const startDate = new Date((rangeValid ? rangeStart : promo.start_date) + 'T00:00:00');
+    const endDate = new Date((rangeValid ? rangeEnd : promo.end_date) + 'T23:59:59');
     const orderById = new Map<string, OrderRow>();
     for (const o of orders) {
       if (o.cancelled_at) continue;
@@ -249,7 +271,7 @@ export default function MarketingPromoWatchPage() {
       });
     }
     return out;
-  }, [promo, items, inventory, orderLines, orders]);
+  }, [promo, items, inventory, orderLines, orders, rangeStart, rangeEnd, rangeValid]);
 
   // ── 攞主圖(揀咗活動先攞,module cache 免重覆) ────────────────────────────
   const imgSeqRef = useRef(0);
@@ -263,11 +285,37 @@ export default function MarketingPromoWatchPage() {
     });
   }, [rows]);
 
+  // ── Lightbox ESC 關閉 ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [lightbox]);
+
+  // ── 品牌 / 類別選項(由現時活動嘅商品嚟) ─────────────────────────────────
+  const vendorOptions = useMemo(
+    () => Array.from(new Set(rows.map(r => r.vendor))).sort((a, b) => a.localeCompare(b)),
+    [rows]
+  );
+  const typeOptions = useMemo(
+    () => Array.from(new Set(rows.map(r => r.product_type))).sort((a, b) => a.localeCompare(b)),
+    [rows]
+  );
+
   // ── 篩選 + 排序 ───────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let list = rows;
     if (soldFilter === 'sold') list = list.filter(r => r.soldQty > 0);
     else if (soldFilter === 'unsold') list = list.filter(r => r.soldQty === 0);
+    if (selectedVendors.length > 0) {
+      const set = new Set(selectedVendors);
+      list = list.filter(r => set.has(r.vendor));
+    }
+    if (selectedTypes.length > 0) {
+      const set = new Set(selectedTypes);
+      list = list.filter(r => set.has(r.product_type));
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter(
@@ -284,7 +332,7 @@ export default function MarketingPromoWatchPage() {
       const vb = (b[sortBy] ?? -1) as number;
       return (va - vb) * mul || a.title.localeCompare(b.title);
     });
-  }, [rows, soldFilter, search, sortBy, sortDir]);
+  }, [rows, soldFilter, selectedVendors, selectedTypes, search, sortBy, sortDir]);
 
   const toggleSort = (col: SortKey) => {
     if (sortBy === col) setSortDir(d => (d === 'desc' ? 'asc' : 'desc'));
@@ -294,7 +342,7 @@ export default function MarketingPromoWatchPage() {
     }
   };
 
-  // ── KPI ───────────────────────────────────────────────────────────────────
+  // ── KPI(跟所選日期範圍) ─────────────────────────────────────────────────
   const kpi = useMemo(() => {
     const totalQty = rows.reduce((s, r) => s + r.soldQty, 0);
     const totalRev = rows.reduce((s, r) => s + r.soldRevenue, 0);
@@ -305,11 +353,18 @@ export default function MarketingPromoWatchPage() {
 
   const promoStatus = promo ? effectiveStatus(promo) : null;
 
+  // 所有數字欄都可以撳嚟排序;未排嗰啲顯示淡色雙箭咀提示
   const SortHeader = ({ col, label, className = '' }: { col: SortKey; label: string; className?: string }) => (
     <th className={`px-3 py-2 font-medium ${className}`}>
-      <button onClick={() => toggleSort(col)} className="inline-flex items-center gap-0.5 hover:text-foreground">
+      <button
+        onClick={() => toggleSort(col)}
+        className="inline-flex items-center gap-0.5 hover:text-foreground transition-colors"
+        title="撳嚟排序"
+      >
         {label}
-        {sortBy === col && (sortDir === 'desc' ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />)}
+        {sortBy === col
+          ? (sortDir === 'desc' ? <ArrowDown className="h-3 w-3 text-primary" /> : <ArrowUp className="h-3 w-3 text-primary" />)
+          : <ArrowUpDown className="h-3 w-3 opacity-40" />}
       </button>
     </th>
   );
@@ -324,19 +379,6 @@ export default function MarketingPromoWatchPage() {
           <span className="text-xs text-muted-foreground">做 post 選品 + 推廣成效</span>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <select
-            value={selectedPromoId}
-            onChange={e => setSelectedPromoId(e.target.value)}
-            className="text-xs px-2 py-1.5 rounded-md border border-border bg-background max-w-[260px]"
-            data-testid="promo-select"
-          >
-            {promos.length === 0 && <option value="">— 未有推廣活動 —</option>}
-            {promos.map(p => (
-              <option key={p.id} value={p.id}>
-                {p.name}（{STATUS_LABEL[effectiveStatus(p)]}）
-              </option>
-            ))}
-          </select>
           <Link
             to="/marketing/posts"
             className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 transition-colors inline-flex items-center gap-1"
@@ -362,6 +404,95 @@ export default function MarketingPromoWatchPage() {
         </div>
       )}
 
+      {/* 篩選區:推廣活動 + 成效日期 + 搜尋 + 售出狀態 + 品牌 + 類別 */}
+      <div className="rounded-md border border-border/60 bg-card p-3 space-y-2.5">
+        <div className="flex items-center gap-x-4 gap-y-2 flex-wrap">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] font-medium text-muted-foreground">推廣活動</span>
+            <select
+              value={selectedPromoId}
+              onChange={e => setSelectedPromoId(e.target.value)}
+              className="text-xs px-2 py-1.5 rounded-md border border-border bg-background max-w-[240px]"
+              data-testid="promo-select"
+            >
+              {promos.length === 0 && <option value="">— 未有推廣活動 —</option>}
+              {promos.map(p => (
+                <option key={p.id} value={p.id}>
+                  {p.name}（{STATUS_LABEL[effectiveStatus(p)]}）
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] font-medium text-muted-foreground">成效日期</span>
+            <input
+              type="date"
+              value={rangeStart}
+              onChange={e => setRangeStart(e.target.value)}
+              className="text-xs px-2 py-1.5 rounded-md border border-border bg-background tabular-nums"
+              data-testid="range-start"
+            />
+            <span className="text-xs text-muted-foreground">→</span>
+            <input
+              type="date"
+              value={rangeEnd}
+              onChange={e => setRangeEnd(e.target.value)}
+              className="text-xs px-2 py-1.5 rounded-md border border-border bg-background tabular-nums"
+              data-testid="range-end"
+            />
+            {isCustomRange && promo && (
+              <button
+                onClick={() => { setRangeStart(promo.start_date); setRangeEnd(promo.end_date); }}
+                className="text-[11px] px-2 py-1 rounded-md border border-border/60 bg-background hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                title="重設返成個推廣期"
+              >
+                重設推廣期
+              </button>
+            )}
+          </div>
+          <div className="relative">
+            <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="搜尋商品 / 品牌 / SKU…"
+              className="pl-8 pr-3 py-1.5 text-xs rounded-md border border-border bg-background w-[200px]"
+            />
+          </div>
+          <div className="flex rounded-md border border-border overflow-hidden text-xs">
+            {([['all', '全部'], ['sold', '有售出'], ['unsold', '未售出']] as [SoldFilter, string][]).map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setSoldFilter(k)}
+                className={`px-3 py-1.5 transition-colors ${
+                  soldFilter === k ? 'bg-primary text-primary-foreground' : 'bg-card hover:bg-accent/60'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-muted-foreground ml-auto">顯示 {formatNumber(filtered.length)} 款</span>
+        </div>
+        {!rangeValid && (
+          <p className="text-[11px] text-rose-400">成效日期:結束日期必須 ≥ 開始日期(而家先用返成個推廣期計)</p>
+        )}
+        <MultiSelectChipFilter
+          label="品牌"
+          options={vendorOptions}
+          selected={selectedVendors}
+          onChange={setSelectedVendors}
+          placeholder="搜尋品牌…"
+        />
+        <MultiSelectChipFilter
+          label="類別"
+          options={typeOptions}
+          selected={selectedTypes}
+          onChange={setSelectedTypes}
+          placeholder="搜尋類別…"
+        />
+      </div>
+
       {/* 活動摘要 */}
       {promo && (
         <div className="rounded-md border border-border/60 bg-card p-3 flex items-center gap-x-5 gap-y-2 flex-wrap text-sm">
@@ -384,8 +515,13 @@ export default function MarketingPromoWatchPage() {
             <span className="text-muted-foreground ml-1">（{kpi.soldCount}/{rows.length} 款有售出）</span>
           </span>
           <span className="text-xs">
-            推廣期營收 <b className="tabular-nums text-primary">{formatCurrency(kpi.totalRev)}</b>
+            營收 <b className="tabular-nums text-primary">{formatCurrency(kpi.totalRev)}</b>
           </span>
+          {isCustomRange && rangeValid && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 text-sky-300 tabular-nums">
+              成效計 {rangeStart} → {rangeEnd}
+            </span>
+          )}
           <Link
             to={`/retail/promotions/${promo.id}`}
             className="ml-auto inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
@@ -394,33 +530,6 @@ export default function MarketingPromoWatchPage() {
           </Link>
         </div>
       )}
-
-      {/* 篩選 */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <div className="relative">
-          <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="搜尋商品 / 品牌 / SKU…"
-            className="pl-8 pr-3 py-1.5 text-xs rounded-md border border-border bg-background w-[220px]"
-          />
-        </div>
-        <div className="flex rounded-md border border-border overflow-hidden text-xs">
-          {([['all', '全部'], ['sold', '有售出'], ['unsold', '未售出']] as [SoldFilter, string][]).map(([k, label]) => (
-            <button
-              key={k}
-              onClick={() => setSoldFilter(k)}
-              className={`px-3 py-1.5 transition-colors ${
-                soldFilter === k ? 'bg-primary text-primary-foreground' : 'bg-card hover:bg-accent/60'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <span className="text-xs text-muted-foreground">顯示 {formatNumber(filtered.length)} 款</span>
-      </div>
 
       {/* 商品列表 */}
       {loading ? (
@@ -462,12 +571,18 @@ export default function MarketingPromoWatchPage() {
                   <tr key={r.product_id} className="border-t border-border/40 hover:bg-accent/20">
                     <td className="px-3 py-1.5">
                       {img ? (
-                        <img
-                          src={thumbUrl(img)}
-                          alt={r.title}
-                          loading="lazy"
-                          className="h-11 w-11 rounded-md object-cover border border-border/40 bg-background"
-                        />
+                        <button
+                          onClick={() => setLightbox({ url: img, title: r.title })}
+                          className="block cursor-zoom-in"
+                          title="撳嚟放大"
+                        >
+                          <img
+                            src={thumbUrl(img)}
+                            alt={r.title}
+                            loading="lazy"
+                            className="h-11 w-11 rounded-md object-cover border border-border/40 bg-background hover:border-primary/60 transition-colors"
+                          />
+                        </button>
                       ) : (
                         <div className="h-11 w-11 rounded-md border border-border/40 bg-muted/30 flex items-center justify-center">
                           <ImageOff className="h-4 w-4 text-muted-foreground/50" />
@@ -520,9 +635,35 @@ export default function MarketingPromoWatchPage() {
       )}
 
       <p className="text-[11px] text-muted-foreground">
-        售出/營收 = 推廣期內（{promo ? `${promo.start_date} → ${promo.end_date}` : '開始日 → 結束日'}）嘅訂單,排除已取消 ·
+        售出/營收 = 成效日期範圍內（{rangeValid ? `${rangeStart} → ${rangeEnd}` : (promo ? `${promo.start_date} → ${promo.end_date}` : '推廣期')}）嘅訂單,排除已取消 ·
         訂單數據每日清晨同步一次,今日即市單未計 · 圖片即時由 Shopify 攞 · 建議零售價/零售價/庫存嚟自每日同步。
       </p>
+
+      {/* 圖片放大 lightbox */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-6"
+          onClick={() => setLightbox(null)}
+        >
+          <div className="max-w-3xl max-h-full flex flex-col items-center gap-3" onClick={e => e.stopPropagation()}>
+            <img
+              src={thumbUrl(lightbox.url, 1200)}
+              alt={lightbox.title}
+              className="max-h-[80vh] max-w-full rounded-lg object-contain bg-white/5"
+            />
+            <div className="flex items-center gap-3 max-w-full">
+              <span className="text-sm text-white/90 truncate">{lightbox.title}</span>
+              <button
+                onClick={() => setLightbox(null)}
+                className="shrink-0 p-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+                title="關閉 (Esc)"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
