@@ -184,6 +184,7 @@ export default async function handler(req: any, res: any) {
             featuredImage { url }
             options { name }
             variants(first: 250) {
+              pageInfo { hasNextPage }
               nodes {
                 id sku title
                 selectedOptions { name value }
@@ -202,6 +203,8 @@ export default async function handler(req: any, res: any) {
         product: {
           title: p.title,
           featuredImage: p.featuredImage?.url || null,
+          // 有產品 variant 多過 250 就截斷咗 — 俾前端顯示提示,唔好靜靜少計庫存
+          truncated: !!p.variants?.pageInfo?.hasNextPage,
           // "Title" 係 Shopify 冇選項時嘅 placeholder,前端會照 filter 走
           optionNames: (p.options || []).map((o: any) => String(o?.name || '')),
           variants: (p.variants?.nodes || []).map((v: any) => ({
