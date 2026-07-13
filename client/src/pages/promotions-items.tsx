@@ -28,6 +28,23 @@ import {
 // 因為 value="" 已經係 placeholder「揀推廣…」）。
 const UNASSIGN = '__unassign__';
 
+// Supabase / PostgrestError 係 plain object（唔係 Error instance）,String(e) 會變
+// "[object Object]"。抽返 message/details/hint/code 出嚟,唔好俾錯誤變亂碼。
+function errMsg(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === 'object') {
+    const o = e as Record<string, unknown>;
+    const parts = [o.message, o.details, o.hint, o.code].filter(Boolean);
+    if (parts.length) return parts.join(' · ');
+    try {
+      return JSON.stringify(o);
+    } catch {
+      return String(e);
+    }
+  }
+  return String(e);
+}
+
 interface InventoryRow {
   sku: string;
   // DB 係 bigint, Supabase 可能 return number/string
@@ -275,7 +292,7 @@ export default function PromotionsItemsPage() {
       await insertAssignment(toProductIdNum(productId), promoId);
       await load();
     } catch (e) {
-      alert(`加入活動失敗：${e instanceof Error ? e.message : String(e)}`);
+      alert(`加入活動失敗：${errMsg(e)}`);
     }
   };
 
@@ -284,7 +301,7 @@ export default function PromotionsItemsPage() {
       await deleteAssignment(toProductIdNum(productId), promoId);
       await load();
     } catch (e) {
-      alert(`移除活動失敗：${e instanceof Error ? e.message : String(e)}`);
+      alert(`移除活動失敗：${errMsg(e)}`);
     }
   };
 
@@ -332,7 +349,7 @@ export default function PromotionsItemsPage() {
       setBulkPromo('');
       await load();
     } catch (e) {
-      alert(`批次操作失敗：${e instanceof Error ? e.message : String(e)}`);
+      alert(`批次操作失敗：${errMsg(e)}`);
     }
   };
 

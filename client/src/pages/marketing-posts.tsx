@@ -130,12 +130,26 @@ export default function MarketingPostsPage() {
       const activePromoById = new Map<string, Promotion>(
         promos.filter(p => p.status === 'active' && p.end_date >= today).map(p => [p.id, p])
       );
+      // 一件商品可入多個進行中活動 —— 帖文只 feature 一個,揀法要 deterministic
+      // (唔可以靠 Map last-write-wins,順序係任意)。規則:最快完結優先(最緊急宣傳),
+      // 打和 → 推廣價低者,再打和 → promotion_id 穩定排序。排好後 first-wins。
+      const activeAssignments = items
+        .filter(it => !it.is_archived && activePromoById.has(it.promotion_id))
+        .sort((a, b) => {
+          const pa = activePromoById.get(a.promotion_id)!;
+          const pb = activePromoById.get(b.promotion_id)!;
+          if (pa.end_date !== pb.end_date) return pa.end_date < pb.end_date ? -1 : 1;
+          const ppa = a.promo_price != null ? Number(a.promo_price) : Infinity;
+          const ppb = b.promo_price != null ? Number(b.promo_price) : Infinity;
+          if (ppa !== ppb) return ppa - ppb;
+          return a.promotion_id < b.promotion_id ? -1 : a.promotion_id > b.promotion_id ? 1 : 0;
+        });
       const promoByProduct = new Map<string, { name: string; promoPrice: number | null; endDate: string }>();
-      for (const it of items) {
-        if (it.is_archived) continue;
-        const promo = activePromoById.get(it.promotion_id);
-        if (!promo) continue;
-        promoByProduct.set(String(it.product_id), {
+      for (const it of activeAssignments) {
+        const pid = String(it.product_id);
+        if (promoByProduct.has(pid)) continue; // 已有(更優先嗰個)→ 唔覆蓋
+        const promo = activePromoById.get(it.promotion_id)!;
+        promoByProduct.set(pid, {
           name: promo.name,
           promoPrice: it.promo_price != null ? Number(it.promo_price) : null,
           endDate: promo.end_date,
