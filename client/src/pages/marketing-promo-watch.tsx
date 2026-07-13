@@ -92,6 +92,7 @@ export interface VariantProduct {
   optionNames: string[];             // 產品選項名(有序,例 [Colour, Size])
   variants: VariantInfo[];
   live: boolean;                     // true = Shopify 即時;false = 每日同步 fallback
+  truncated: boolean;                // true = 產品 variant 多過 250,只攞到頭 250
 }
 const _variantCache = new Map<string, VariantProduct>();
 
@@ -122,6 +123,7 @@ async function fetchVariants(productId: string): Promise<VariantProduct | null> 
         imageUrl: v?.imageUrl || null,
       })),
       live: true,
+      truncated: !!p.truncated,
     };
     _variantCache.set(productId, out);
     return out;
@@ -236,6 +238,11 @@ export default function MarketingPromoWatchPage() {
   useEffect(() => { load(); }, [load]);
 
   const refresh = useCallback(async () => {
+    // 重要:圖片同子產品彈窗嘅庫存都聲稱係「Shopify 即時」,所以「重新整理」
+    // 一定要連 module-level cache 一齊清,否則老闆改完貨撳 refresh 都仲係睇緊
+    // session 頭嗰刻嘅舊 snapshot(被 label 成「即時」)。
+    _imgCache.clear();
+    _variantCache.clear();
     await Promise.all([clearQueryCache('shopify_orders'), clearQueryCache('shopify_order_lines'), clearQueryCache('shopify_inventory')]);
     await load();
   }, [load]);
@@ -385,6 +392,7 @@ export default function MarketingPromoWatchPage() {
                 imageUrl: null,
               })),
               live: false,
+              truncated: false,
             },
           });
         }
@@ -428,9 +436,14 @@ export default function MarketingPromoWatchPage() {
     const mul = sortDir === 'desc' ? -1 : 1;
     return [...list].sort((a, b) => {
       if (sortBy === 'title') return a.title.localeCompare(b.title) * mul;
-      const va = (a[sortBy] ?? -1) as number;
-      const vb = (b[sortBy] ?? -1) as number;
-      return (va - vb) * mul || a.title.localeCompare(b.title);
+      // 冇推廣價(promoPrice = null)嘅一律排最尾,唔受升/降序影響
+      // (同 promotions-detail 一致;之前當 -1 會令升序時「—」浮上頂誤導)
+      const av = a[sortBy] as number | null;
+      const bv = b[sortBy] as number | null;
+      if (av == null && bv == null) return a.title.localeCompare(b.title);
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return (av - bv) * mul || a.title.localeCompare(b.title);
     });
   }, [rows, soldFilter, selectedVendors, selectedTypes, search, sortBy, sortDir]);
 
@@ -442,14 +455,17 @@ export default function MarketingPromoWatchPage() {
     }
   };
 
-  // ── KPI(跟所選日期範圍) ─────────────────────────────────────────────────
+  // ── KPI(跟所選日期範圍 + 現時篩選) ──────────────────────────────────────
+  // 用 filtered(唔係 rows):揀咗品牌/類別/搜尋之後,摘要嘅已售出/營收/款數
+  // 會同表格 + 「顯示 N 款」一致,唔會令人以為篩選後嘅營收其實係全推廣。
+  // (同 promotions-detail 一致 — 佢個 KPI 都係計 filtered view)
   const kpi = useMemo(() => {
-    const totalQty = rows.reduce((s, r) => s + r.soldQty, 0);
-    const totalRev = rows.reduce((s, r) => s + r.soldRevenue, 0);
-    const soldCount = rows.filter(r => r.soldQty > 0).length;
-    const oosCount = rows.filter(r => r.inventory <= 0).length;
+    const totalQty = filtered.reduce((s, r) => s + r.soldQty, 0);
+    const totalRev = filtered.reduce((s, r) => s + r.soldRevenue, 0);
+    const soldCount = filtered.filter(r => r.soldQty > 0).length;
+    const oosCount = filtered.filter(r => r.inventory <= 0).length;
     return { totalQty, totalRev, soldCount, oosCount };
-  }, [rows]);
+  }, [filtered]);
 
   const promoStatus = promo ? effectiveStatus(promo) : null;
 
@@ -605,14 +621,14 @@ export default function MarketingPromoWatchPage() {
           </span>
           <span className="inline-flex items-center gap-1 text-xs">
             <Package className="h-3.5 w-3.5 text-muted-foreground" />
-            商品 <b className="tabular-nums">{formatNumber(rows.length)}</b> 款
+            商品 <b className="tabular-nums">{formatNumber(filtered.length)}</b> 款
             {kpi.oosCount > 0 && (
               <span className="text-[10px] text-rose-400 ml-1">（{kpi.oosCount} 款售罄）</span>
             )}
           </span>
           <span className="text-xs">
             已售出 <b className="tabular-nums text-primary">{formatNumber(kpi.totalQty)}</b> 件
-            <span className="text-muted-foreground ml-1">（{kpi.soldCount}/{rows.length} 款有售出）</span>
+            <span className="text-muted-foreground ml-1">（{kpi.soldCount}/{filtered.length} 款有售出）</span>
           </span>
           <span className="text-xs">
             營收 <b className="tabular-nums text-primary">{formatCurrency(kpi.totalRev)}</b>
@@ -875,10 +891,15 @@ export default function MarketingPromoWatchPage() {
               )}
             </div>
             {/* 彈窗 footer */}
-            <div className="px-4 py-2 border-t border-border/60 text-[10px] text-muted-foreground">
-              {variantData?.data?.live === false
-                ? '⚠️ 攞唔到 Shopify 即時數據 — 顯示每日同步嘅庫存(冇子產品圖)'
-                : '庫存為 Shopify 即時數據 · 撳圖可放大 · 少過 3 件會標橙色'}
+            <div className="px-4 py-2 border-t border-border/60 text-[10px] text-muted-foreground space-y-0.5">
+              {variantData?.data?.truncated && (
+                <div className="text-amber-400">⚠️ 呢款子產品多過 250 個,只顯示頭 250 個 — 合計件數可能偏少</div>
+              )}
+              <div>
+                {variantData?.data?.live === false
+                  ? '⚠️ 攞唔到 Shopify 即時數據 — 顯示每日同步嘅庫存(冇子產品圖)'
+                  : '庫存為 Shopify 即時數據 · 撳圖可放大 · 少過 3 件會標橙色'}
+              </div>
             </div>
           </div>
         </div>

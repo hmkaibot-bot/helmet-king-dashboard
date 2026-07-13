@@ -108,7 +108,11 @@ export default function PromotionsListPage() {
             name: data.name,
             start_date: data.start_date,
             end_date: data.end_date,
-            status: deriveStatusFromDates(data.start_date, data.end_date),
+            // cancelled 係手動狀態,編輯(改名/改備註/改日期)唔應該令佢自動復活
+            // (其餘全套 code 都用 effectiveStatus 保留 cancelled,唯獨呢度以前會蓋走)
+            status: editingPromo.status === 'cancelled'
+              ? 'cancelled'
+              : deriveStatusFromDates(data.start_date, data.end_date),
             discount_type: data.discount_type || null,
             notes: data.notes || null,
           })
