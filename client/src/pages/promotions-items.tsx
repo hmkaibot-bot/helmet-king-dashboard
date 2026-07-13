@@ -10,6 +10,8 @@ import {
   Search,
   History,
   ArrowRight,
+  X,
+  Info,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { MultiSelectChipFilter } from '@/components/multi-select-chip-filter';
@@ -22,7 +24,7 @@ import {
   effectiveStatus,
 } from '@/lib/promotions-shared';
 
-// Bulk-assign sentinel：揀「未分派」= 移除現有推廣分派（用獨立 sentinel,
+// Bulk-assign sentinel：揀「未分派」= 移除該商品所有現有推廣分派（用獨立 sentinel,
 // 因為 value="" 已經係 placeholder「揀推廣…」）。
 const UNASSIGN = '__unassign__';
 
@@ -50,8 +52,8 @@ interface PromotingProduct {
   num_skus: number;
   total_inventory: number;
   previous_manual_status: string | null;
-  // assignment status
-  assigned_promo: Promotion | null;
+  // 分派狀態 —— 一件商品可入多個推廣活動（DB PK = (promotion_id, product_id) 複合鍵）。
+  assigned_promos: Promotion[];
 }
 
 export default function PromotionsItemsPage() {
@@ -102,9 +104,13 @@ export default function PromotionsItemsPage() {
       // Determine if a product is "promoting" — ANY child SKU with is_promoting=true
       // (dead-stock V2 parent 勾選會 propagate 到所有 child SKU，但 individual SKU 亦可各自勾)
       const activeItems = items.filter(it => !it.is_archived);
-      const assignedProductIds = new Map<string, string>(); // product_id (string) -> promo_id
+      // product_id (string) -> promo_id[]（一件商品可分派多個活動 → 收集成 array）
+      const assignedByProduct = new Map<string, string[]>();
       for (const it of activeItems) {
-        assignedProductIds.set(String(it.product_id), it.promotion_id);
+        const key = String(it.product_id);
+        const arr = assignedByProduct.get(key) ?? [];
+        arr.push(it.promotion_id);
+        assignedByProduct.set(key, arr);
       }
       const promoById = new Map<string, Promotion>(promos.map(p => [p.id, p]));
 
@@ -118,8 +124,12 @@ export default function PromotionsItemsPage() {
         if (!promotingSku) continue;
 
         const review = reviewBySku.get(promotingSku.sku);
-        const assignedPromoId = assignedProductIds.get(productId);
-        const assignedPromo = assignedPromoId ? (promoById.get(assignedPromoId) ?? null) : null;
+        // 解析所有已分派活動（去重、隔走搵唔到嘅 promo）
+        const assignedPromoIds = Array.from(new Set(assignedByProduct.get(productId) ?? []));
+        const assignedPromos = assignedPromoIds
+          .map(id => promoById.get(id))
+          .filter((p): p is Promotion => p != null)
+          .sort((a, b) => a.start_date.localeCompare(b.start_date));
 
         promotingProducts.push({
           product_id: productId,
@@ -129,14 +139,14 @@ export default function PromotionsItemsPage() {
           num_skus: skus.length,
           total_inventory: skus.reduce((s, x) => s + (x.inventory_quantity ?? 0), 0),
           previous_manual_status: review?.manual_status ?? null,
-          assigned_promo: assignedPromo,
+          assigned_promos: assignedPromos,
         });
       }
 
       promotingProducts.sort((a, b) => {
         // unassigned first
-        const aU = a.assigned_promo == null;
-        const bU = b.assigned_promo == null;
+        const aU = a.assigned_promos.length === 0;
+        const bU = b.assigned_promos.length === 0;
         if (aU !== bU) return aU ? -1 : 1;
         return a.product_title.localeCompare(b.product_title);
       });
@@ -163,9 +173,9 @@ export default function PromotionsItemsPage() {
 
   const filtered = useMemo(() => {
     let list = products;
-    if (filterAssignment === 'assigned') list = list.filter(p => p.assigned_promo);
-    else if (filterAssignment === 'unassigned') list = list.filter(p => !p.assigned_promo);
-    if (filterPromo) list = list.filter(p => p.assigned_promo?.id === filterPromo);
+    if (filterAssignment === 'assigned') list = list.filter(p => p.assigned_promos.length > 0);
+    else if (filterAssignment === 'unassigned') list = list.filter(p => p.assigned_promos.length === 0);
+    if (filterPromo) list = list.filter(p => p.assigned_promos.some(x => x.id === filterPromo));
     if (selectedTypes.size > 0) {
       list = list.filter(p => selectedTypes.has(p.product_type || '(未分類)'));
     }
@@ -203,77 +213,124 @@ export default function PromotionsItemsPage() {
     return Array.from(m.entries()).sort((a, b) => b[1] - a[1]).map(([k]) => k);
   }, [products]);
 
-  const assignedCount = products.filter(p => p.assigned_promo).length;
+  const assignedCount = products.filter(p => p.assigned_promos.length > 0).length;
   const unassignedCount = products.length - assignedCount;
 
-  // ── Assign / unassign ────────────────────────────────────────────────────
-  const handleAssign = async (productId: string, promoId: string | null) => {
+  // ── 低階 DB 操作（無 confirm、無 reload；俾單行同批次共用）──────────────────
+  const insertAssignment = async (productIdNum: number, promoId: string) => {
+    // upsert + ignoreDuplicates：若該 (活動,商品) 已存在就當無事,唔會撞 PK error
+    const { error: insErr } = await supabase.from('promotion_items').upsert(
+      {
+        promotion_id: promoId,
+        product_id: productIdNum,
+        previous_manual_status: 'dead',
+        is_archived: false,
+      },
+      { onConflict: 'promotion_id,product_id', ignoreDuplicates: true }
+    );
+    if (insErr) throw insErr;
+  };
+
+  const deleteAssignment = async (productIdNum: number, promoId: string) => {
+    const { error: delErr } = await supabase
+      .from('promotion_items')
+      .delete()
+      .eq('product_id', productIdNum)
+      .eq('promotion_id', promoId)
+      .eq('is_archived', false);
+    if (delErr) throw delErr;
+  };
+
+  const toProductIdNum = (productId: string): number => {
+    const n = Number(productId);
+    if (!Number.isFinite(n)) throw new Error(`Invalid product_id: ${productId}`);
+    return n;
+  };
+
+  // ── 單行：加入 / 移除一個活動 ─────────────────────────────────────────────
+  const addPromo = async (productId: string, promoId: string) => {
     try {
       const product = products.find(p => p.product_id === productId);
-      if (!product) return;
+      const newPromo = activePromos.find(p => p.id === promoId);
+      if (!product || !newPromo) return;
+      if (product.assigned_promos.some(x => x.id === promoId)) return; // 已加,無事
 
-      // product_id 喺 DB 係 bigint, 需要 cast 為 number
-      const productIdNum = Number(productId);
-      if (!Number.isFinite(productIdNum)) {
-        throw new Error(`Invalid product_id: ${productId}`);
+      // 只有當新活動係「進行中」而該商品已經喺另一個「進行中」活動時先提示
+      // （疊住同期活動 = 兩邊營收報表各自計同一張單;跨時段唔撞就唔煩）
+      if (effectiveStatus(newPromo) === 'active') {
+        const otherActive = product.assigned_promos.filter(
+          x => x.id !== promoId && effectiveStatus(x) === 'active'
+        );
+        if (otherActive.length > 0) {
+          const names = otherActive.map(x => x.name).join('、');
+          const ok = confirm(
+            `「${product.product_title}」已經喺 ${otherActive.length} 個進行中活動（${names}）。\n\n` +
+              `再加入「${newPromo.name}」= 同一時間喺多個進行中活動,兩邊嘅營收報表會各自把同一張訂單計一次(合計會重複)。\n\n` +
+              `確定要加?`
+          );
+          if (!ok) return;
+        }
       }
 
-      // Step 1: remove existing assignment (if any) for this product
-      if (product.assigned_promo) {
-        const { error: delErr } = await supabase
-          .from('promotion_items')
-          .delete()
-          .eq('product_id', productIdNum)
-          .eq('is_archived', false);
-        if (delErr) throw delErr;
-      }
-
-      // Step 2: insert new assignment if promoId provided
-      if (promoId) {
-        const { error: insErr } = await supabase.from('promotion_items').insert({
-          promotion_id: promoId,
-          product_id: productIdNum,
-          previous_manual_status: 'dead',
-          is_archived: false,
-        });
-        if (insErr) throw insErr;
-      }
+      await insertAssignment(toProductIdNum(productId), promoId);
       await load();
     } catch (e) {
-      alert(`分派失敗：${e instanceof Error ? e.message : String(e)}`);
+      alert(`加入活動失敗：${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
+  const removePromo = async (productId: string, promoId: string) => {
+    try {
+      await deleteAssignment(toProductIdNum(productId), promoId);
+      await load();
+    } catch (e) {
+      alert(`移除活動失敗：${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  // ── 批次：加入活動（保留現有分派）/ 清空全部分派 ──────────────────────────
   const handleBulkAssign = async () => {
     if (!bulkPromo || selected.size === 0) return;
     const unassign = bulkPromo === UNASSIGN;
 
-    // 防護:數吓所揀商品有幾多件已經喺「第二個」推廣 —— 呢啲會被搬走 / 移除。
-    // (每件商品只可入一個推廣,分派去新推廣 = 由原本嗰個刪走;避免一 click 掃晒)
-    const movedFromOther = Array.from(selected).filter(pid => {
-      const p = products.find(x => x.product_id === pid);
-      if (!p?.assigned_promo) return false;
-      return unassign ? true : p.assigned_promo.id !== bulkPromo;
-    });
-
     let msg: string;
     if (unassign) {
-      msg = movedFromOther.length > 0
-        ? `⚠️ 所揀 ${selected.size} 件入面,有 ${movedFromOther.length} 件目前已分派到推廣。\n繼續會將佢哋全部設為「未分派」(移除現有推廣)。\n\n確定?`
-        : `將 ${selected.size} 件商品設為未分派？`;
+      msg = `將所揀 ${selected.size} 件商品設為未分派（移除佢哋所有活動分派）？`;
     } else {
-      const targetName = activePromos.find(p => p.id === bulkPromo)?.name ?? '所揀推廣';
-      msg = movedFromOther.length > 0
-        ? `⚠️ 將 ${selected.size} 件分派到「${targetName}」。\n其中 ${movedFromOther.length} 件目前已經喺第二個推廣 —— 繼續會將呢 ${movedFromOther.length} 件由原本嘅推廣「搬走」(每件商品只可入一個推廣)。\n\n確定?`
-        : `將 ${selected.size} 件商品分派到「${targetName}」？`;
+      const targetPromo = activePromos.find(p => p.id === bulkPromo);
+      const targetName = targetPromo?.name ?? '所揀推廣';
+      // 加入後會同時喺多個「進行中」活動嘅件數 → 提示可能重複計營收
+      const willOverlap =
+        targetPromo && effectiveStatus(targetPromo) === 'active'
+          ? Array.from(selected).filter(pid => {
+              const p = products.find(x => x.product_id === pid);
+              return p?.assigned_promos.some(x => x.id !== bulkPromo && effectiveStatus(x) === 'active');
+            })
+          : [];
+      msg =
+        `將 ${selected.size} 件商品加入「${targetName}」（保留現有分派,唔會搬走）。` +
+        (willOverlap.length > 0
+          ? `\n\n⚠️ 其中 ${willOverlap.length} 件會同時喺多個進行中活動 —— 呢啲件嘅營收喺唔同活動報表會各自計一次。`
+          : '') +
+        `\n\n確定?`;
     }
     if (!confirm(msg)) return;
+
     try {
       for (const productId of selected) {
-        await handleAssign(productId, unassign ? null : bulkPromo);
+        const pidNum = toProductIdNum(productId);
+        if (unassign) {
+          const p = products.find(x => x.product_id === productId);
+          for (const promo of p?.assigned_promos ?? []) {
+            await deleteAssignment(pidNum, promo.id);
+          }
+        } else {
+          await insertAssignment(pidNum, bulkPromo);
+        }
       }
       setSelected(new Set());
       setBulkPromo('');
+      await load();
     } catch (e) {
       alert(`批次操作失敗：${e instanceof Error ? e.message : String(e)}`);
     }
@@ -352,6 +409,14 @@ export default function PromotionsItemsPage() {
         </div>
       </div>
 
+      {/* 一件多活動說明 */}
+      <div className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+        <Info className="h-3.5 w-3.5 mt-px shrink-0" />
+        <span>
+          一件商品可分派俾多個推廣活動。若同時分派去多個「進行中」活動,該商品嘅營收喺唔同活動嘅報表會各自計算(合計時會重複)。
+        </span>
+      </div>
+
       {/* Filters */}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[200px] max-w-md">
@@ -423,7 +488,7 @@ export default function PromotionsItemsPage() {
             className="text-xs px-2 py-1 rounded-md border border-border bg-background"
           >
             <option value="">揀推廣…</option>
-            <option value={UNASSIGN}>— 未分派 —</option>
+            <option value={UNASSIGN}>— 全部設為未分派 —</option>
             {activePromos.map(p => (
               <option key={p.id} value={p.id}>
                 {p.name} ({p.start_date} → {p.end_date})
@@ -435,7 +500,7 @@ export default function PromotionsItemsPage() {
             disabled={!bulkPromo}
             className="text-xs px-3 py-1 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 inline-flex items-center gap-1"
           >
-            {bulkPromo === UNASSIGN ? '批次移除' : '批次分派'} <ArrowRight className="h-3 w-3" />
+            {bulkPromo === UNASSIGN ? '批次清空分派' : '批次加入活動'} <ArrowRight className="h-3 w-3" />
           </button>
           <button
             onClick={() => setSelected(new Set())}
@@ -484,12 +549,16 @@ export default function PromotionsItemsPage() {
                 <th className="text-left px-2 py-2 font-normal text-muted-foreground">分類</th>
                 <th className="text-right px-2 py-2 font-normal text-muted-foreground">SKU</th>
                 <th className="text-right px-2 py-2 font-normal text-muted-foreground">現庫存</th>
-                <th className="text-left px-2 py-2 font-normal text-muted-foreground">分派至</th>
+                <th className="text-left px-2 py-2 font-normal text-muted-foreground">分派至（可多個）</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map(p => {
                 const isSelected = selected.has(p.product_id);
+                // 尚未加入嘅活動（用嚟「＋ 加活動」下拉）
+                const addable = activePromos.filter(
+                  ap => !p.assigned_promos.some(x => x.id === ap.id)
+                );
                 return (
                   <tr
                     key={p.product_id}
@@ -497,7 +566,7 @@ export default function PromotionsItemsPage() {
                       isSelected ? 'bg-primary/5' : ''
                     }`}
                   >
-                    <td className="px-2 py-1.5">
+                    <td className="px-2 py-1.5 align-top">
                       <input
                         type="checkbox"
                         checked={isSelected}
@@ -505,47 +574,69 @@ export default function PromotionsItemsPage() {
                         className="cursor-pointer"
                       />
                     </td>
-                    <td className="px-2 py-1.5 font-medium" title={p.product_title}>
+                    <td className="px-2 py-1.5 font-medium align-top" title={p.product_title}>
                       {p.product_title}
                     </td>
-                    <td className="px-2 py-1.5 text-muted-foreground">{p.vendor}</td>
-                    <td className="px-2 py-1.5 text-muted-foreground">{p.product_type}</td>
-                    <td className="px-2 py-1.5 text-right tabular-nums">{p.num_skus}</td>
-                    <td className="px-2 py-1.5 text-right tabular-nums">
+                    <td className="px-2 py-1.5 text-muted-foreground align-top">{p.vendor}</td>
+                    <td className="px-2 py-1.5 text-muted-foreground align-top">{p.product_type}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums align-top">{p.num_skus}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums align-top">
                       {formatNumber(p.total_inventory)}
                     </td>
                     <td className="px-2 py-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <select
-                          value={p.assigned_promo?.id ?? ''}
-                          onChange={e => handleAssign(p.product_id, e.target.value || null)}
-                          className={`text-xs px-2 py-0.5 rounded-md border bg-background ${
-                            p.assigned_promo
-                              ? 'border-emerald-500/40'
-                              : 'border-amber-500/40 text-amber-300'
-                          }`}
-                        >
-                          <option value="">— 未分派 —</option>
-                          {activePromos.map(promo => (
-                            <option key={promo.id} value={promo.id}>
-                              {promo.name}
-                            </option>
-                          ))}
-                        </select>
-                        {p.assigned_promo && (
-                          <Link
-                            to={`/retail/promotions/${p.assigned_promo.id}`}
-                            className="text-[10px] text-primary hover:underline whitespace-nowrap"
-                            title="去 promo 詳情"
+                      <div className="flex flex-wrap items-center gap-1">
+                        {/* 已分派活動 chips —— 每個可 × 移除、可 click 去 promo 詳情 */}
+                        {p.assigned_promos.map(promo => (
+                          <span
+                            key={promo.id}
+                            className={`inline-flex items-center gap-1 pl-1.5 pr-1 py-0.5 rounded border text-[10px] ${
+                              STATUS_COLOR[effectiveStatus(promo)]
+                            }`}
                           >
-                            <span
-                              className={`px-1.5 py-0.5 rounded text-[10px] border ${
-                                STATUS_COLOR[effectiveStatus(p.assigned_promo)]
-                              }`}
+                            <Link
+                              to={`/retail/promotions/${promo.id}`}
+                              className="hover:underline whitespace-nowrap"
+                              title={`${STATUS_LABEL[effectiveStatus(promo)]} · 去 promo 詳情`}
                             >
-                              {STATUS_LABEL[effectiveStatus(p.assigned_promo)]}
-                            </span>
-                          </Link>
+                              {promo.name}
+                            </Link>
+                            <button
+                              onClick={() => removePromo(p.product_id, promo.id)}
+                              className="rounded hover:bg-black/20 p-0.5"
+                              title="移除此活動分派"
+                            >
+                              <X className="h-2.5 w-2.5" />
+                            </button>
+                          </span>
+                        ))}
+
+                        {/* ＋ 加活動 下拉（只列出未加嘅） */}
+                        {addable.length > 0 ? (
+                          <select
+                            value=""
+                            onChange={e => {
+                              const v = e.target.value;
+                              e.currentTarget.value = '';
+                              if (v) addPromo(p.product_id, v);
+                            }}
+                            className={`text-[11px] px-1.5 py-0.5 rounded-md border bg-background ${
+                              p.assigned_promos.length === 0
+                                ? 'border-amber-500/40 text-amber-300'
+                                : 'border-border'
+                            }`}
+                            title="加入推廣活動"
+                          >
+                            <option value="">
+                              {p.assigned_promos.length === 0 ? '— 未分派 · 加活動 —' : '＋ 加活動'}
+                            </option>
+                            {addable.map(promo => (
+                              <option key={promo.id} value={promo.id}>
+                                {promo.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-[10px] text-muted-foreground">全部活動已加</span>
                         )}
                       </div>
                     </td>
@@ -561,4 +652,3 @@ export default function PromotionsItemsPage() {
 }
 
 void formatCurrency;
-
