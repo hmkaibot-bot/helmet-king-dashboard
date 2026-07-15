@@ -104,6 +104,10 @@ export default function PromotionDetailPage() {
 
   const [promo, setPromo] = useState<Promotion | null>(null);
   const [items, setItems] = useState<PromotionItem[]>([]);
+  // 全部推廣 + 全部分派 — 「還原原價」要知一件商品係咪仲喺另一個進行中推廣
+  // (多活動分派後,還原 A 活動唔可以連累仲行緊嘅 B 活動嘅價)
+  const [allPromos, setAllPromos] = useState<Promotion[]>([]);
+  const [allItems, setAllItems] = useState<PromotionItem[]>([]);
   const [inventory, setInventory] = useState<InventoryRow[]>([]);
   const [orderLines, setOrderLines] = useState<OrderLineRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
@@ -139,16 +143,15 @@ export default function PromotionDetailPage() {
     setLoading(true);
     setError(null);
     try {
-      // 1. Promo + items
-      const { data: promoData, error: pErr } = await supabase
-        .from('promotions')
-        .select('*')
-        .eq('id', promoId)
-        .single();
-      if (pErr) throw pErr;
-      setPromo(promoData as Promotion);
+      // 1. Promo + items(攞埋全表 — 推廣表好細,「還原原價」個跨活動 guard 要用)
+      const allPromoRows = await fetchAllRows<Promotion>('promotions');
+      const promoData = allPromoRows.find(p => p.id === promoId);
+      if (!promoData) throw new Error('搵唔到呢個推廣');
+      setAllPromos(allPromoRows);
+      setPromo(promoData);
 
       const pItems = await fetchAllRows<PromotionItem>('promotion_items');
+      setAllItems(pItems);
       const myItems = pItems.filter(i => i.promotion_id === promoId);
       setItems(myItems);
 
@@ -543,16 +546,46 @@ export default function PromotionDetailPage() {
 
   // ── 同步推廣價去 Shopify (經 serverless function,Shopify token 留 server) ──
   const handleShopifySync = useCallback(async (action: 'apply' | 'restore') => {
-    const items: SyncItem[] = sortedStats
+    let items: SyncItem[] = sortedStats
       .filter((g) => g.promo_price != null && g.promo_price > 0)
       .map((g) => ({ productId: g.product_id, promoPrice: g.promo_price as number }));
     if (items.length === 0) {
       alert('目前列表冇設定推廣價嘅商品可以同步。');
       return;
     }
+
+    // 跨活動 guard(只限 restore):一件商品可以同時分派幾個活動 — 如果佢仲喺
+    // 另一個「進行中」推廣,還原佢個價會即場毁掉嗰邊行緊嘅促銷,所以跳過,
+    // 等嗰個推廣完先還原。
+    let lockedCount = 0;
+    if (action === 'restore') {
+      const otherActivePromoIds = new Set(
+        allPromos
+          .filter((p) => p.id !== promoId && effectiveStatus(p) === 'active')
+          .map((p) => p.id)
+      );
+      const lockedProducts = new Set<string>();
+      for (const it of allItems) {
+        if (!it.is_archived && otherActivePromoIds.has(it.promotion_id)) {
+          lockedProducts.add(String(it.product_id));
+        }
+      }
+      lockedCount = items.filter((i) => lockedProducts.has(i.productId)).length;
+      items = items.filter((i) => !lockedProducts.has(i.productId));
+      if (items.length === 0) {
+        alert(
+          `呢 ${lockedCount} 件商品全部仲喺其他進行中嘅推廣 — 而家還原會毁掉嗰邊嘅促銷價。\n等嗰啲推廣完結先再還原。`
+        );
+        return;
+      }
+    }
+
+    const lockedNote = lockedCount > 0
+      ? `\n\n另有 ${lockedCount} 件今次唔會還原（仲喺其他進行中推廣,還原會影響嗰邊售價）。`
+      : '';
     const msg = action === 'apply'
       ? `確定將 ${items.length} 件商品嘅推廣價推上 Shopify？\n\n⚠️ 會即時改你網店嘅實際售價（客人睇到）。原價會存做 compare-at（劃線價）。`
-      : `確定將 ${items.length} 件商品還原 Shopify 原價？\n\n（促銷結束用 — 售價由 compare-at 還原並清走劃線價，完成後一併清除 dashboard 嘅推廣價。）`;
+      : `確定將 ${items.length} 件商品還原 Shopify 原價？\n\n（促銷結束用 — 售價由 compare-at 還原並清走劃線價，完成後一併清除 dashboard 嘅推廣價。）${lockedNote}`;
     if (!confirm(msg)) return;
     setSyncing(true);
     setSyncMsg(`同步中 0/${items.length}…`);
@@ -614,7 +647,7 @@ export default function PromotionDetailPage() {
       setSyncing(false);
       setSyncMsg(null);
     }
-  }, [sortedStats, promoId]);
+  }, [sortedStats, promoId, allPromos, allItems]);
 
   if (!promoId) return null;
 

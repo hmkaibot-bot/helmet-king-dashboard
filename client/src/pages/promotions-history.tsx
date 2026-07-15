@@ -22,6 +22,7 @@ import {
   fetchAllRows,
   effectiveStatus,
 } from '@/lib/promotions-shared';
+import { maybeSnapshotEndedPromos } from '@/lib/promo-snapshot';
 
 type SortKey = 'end_date' | 'lift' | 'revenue' | 'qty';
 type SortDir = 'asc' | 'desc';
@@ -48,6 +49,14 @@ export default function PromotionsHistoryPage() {
         return st === 'ended' || st === 'cancelled';
       }));
       setItems(allItems);
+
+      // 結束後自動 freeze 成效(自我修復;背景行,計完先補上畫面)
+      void maybeSnapshotEndedPromos(allPromos, allItems)
+        .then(snaps => {
+          if (!snaps) return;
+          setPromos(prev => prev.map(p => (snaps.has(p.id) ? { ...p, ...snaps.get(p.id)! } : p)));
+        })
+        .catch(e => console.warn('推廣快照失敗:', e));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -273,7 +282,7 @@ export default function PromotionsHistoryPage() {
       ) : filtered.length === 0 ? (
         <div className="rounded-md border border-dashed border-border/60 p-12 text-center text-sm text-muted-foreground">
           {promos.length === 0
-            ? '尚未有任何已結束嘅推廣。當你建立嘅推廣 end_date 過咗，系統會每日自動 freeze metrics 並出現喺呢度。'
+            ? '尚未有任何已結束嘅推廣。推廣結束後隔日（等訂單同步齊），開呢頁或推廣活動頁會自動 freeze 成效並顯示喺度。'
             : '冇符合條件嘅推廣'}
         </div>
       ) : (
