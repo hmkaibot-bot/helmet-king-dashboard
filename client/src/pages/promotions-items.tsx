@@ -537,7 +537,7 @@ export default function PromotionsItemsPage() {
             <>
               尚未有任何商品標記為「推廣中」。去
               <Link to="/retail/dead-stock" className="text-primary hover:underline mx-1">
-                死貨表
+                庫存管理
               </Link>
               勾選「推廣中」checkbox以加入推廣商品池。
             </>
