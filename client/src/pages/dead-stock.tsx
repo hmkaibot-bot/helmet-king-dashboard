@@ -1,6 +1,7 @@
 /**
- * Dead Stock / Aging Inventory Management Page
- * 死貨 / 老化庫存管理
+ * Stock Status Management Page (原名: Dead Stock / Aging Inventory)
+ * 貨品狀態管理 — 分辨死貨/慢移貨/正常貨、狀態核實、安排推廣
+ * (route 仍係 /retail/dead-stock;DB 表名 dead_stock_* 不變)
  *
  * All computation is client-side using useMemo for 4000+ SKU efficiency.
  * Data sources: shopify_inventory, bc_inventory, shopify_order_lines,
@@ -2001,8 +2002,8 @@ export default function DeadStockPage() {
       {/* ── Header ── */}
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-lg font-semibold leading-tight">死貨 / 老化庫存管理</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Dead &amp; Aging Stock Management</p>
+          <h2 className="text-lg font-semibold leading-tight">貨品狀態管理</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">Stock Status Management</p>
         </div>
         <button
           onClick={loadData}
@@ -2455,7 +2456,7 @@ export default function DeadStockPage() {
                 <tr>
                   <td colSpan={COL_COUNT} className="text-center py-8 text-sm text-muted-foreground">
                     <Package className="h-8 w-8 mx-auto mb-2 opacity-30" />
-                    無符合條件的死貨 / 老化庫存
+                    無符合條件的貨品
                   </td>
                 </tr>
               )}

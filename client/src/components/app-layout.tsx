@@ -81,7 +81,7 @@ const NAV_ITEMS: NavItem[] = [
       { path: '/retail/product-editor', label: '商品編輯', sublabel: 'Product Editor', icon: FileEdit },
       { path: '/retail/price-watch', label: '格價', sublabel: 'Price Watch', icon: Scale },
       { path: '/retail/restock', label: '補貨管理', sublabel: 'Restock', icon: PackageSearch },
-      { path: '/retail/dead-stock', label: '死貨管理', sublabel: 'Dead Stock', icon: Archive },
+      { path: '/retail/dead-stock', label: '庫存管理', sublabel: 'Stock Status', icon: Archive },
       { path: '/retail/promotions', label: '推廣活動', sublabel: 'Promotions', icon: Megaphone },
       { path: '/retail/promotions/items', label: '推廣商品', sublabel: 'Promo Items', icon: Package },
       { path: '/retail/promotions/history', label: '推廣歷史', sublabel: 'Promo History', icon: History },
