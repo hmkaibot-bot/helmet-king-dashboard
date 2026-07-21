@@ -10,6 +10,8 @@
  *  - featuredImages  { productIds[] (≤250) }            → 批量攞商品主圖 URL (推廣監察頁)
  *  - variants        { productId }                      → 子產品列表 (選項/圖/即時庫存,推廣監察彈窗)
  *  - listCollections {}                                 → 所有 collection (落揀單)
+ *  - addTags         { productIds[] (≤25), tag }        → 批量加一個 tag (tagsAdd,唔郁原有 tags)
+ *  - removeTags      { productIds[] (≤25), tag }        → 批量移除一個 tag (tagsRemove)
  *  - addMedia        { productId, urls[] }              → 由圖片 URL 加相
  *  - deleteMedia     { productId, mediaIds[] }          → 刪相
  *  - reorderMedia    { productId, mediaIds[] (新次序) }  → 重排
@@ -218,6 +220,50 @@ export default async function handler(req: any, res: any) {
             imageUrl: v.image?.url || null,
           })),
         },
+      });
+    }
+
+    if (action === 'addTags' || action === 'removeTags') {
+      // 批量幫商品加/除一個 tag — 用 tagsAdd/tagsRemove(只郁指定 tag,商品原有
+      // 其他 tags 完全唔受影響;productUpdate 嘅 tags 欄反而係成個 set 替換,唔用)。
+      // 一個 GraphQL request 用 alias 打包晒(≤25 件,cost ~250,一個 round trip)。
+      const tag = String(body?.tag ?? '').trim();
+      if (!tag) return res.status(400).json({ error: '冇 tag 名' });
+      if (tag.length > 255) return res.status(400).json({ error: 'tag 太長(≤255)' });
+      if (tag.includes(',')) return res.status(400).json({ error: 'tag 唔可以有逗號(Shopify 會當分隔符)' });
+      const ids: string[] = (Array.isArray(body.productIds) ? body.productIds : [])
+        .map((x: any) => String(x).replace(/\D/g, ''))
+        .filter((x: string) => x.length > 0)
+        .slice(0, 25);
+      if (ids.length === 0) return res.status(400).json({ error: '冇商品 ID' });
+      const mutName = action === 'addTags' ? 'tagsAdd' : 'tagsRemove';
+      // id 已淨化成純數字先入 query string;tag 經 $tags variable 傳,冇 injection 面
+      const q =
+        `mutation($tags: [String!]!) { ` +
+        ids
+          .map(
+            (id, i) =>
+              `t${i}: ${mutName}(id: "gid://shopify/Product/${id}", tags: $tags) { userErrors { message } }`
+          )
+          .join(' ') +
+        ` }`;
+      const data = await gql(q, { tags: [tag] });
+      const failures = ids
+        .map((id, i) => {
+          const errs = (data?.[`t${i}`]?.userErrors ?? []) as { message?: string }[];
+          return errs.length > 0
+            ? { productId: id, error: errs.map(e => e?.message || '').join('; ') }
+            : null;
+        })
+        .filter(Boolean);
+      return res.status(200).json({
+        ok: true,
+        action,
+        tag,
+        total: ids.length,
+        done: ids.length - failures.length,
+        failed: failures.length,
+        failures,
       });
     }
 
