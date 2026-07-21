@@ -17,6 +17,7 @@ import {
   Download,
   Upload,
   RotateCcw,
+  Tag,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { MultiSelectChipFilter } from '@/components/multi-select-chip-filter';
@@ -649,6 +650,94 @@ export default function PromotionDetailPage() {
     }
   }, [sortedStats, promoId, allPromos, allItems]);
 
+  // ── 批量幫推廣內所有商品加/除一個 Shopify tag ────────────────────────────
+  // 目標 = 成個推廣嘅分派商品(items,唔跟表格篩選),經 /api/shopify-product
+  // addTags/removeTags(tagsAdd/tagsRemove — 只郁指定 tag,原有 tags 不變)。
+  const handleBatchTag = useCallback(async (mode: 'add' | 'remove') => {
+    const ids = Array.from(
+      new Set(items.filter(i => !i.is_archived).map(i => String(i.product_id)))
+    );
+    if (ids.length === 0) {
+      alert('呢個推廣未有分派商品。');
+      return;
+    }
+    const tag = window.prompt(
+      mode === 'add'
+        ? `輸入要加嘅 tag(會加到 Shopify ${ids.length} 件商品,唔影響商品原有 tags):`
+        : `輸入要移除嘅 tag(會由 Shopify ${ids.length} 件商品移除):`,
+      'DS_2026'
+    )?.trim();
+    if (!tag) return;
+    if (tag.includes(',')) {
+      alert('Tag 唔可以有逗號(Shopify 會當成分隔符)。');
+      return;
+    }
+    if (
+      !confirm(
+        mode === 'add'
+          ? `確定將 tag「${tag}」加到 ${ids.length} 件商品?`
+          : `確定由 ${ids.length} 件商品移除 tag「${tag}」?`
+      )
+    )
+      return;
+
+    setSyncing(true);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error('未登入 — 請重新登入 dashboard');
+
+      const CHUNK = 25; // server 上限;一批一個 Shopify round trip
+      const action = mode === 'add' ? 'addTags' : 'removeTags';
+      let done = 0;
+      let failed = 0;
+      const failures: { productId: string; error: string }[] = [];
+
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const batch = ids.slice(i, i + CHUNK);
+        setSyncMsg(`${mode === 'add' ? '加' : '除'} Tag 中 ${Math.min(i + CHUNK, ids.length)}/${ids.length}…`);
+
+        // 撞 Shopify rate limit(THROTTLED)就等 3 秒重試一次
+        let j: any = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const resp = await fetch('/api/shopify-product', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ action, tag, productIds: batch }),
+          });
+          j = await resp.json().catch(() => null);
+          if (!resp.ok) throw new Error(j?.error || `HTTP ${resp.status}`);
+          if (j?.ok === false && /throttl/i.test(String(j?.error ?? '')) && attempt === 0) {
+            await new Promise(r => setTimeout(r, 3000));
+            continue;
+          }
+          break;
+        }
+        if (j?.ok === false) throw new Error(j?.error || '未知錯誤');
+        done += j?.done ?? 0;
+        failed += j?.failed ?? 0;
+        if (Array.isArray(j?.failures)) failures.push(...j.failures);
+
+        // 批與批之間唞一秒 — Shopify cost bucket 回氣,避免越做越易 throttle
+        if (i + CHUNK < ids.length) await new Promise(r => setTimeout(r, 1000));
+      }
+
+      const failNote = failures
+        .slice(0, 6)
+        .map(f => `· ${f.productId}: ${f.error}`)
+        .join('\n');
+      alert(
+        `完成:成功 ${done} · 失敗 ${failed}(共 ${ids.length}）` +
+          (failNote ? `\n\n失敗例子(通常係商品已喺 Shopify 刪除):\n${failNote}` : '')
+      );
+    } catch (e) {
+      alert(`${mode === 'add' ? '加' : '除'} Tag 失敗:${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSyncing(false);
+      setSyncMsg(null);
+    }
+  }, [items]);
+
   if (!promoId) return null;
 
   return (
@@ -716,6 +805,25 @@ export default function PromotionDetailPage() {
           >
             <RotateCcw className="h-3.5 w-3.5" />
             還原原價
+          </button>
+          <span className="w-px h-5 bg-border/60" />
+          <button
+            onClick={() => handleBatchTag('add')}
+            disabled={loading || syncing || items.length === 0}
+            title="幫呢個推廣所有商品喺 Shopify 加一個 tag(唔影響商品原有 tags)"
+            className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 transition-colors inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Tag className="h-3.5 w-3.5" />
+            加 Tag
+          </button>
+          <button
+            onClick={() => handleBatchTag('remove')}
+            disabled={loading || syncing || items.length === 0}
+            title="由呢個推廣所有商品移除一個 Shopify tag(推廣完清 tag 用)"
+            className="text-xs px-3 py-1.5 rounded-md border border-border bg-card hover:bg-accent/60 transition-colors inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Tag className="h-3.5 w-3.5 opacity-50" />
+            除 Tag
           </button>
           <span className="w-px h-5 bg-border/60" />
           <button
