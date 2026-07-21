@@ -3,7 +3,10 @@ import {
   buildPrompt,
   POST_TYPES, TONES, LANGS, PLATFORMS, SCENARIO_KEYS,
   type PostType, type Tone, type Lang, type Platform, type PromptProduct,
-} from './_marketing-prompts';
+// 一定要帶 .js 副檔名 — package.json 係 "type":"module",Vercel node runtime 以
+// ESM 執行,無副檔名相對 import 會 ERR_MODULE_NOT_FOUND,成支 function 一 load
+// 就死 (FUNCTION_INVOCATION_FAILED)。tsc/esbuild 會自動將 .js 對應返 .ts 原檔。
+} from './_marketing-prompts.js';
 
 /**
  * Vercel serverless function — 營銷貼文文案生成。
