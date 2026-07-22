@@ -1,0 +1,41 @@
+name: Meta Campaigns Sync
+
+# meta_campaigns 每日刷新(campaign 列表 + 90 日成效)。
+# 背景:n8n Daily ETL 只同步賬戶級日支出 (meta_ad_insights),meta_campaigns
+# 自 2026-04-09 一次性快照後一直冇 writer,營銷分析頁嘅廣告活動列表因此唔會
+# 顯示現行 campaigns。呢個 job 每晚補返。
+#
+# ⚠️ 需要 repo secret META_ACCESS_TOKEN(Meta Graph API token,ads_read scope;
+#    同 n8n「Daily ETL v3」入面「Meta Get Insights」node 用嗰條係同一條)。
+#    未加 secret 之前,呢個 job 會 fail 提示,唔會影響其他嘢。
+
+on:
+  schedule:
+    # 每天 HKT 凌晨 02:15 = UTC 18:15(前一天)— 跟大隊 02:00 批次,錯開避峰
+    - cron: "15 18 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet requests
+
+      - name: Sync Meta campaigns
+        env:
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/meta_campaigns_sync.py
