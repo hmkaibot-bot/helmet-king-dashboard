@@ -47,6 +47,17 @@ CHANNEL_BUSINESS = {
     "1607355899494029": "retail",   # FB 頭盔王 Helmetking.com page
 }
 
+# 同事分隊 → 業務(assignedTeam 優先過條線:好多客搵零售線但問車/維修,
+# 同事 triage 分咗隊 — 嗰個先係真業務)。key 用大寫對照。
+TEAM_BUSINESS = {
+    "RETAIL": "retail",
+    "26KING": "26king",
+    "GARAGE": "garage",
+    "RENTALBIKEHK": "rental",
+    "RENTALBIKE": "rental",
+    "TOUR": "tour",
+}
+
 
 def fail(msg: str) -> None:
     print(f"ERROR: {msg}", file=sys.stderr)
@@ -212,6 +223,9 @@ def main() -> None:
         conv_id = c.get("conversationId")
         up = c.get("userProfile") or {}
         conv_ident = str(c.get("lastChannelIdentityId") or "")
+        at = c.get("assignedTeam")
+        team_name = str((at or {}).get("teamName") if isinstance(at, dict) else (at or "")).strip()
+        team_biz = TEAM_BUSINESS.get(team_name.upper())
         msgs = sf_get(key, f"conversation/message/{conv_id}", {"offset": 0, "limit": MSG_PAGE_SIZE})
         for m in msgs:
             created = str(m.get("createdAt") or "")
@@ -228,7 +242,8 @@ def main() -> None:
             if pid:
                 matched_prod_n += 1
             ident = str(m.get("channelIdentityId") or "") or conv_ident
-            business = biz_map.get(ident)
+            # 業務:同事分隊優先(triage 過先至準),冇分隊先按條線
+            business = team_biz or biz_map.get(ident)
             if ident and not business:
                 unknown_idents[ident] = unknown_idents.get(ident, 0) + 1
             rows.append(
@@ -238,6 +253,7 @@ def main() -> None:
                     "contact_id": str(up.get("id") or "") or None,
                     "contact_phone": up.get("phoneNumber") or None,
                     "channel": norm_channel(m.get("channel")),
+                    "team": team_name or None,
                     "occurred_at": created,
                     "matched_brand": brand,
                     "matched_product_id": pid,

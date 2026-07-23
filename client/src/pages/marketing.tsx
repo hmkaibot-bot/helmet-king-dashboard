@@ -90,7 +90,7 @@ export default function MarketingPage() {
         const [ads, orders, retail, marsello, inq, campDaily] = await Promise.all([
           queryWithDateRange('meta_ad_insights', 'date,spend,impressions,clicks,reach,cpm,cpc,ctr', 'date', bounds),
           queryWithDateRange('shopify_orders', 'created_at,total_price,financial_status,cancelled_at', 'created_at', bounds),
-          // 實體零售 = BC 車房店 (CARSHOP),不含車房維修 (GARAGE)。同 overview「零售 Retail」口徑一致。
+          // 實體零售 = BC 門市 (dimension CARSHOP),一直不含車房維修 (GARAGE)。同 overview「零售 Retail」口徑一致。
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
           queryAll('marsello_customers', 'id,created_at,last_seen,tier_name,subscribed'),
           // SleekFlow 查詢(唔 select 電話 — 呢頁用唔到,少擺 PII 喺前端)
@@ -468,7 +468,7 @@ export default function MarketingPage() {
         </button>
         {retailOnly && !campaignsLoading && hiddenCampaignCount > 0 && (
           <span className="text-[11px] text-muted-foreground">
-            已隱藏 {hiddenCampaignCount} 個非零售活動（26King 賣車／租車）· 查詢亦只計零售線
+            已隱藏 {hiddenCampaignCount} 個非零售活動（26King 賣車／租車／車房）· 查詢按同事分隊＋channel 線過濾
           </span>
         )}
         {retailOnly && (
@@ -495,7 +495,7 @@ export default function MarketingPage() {
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <KpiCard title="總銷售" subtitle="Total Sales" value={formatCurrency(totalSales)} icon={DollarSign} loading={loading} testId="kpi-total-sales" />
         <KpiCard title="線上" subtitle="Shopify" value={formatCurrency(totalShopifyRev)} icon={Globe} loading={loading} testId="kpi-online-sales" />
-        <KpiCard title="實體零售" subtitle="BC 車房店" value={formatCurrency(totalRetailRev)} icon={Store} loading={loading} testId="kpi-retail-sales" />
+        <KpiCard title="實體零售" subtitle="門市 POS" value={formatCurrency(totalRetailRev)} icon={Store} loading={loading} testId="kpi-retail-sales" />
         <KpiCard title="廣告費" subtitle="Ad Spend" value={formatCurrency(totalSpend)} icon={DollarSign} loading={loading} testId="kpi-ad-spend" />
         <KpiCard title="廣告成本佔比" subtitle="Spend/Sales" value={formatPercent(adCostPct)} icon={Percent} loading={loading} testId="kpi-ad-cost-pct" />
         <KpiCard title="Blended CAC" subtitle="廣告費/新會員" value={blendedCAC > 0 ? formatCurrency(blendedCAC) : '—'} icon={Target} loading={loading} testId="kpi-blended-cac" />
@@ -580,7 +580,7 @@ export default function MarketingPage() {
         </div>
       )}
 
-      <ChartCard title="每日 總銷售 vs 廣告費 vs 客服查詢" subtitle="Daily Total Sales vs Ad Spend vs Inquiries" note="* 總銷售 = 線上 Shopify + 實體 BC 車房店(不含車房維修)。查詢 = SleekFlow 每日 distinct 對話數。實體零售多數非廣告驅動,故以「廣告成本佔比」睇整體強度;上方「廣告佔比率」卡為線上 ROAS,相對可歸因。非逐單歸因。">
+      <ChartCard title="每日 總銷售 vs 廣告費 vs 客服查詢" subtitle="Daily Total Sales vs Ad Spend vs Inquiries" note="* 總銷售 = 線上 Shopify + 實體門市(BC CARSHOP,一直不含車房維修)。查詢 = SleekFlow 每日 distinct 對話數。實體零售多數非廣告驅動,故以「廣告成本佔比」睇整體強度;上方「廣告佔比率」卡為線上 ROAS,相對可歸因。非逐單歸因。">
         <ResponsiveContainer width="100%" height={300}>
           <ComposedChart data={salesVsSpend}>
             <CartesianGrid {...GRID_STYLE} /><XAxis dataKey="date" tick={AXIS_STYLE} />

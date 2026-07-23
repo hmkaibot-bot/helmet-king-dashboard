@@ -55,11 +55,28 @@ function normalize(b: any): Normalized {
         : 'inbound',
     timestamp: msg?.createdAt ?? msg?.timestamp ?? b?.createdAt ?? null,
     source: String(b?.source ?? msg?.source ?? '').toLowerCase() || null,
-    // Flow Builder 條 flow 只掛零售 Main WhatsApp → 預設 retail;payload 有明示就跟 payload
-    business: String(b?.business ?? msg?.business ?? '').toLowerCase() || 'retail',
+    business: null, // 下面按 team/payload 推;推唔到預設 retail(條 flow 只掛零售線)
     channelIdentityId:
       String(msg?.channelIdentityId ?? b?.channelIdentityId ?? '') || null,
   };
+}
+
+// 同事分隊 → 業務(同 scripts/sleekflow_sync.py TEAM_BUSINESS 一致;
+// 每晚 API 對賬會用真 team 重標,呢度係即日即時數嘅最佳估計)
+const TEAM_BUSINESS: Record<string, string> = {
+  RETAIL: 'retail',
+  '26KING': '26king',
+  GARAGE: 'garage',
+  RENTALBIKEHK: 'rental',
+  RENTALBIKE: 'rental',
+  TOUR: 'tour',
+};
+
+function deriveBusiness(e: Normalized, b: any): string {
+  const explicit = String(b?.business ?? '').toLowerCase();
+  if (explicit) return explicit;
+  const teamBiz = TEAM_BUSINESS[String(e.team ?? '').trim().toUpperCase()];
+  return teamBiz ?? 'retail';
 }
 
 export default async function handler(req: any, res: any) {
@@ -110,7 +127,7 @@ export default async function handler(req: any, res: any) {
         p_team: e.team,
         p_occurred_at: e.timestamp,
         p_source: e.source,
-        p_business: e.business,
+        p_business: deriveBusiness(e, body),
         p_channel_identity_id: e.channelIdentityId,
       }),
     });
