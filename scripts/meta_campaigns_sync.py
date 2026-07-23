@@ -9,14 +9,19 @@ Meta Campaigns 每日同步 — 刷新 Supabase meta_campaigns(campaign 列表 +
 — 冇 90 日投放嘅 campaign 一律歸零(唔會留低過時 spend_90d 污染個列表),
 再成批 upsert(on_conflict=campaign_id)。
 
+另外寫 meta_campaign_daily(campaign × 日,spend/曝光/點擊/查詢/購買)—
+營銷分析頁「淨睇零售」模式要逐 campaign 加總先分到業務(賬戶級 meta_ad_insights
+零售/賣車撈埋一齊,冇得拆)。
+
 env: META_ACCESS_TOKEN, SUPABASE_URL, SUPABASE_SERVICE_KEY
      META_AD_ACCOUNT(可選,預設 act_1632943856935233)
+     META_DAILY_DAYS(可選,逐日數回望日數;預設 90,一次過深回填可set大啲)
 """
 
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -24,10 +29,13 @@ META_TOKEN = os.environ.get("META_ACCESS_TOKEN", "")
 AD_ACCOUNT = os.environ.get("META_AD_ACCOUNT", "act_1632943856935233")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+DAILY_DAYS = int(os.environ.get("META_DAILY_DAYS", "90"))
 GRAPH = "https://graph.facebook.com/v25.0"
 
 # 購買數:Meta actions 入面優先攞 omni_purchase(線上+線下合計),fallback 舊 key
 PURCHASE_KEYS = ["omni_purchase", "purchase", "offsite_conversion.fb_pixel_purchase"]
+# 查詢 = 開新 messaging 對話(WhatsApp/Messenger/IG DM)
+CONV_KEY = "onsite_conversion.messaging_conversation_started_7d"
 
 
 def fail(msg: str) -> None:
@@ -71,6 +79,14 @@ def purchases_of(ins: dict | None) -> int:
         for a in actions:
             if a.get("action_type") == key:
                 return integer(a.get("value"))
+    return 0
+
+
+def conversations_of(ins: dict | None) -> int:
+    actions = (ins or {}).get("actions") or []
+    for a in actions:
+        if a.get("action_type") == CONV_KEY:
+            return integer(a.get("value"))
     return 0
 
 
@@ -160,6 +176,51 @@ def main() -> None:
 
     active_spending = sum(1 for r in rows if r["spend_90d"] > 0)
     print(f"upsert OK — {len(rows)} campaigns 已刷新,{active_spending} 個有 90 日支出")
+
+    # ── campaign × 日 逐日成效 → meta_campaign_daily ─────────────────────
+    since = (datetime.now(timezone.utc) - timedelta(days=DAILY_DAYS)).date().isoformat()
+    until = datetime.now(timezone.utc).date().isoformat()
+    daily = fetch_paged(
+        f"{GRAPH}/{AD_ACCOUNT}/insights",
+        {
+            "level": "campaign",
+            "time_range": json.dumps({"since": since, "until": until}),
+            "time_increment": 1,
+            "fields": "campaign_id,spend,impressions,clicks,actions",
+            "limit": 500,
+            "access_token": token,
+        },
+    )
+    drows = [
+        {
+            "campaign_id": d.get("campaign_id"),
+            "date": d.get("date_start"),
+            "spend": num(d.get("spend")) or 0,
+            "impressions": integer(d.get("impressions")),
+            "clicks": integer(d.get("clicks")),
+            "conversations": conversations_of(d),
+            "purchases": purchases_of(d),
+            "synced_at": now,
+        }
+        for d in daily
+        if d.get("campaign_id") and d.get("date_start")
+    ]
+    for i in range(0, len(drows), 1000):
+        resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/meta_campaign_daily",
+            params={"on_conflict": "campaign_id,date"},
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge-duplicates",
+            },
+            data=json.dumps(drows[i : i + 1000]),
+            timeout=120,
+        )
+        if resp.status_code not in (200, 201):
+            fail(f"meta_campaign_daily upsert HTTP {resp.status_code}: {resp.text[:500]}")
+    print(f"meta_campaign_daily upsert OK — {len(drows)} 行({since} → {until})")
 
 
 if __name__ == "__main__":
