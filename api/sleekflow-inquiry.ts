@@ -66,9 +66,17 @@ export default async function handler(req: any, res: any) {
   }
 
   const e = normalize(body ?? {});
-  // 冇 id 冇得去重 / outbound(店方覆)唔計 — 照 200,免 SleekFlow 重推
-  if (!e.messageId) return res.status(200).json({ ok: true, skipped: 'no-message-id' });
+  // outbound(店方覆)唔計 — 照 200,免 SleekFlow 重推
   if (e.direction !== 'inbound') return res.status(200).json({ ok: true, skipped: 'outbound' });
+  // SleekFlow HTTP 節點唔一定有 message id variable — 冇就合成一個:
+  // 有 conversation+時間 就用佢哋砌(webhook 重推都 dedup 到);再冇就隨機
+  // (隨機 id 極端情況會多一兩行 message,但查詢量計 distinct 對話,唔會谷大個數)。
+  if (!e.messageId) {
+    e.messageId =
+      e.conversationId && e.timestamp
+        ? `synth:${e.conversationId}:${e.timestamp}`
+        : `synth:${(globalThis as any).crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+  }
 
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/ingest_sleekflow_inquiry`, {
