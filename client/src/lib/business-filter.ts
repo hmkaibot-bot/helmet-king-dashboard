@@ -21,6 +21,11 @@ const NONRETAIL_PATTERNS: RegExp[] = [
   // 車房(維修/保養服務)— 老闆:「車房個d我都唔需要」。
   // 洗車用品係零售商品,唔好誤中 →「洗車」後面唔係「用品」先算車房
   /車房|維修|保養|驗車|洗車(?!用品)/,
+  // 老闆確認唔係零售:EK 鏈條(換鏈服務)、預約(車房排期)、MICHELIN(呔+安裝)
+  /鏈條|EK\s*鏈|預約/,
+  /MICHELIN|米芝蓮/i,
+  // 自駕團/旅行團(老闆確認唔係零售)
+  /自駕團|自駕遊|西藏團|蒙古團|旅行團/,
   // 車款型號(廣告名有呢啲多數係賣車 post;零售裝備廣告名通常係頭盔/品牌)。
   // R1 剔走 — Scorpion EXO-R1 係頭盔,會誤中;R3/R7 保留(Yamaha 熱門現貨車款)。
   /\bGSX\b|GSX-?\d|\bNMAX\b|\bXMAX\b|\bPCX\b|\bADV\s?1\d0\b|\bCBR?\s?\d{3}\b|\bMT-?\d{1,2}\b|\bR[37]\b|\bZ\s?900\b|\bZX-?\d+\b|NINJA|\bREBEL\b|\bCT125\b|\bMSX\b|\bDAX\b|\bMONKEY\b|\bXSR\b|\bTMAX\b|\bNVX\b|\bAEROX\b|\bFORCE\s?155\b|TENERE|VESPA/i,
@@ -46,10 +51,10 @@ export function campaignBusiness(c: { campaign_name?: string | null; business?: 
  *    — 客人搵零售線但問車/維修嗰批,靠同事 triage 先分得出
  * 2) 冇分隊就按條線(零售 Main WhatsApp / @helmetking_hk / 頭盔王 FB = retail)
  * null = 舊行/未識別 — 當零售計。
- * tour(自駕團)暫時當零售 — 團係頭盔王品牌搞,老闆話唔要可以再拆。
+ * tour(自駕團)都唔算零售 — 老闆 2026-07-23 確認。
  */
 export function isRetailInquiry(e: { business?: string | null }): boolean {
-  return !e.business || e.business === 'retail' || e.business === 'tour';
+  return !e.business || e.business === 'retail';
 }
 
 export const BUSINESS_LABELS: Record<string, string> = {
