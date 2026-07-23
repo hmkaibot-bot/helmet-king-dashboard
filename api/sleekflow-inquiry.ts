@@ -68,6 +68,12 @@ export default async function handler(req: any, res: any) {
   const e = normalize(body ?? {});
   // outbound(店方覆)唔計 — 照 200,免 SleekFlow 重推
   if (e.direction !== 'inbound') return res.status(200).json({ ok: true, skipped: 'outbound' });
+  // Flow Builder 通常只有 contact 級 variables — 冇 conversation id 時用
+  // 「同一個客 × 同一日」做對話 proxy(dashboard 查詢量計 distinct 對話):
+  // 一個客一日內連環問十句 = 1 單查詢;隔日再問 = 新一單。
+  if (!e.conversationId && e.contactId) {
+    e.conversationId = `contact:${e.contactId}:${new Date().toISOString().slice(0, 10)}`;
+  }
   // SleekFlow HTTP 節點唔一定有 message id variable — 冇就合成一個:
   // 有 conversation+時間 就用佢哋砌(webhook 重推都 dedup 到);再冇就隨機
   // (隨機 id 極端情況會多一兩行 message,但查詢量計 distinct 對話,唔會谷大個數)。
