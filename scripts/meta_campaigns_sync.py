@@ -74,18 +74,34 @@ def purchases_of(ins: dict | None) -> int:
     return 0
 
 
+def meta_token() -> str:
+    """env 優先;冇就用 service key 讀 Supabase app_config(免逐處設 secret)。"""
+    if META_TOKEN:
+        return META_TOKEN
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/app_config",
+        params={"key": "eq.META_ACCESS_TOKEN", "select": "value"},
+        headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"},
+        timeout=30,
+    )
+    rows = r.json() if r.status_code == 200 else []
+    if rows and rows[0].get("value"):
+        return str(rows[0]["value"])
+    fail("搵唔到 Meta token — env META_ACCESS_TOKEN 同 Supabase app_config 都未設定")
+    return ""  # unreachable
+
+
 def main() -> None:
-    if not META_TOKEN:
-        fail("META_ACCESS_TOKEN 未設定(GitHub repo secret)")
     if not SUPABASE_URL or not SUPABASE_KEY:
         fail("SUPABASE_URL / SUPABASE_SERVICE_KEY 未設定")
+    token = meta_token()
 
     campaigns = fetch_paged(
         f"{GRAPH}/{AD_ACCOUNT}/campaigns",
         {
             "fields": "id,name,status,objective,start_time,stop_time",
             "limit": 200,
-            "access_token": META_TOKEN,
+            "access_token": token,
         },
     )
     print(f"campaigns: {len(campaigns)}")
@@ -97,7 +113,7 @@ def main() -> None:
             "date_preset": "last_90d",
             "fields": "campaign_id,spend,impressions,clicks,reach,cpm,cpc,ctr,actions",
             "limit": 500,
-            "access_token": META_TOKEN,
+            "access_token": token,
         },
     )
     by_id = {r.get("campaign_id"): r for r in insights}

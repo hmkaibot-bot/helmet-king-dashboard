@@ -18,8 +18,29 @@ const SUPABASE_ANON_KEY =
   process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY ||
   // 公開 anon key (同 config.ts; RLS 保護) — 唔可以空, 否則 verifyUser 401 "No API key found"
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15cmFuZ214eWphbXN1cGJ4YmJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MzA0NjQsImV4cCI6MjA5MTMwNjQ2NH0.RmMZyuLZrddw7kL4y2qFY8XaI6zGXPx5D9xCi58-iSY';
-const META_TOKEN = process.env.META_ACCESS_TOKEN || '';
+const META_TOKEN_ENV = process.env.META_ACCESS_TOKEN || '';
 const GRAPH = 'https://graph.facebook.com/v25.0';
+
+// Meta token 攞法:env 優先;冇 env 就用「呼叫者嘅 JWT」讀 Supabase app_config
+// (RLS: authenticated 先讀到 — 同 dashboard 其他表同一信任模型,免逐個 env 設定)。
+// module-level cache — 同一個 warm function 唔使每次 request 都問 DB。
+let _metaTokCache = '';
+async function getMetaToken(userJwt: string): Promise<string> {
+  if (META_TOKEN_ENV) return META_TOKEN_ENV;
+  if (_metaTokCache) return _metaTokCache;
+  try {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/app_config?key=eq.META_ACCESS_TOKEN&select=value`,
+      { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${userJwt}` } }
+    );
+    const rows: any = await r.json().catch(() => []);
+    const v = Array.isArray(rows) && rows[0]?.value ? String(rows[0].value) : '';
+    if (v) _metaTokCache = v;
+    return v;
+  } catch {
+    return '';
+  }
+}
 
 export const config = { maxDuration: 60 };
 
@@ -36,8 +57,8 @@ async function verifyUser(token: string): Promise<boolean> {
   }
 }
 
-async function graphGet(path: string, params: Record<string, string>): Promise<any> {
-  const qs = new URLSearchParams({ ...params, access_token: META_TOKEN });
+async function graphGet(path: string, params: Record<string, string>, metaToken: string): Promise<any> {
+  const qs = new URLSearchParams({ ...params, access_token: metaToken });
   const r = await fetch(`${GRAPH}/${path}?${qs.toString()}`);
   const j: any = await r.json().catch(() => ({}));
   if (j?.error) {
@@ -74,14 +95,17 @@ const firstOf = (m: Record<string, number>, keys: string[]): number => {
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-  if (!META_TOKEN)
-    return res.status(500).json({
-      error: '未設定 META_ACCESS_TOKEN（請喺 Vercel → Settings → Environment Variables 加,同 GitHub secret 同一條 token）',
-    });
 
   const authHeader = String(req.headers.authorization || '');
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   if (!token || !(await verifyUser(token))) return res.status(401).json({ error: '未授權 — 請先登入 dashboard' });
+
+  // env 優先;冇就用呼叫者 JWT 讀 Supabase app_config(兩邊都冇先報錯)
+  const metaToken = await getMetaToken(token);
+  if (!metaToken)
+    return res.status(500).json({
+      error: '搵唔到 Meta token — Vercel env META_ACCESS_TOKEN 同 Supabase app_config 都未設定',
+    });
 
   let body: any = req.body;
   if (typeof body === 'string') {
@@ -97,25 +121,25 @@ export default async function handler(req: any, res: any) {
       graphGet(base, {
         date_preset: preset,
         fields: 'spend,impressions,reach,frequency,clicks,cpc,cpm,ctr,actions,action_values',
-      }),
+      }, metaToken),
       graphGet(base, {
         date_preset: preset,
         time_increment: '1',
         fields: 'date_start,spend,impressions,reach,clicks,actions',
         limit: '200',
-      }),
+      }, metaToken),
       graphGet(base, {
         date_preset: preset,
         breakdowns: 'age,gender',
         fields: 'reach,spend',
         limit: '100',
-      }),
+      }, metaToken),
       graphGet(base, {
         date_preset: preset,
         breakdowns: 'publisher_platform',
         fields: 'reach,spend,impressions,clicks,actions',
         limit: '25',
-      }),
+      }, metaToken),
     ]);
 
     const s = summaryRows[0] ?? {};
