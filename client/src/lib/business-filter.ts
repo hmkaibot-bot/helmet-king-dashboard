@@ -12,7 +12,8 @@
 
 // 非零售(賣車/租車)關鍵字 — 中英文都有;bike 型號淨係喺廣告名出現先算
 const NONRETAIL_PATTERNS: RegExp[] = [
-  /26\s*KING/i,
+  // 26Pack 套票係 26King 嗰邊嘅產品(老闆確認唔係零售)
+  /26\s*KING|26\s*PACK/i,
   /現貨車|新車|舊車|二手車|易手車|賣車|寄賣|回收|換車|銀行按揭|上會/,
   /TRADE\s*-?\s*IN/i,
   /租車|租借|RENTAL|RENT\s*A?\s*BIKE/i,
