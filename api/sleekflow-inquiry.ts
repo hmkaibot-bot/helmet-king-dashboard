@@ -31,6 +31,7 @@ interface Normalized {
   team: string | null;
   direction: 'inbound' | 'outbound';
   timestamp: string | null;
+  source: string | null; // 'ctwa' = 經 Meta 廣告(Click-to-WhatsApp)入嚟;null = 直接
 }
 
 // SleekFlow webhook payload 欄位名各版本有出入 — 對映集中一處,方便日後照 payload 調整
@@ -51,6 +52,7 @@ function normalize(b: any): Normalized {
         ? 'outbound'
         : 'inbound',
     timestamp: msg?.createdAt ?? msg?.timestamp ?? b?.createdAt ?? null,
+    source: String(b?.source ?? msg?.source ?? '').toLowerCase() || null,
   };
 }
 
@@ -101,6 +103,7 @@ export default async function handler(req: any, res: any) {
         p_channel: e.channel,
         p_team: e.team,
         p_occurred_at: e.timestamp,
+        p_source: e.source,
       }),
     });
     if (!r.ok) {
