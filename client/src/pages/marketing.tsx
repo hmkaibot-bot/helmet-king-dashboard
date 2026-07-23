@@ -83,7 +83,7 @@ export default function MarketingPage() {
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
           queryAll('marsello_customers', 'id,created_at,last_seen,tier_name,subscribed'),
           // SleekFlow 查詢(唔 select 電話 — 呢頁用唔到,少擺 PII 喺前端)
-          queryWithDateRange('inquiry_events', 'message_id,conversation_id,contact_id,channel,occurred_at', 'occurred_at', bounds),
+          queryWithDateRange('inquiry_events', 'message_id,conversation_id,contact_id,channel,occurred_at,matched_brand,matched_title,source', 'occurred_at', bounds),
         ]);
         if (cancelled) return;
 
@@ -164,6 +164,18 @@ export default function MarketingPage() {
     }
     const dayCounts: Record<string, number> = {};
     Object.entries(byDay).forEach(([d, s]) => { dayCounts[d] = s.size; });
+    // 廣告入口(CTWA 標記)/ 品牌 Top / 單品 Top — 全部按 distinct 對話計
+    const adConvSet = new Set<string>();
+    const brandConv: Record<string, Set<string>> = {};
+    const prodConv: Record<string, Set<string>> = {};
+    for (const e of inquiries) {
+      const conv = String(e.conversation_id || e.message_id);
+      if (e.source === 'ctwa') adConvSet.add(conv);
+      if (e.matched_brand) (brandConv[e.matched_brand] = brandConv[e.matched_brand] || new Set()).add(conv);
+      if (e.matched_title) (prodConv[e.matched_title] = prodConv[e.matched_title] || new Set()).add(conv);
+    }
+    const topOf = (m: Record<string, Set<string>>) =>
+      Object.entries(m).map(([k, s]) => ({ name: k, count: s.size })).sort((a, b) => b.count - a.count).slice(0, 10);
     return {
       total: convSet.size,
       contacts: contactSet.size,
@@ -171,6 +183,9 @@ export default function MarketingPage() {
       instagram: byChannel.instagram.size,
       facebook: byChannel.facebook.size,
       dayCounts,
+      adConvs: adConvSet.size,
+      topBrands: topOf(brandConv),
+      topProducts: topOf(prodConv),
     };
   }, [inquiries]);
   const costPerInquiry = inquiryStats.total > 0 ? totalSpend / inquiryStats.total : 0;
@@ -368,6 +383,67 @@ export default function MarketingPage() {
         <KpiCard title="Facebook" subtitle="對話" value={formatNumber(inquiryStats.facebook)} icon={MessageCircle} loading={loading} testId="kpi-inq-fb" />
         <KpiCard title="每查詢廣告成本" subtitle="Spend/Inquiry" value={costPerInquiry > 0 ? formatCurrency(costPerInquiry) : '—'} icon={DollarSign} loading={loading} testId="kpi-inq-cost" />
       </div>
+
+      {/* 入口拆分:經 Meta 廣告(CTWA flow 標記)vs 直接搵上門 */}
+      {!loading && inquiryStats.total > 0 && (
+        <div className="flex items-center gap-2 flex-wrap text-xs">
+          <span className="text-muted-foreground">查詢入口:</span>
+          <span className="px-2 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 text-sky-300 tabular-nums">
+            經廣告 {inquiryStats.adConvs}
+          </span>
+          <span className="px-2 py-0.5 rounded border border-border bg-card tabular-nums">
+            直接 {inquiryStats.total - inquiryStats.adConvs}
+          </span>
+          {inquiryStats.adConvs === 0 && (
+            <span className="text-[10px] text-muted-foreground">
+              （廣告入口靠 CTWA flow 標記 — 由設定嗰日起計,歷史數據冇呢個標記）
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* 🔥 最多人查詢 Top 10(訊息內容對照商品字典;只存對照結果唔存原文) */}
+      {!loading && (inquiryStats.topBrands.length > 0 || inquiryStats.topProducts.length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Card className="border-border/40">
+            <CardContent className="p-3">
+              <h3 className="text-xs font-semibold mb-2">🔥 最多人查詢品牌 Top 10 <span className="font-normal text-muted-foreground">按對話數</span></h3>
+              <table className="w-full text-xs">
+                <tbody>
+                  {inquiryStats.topBrands.map((b, i) => (
+                    <tr key={b.name} className="border-b border-border/20">
+                      <td className="py-1 text-muted-foreground w-6 tabular-nums">{i + 1}</td>
+                      <td className="py-1 font-medium">{b.name}</td>
+                      <td className="py-1 text-right tabular-nums">{b.count} 單</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+          <Card className="border-border/40">
+            <CardContent className="p-3">
+              <h3 className="text-xs font-semibold mb-2">🔥 最多人查詢單品 <span className="font-normal text-muted-foreground">認到型號先計</span></h3>
+              {inquiryStats.topProducts.length === 0 ? (
+                <p className="text-xs text-muted-foreground py-4 text-center">未有認到型號嘅查詢</p>
+              ) : (
+                <table className="w-full text-xs">
+                  <tbody>
+                    {inquiryStats.topProducts.map((p, i) => (
+                      <tr key={p.name} className="border-b border-border/20">
+                        <td className="py-1 text-muted-foreground w-6 tabular-nums">{i + 1}</td>
+                        <td className="py-1 truncate max-w-[260px]" title={p.name}>{p.name.length > 42 ? p.name.slice(0, 42) + '…' : p.name}</td>
+                        <td className="py-1 text-right tabular-nums whitespace-nowrap">{p.count} 單</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <p className="text-[10px] text-muted-foreground mt-2">* 由訊息文字對照商品字典(只存對照結果,唔存訊息原文);「呢個幾錢」呢類認唔到嘅唔入榜</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       <ChartCard title="每日 總銷售 vs 廣告費 vs 客服查詢" subtitle="Daily Total Sales vs Ad Spend vs Inquiries" note="* 總銷售 = 線上 Shopify + 實體 BC 車房店(不含車房維修)。查詢 = SleekFlow 每日 distinct 對話數。實體零售多數非廣告驅動,故以「廣告成本佔比」睇整體強度;上方「廣告佔比率」卡為線上 ROAS,相對可歸因。非逐單歸因。">
         <ResponsiveContainer width="100%" height={300}>

@@ -6,3 +6,4 @@ dist/
 *.jpg
 !client/src/assets/*.jpg
 !client/public/*.jpg
+__pycache__/
