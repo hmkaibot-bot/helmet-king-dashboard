@@ -1,0 +1,42 @@
+name: SleekFlow Inquiry Sync
+
+# 每日拉 SleekFlow 對話+訊息 → inquiry_events(真 id、IG/FB 都有、商品對照)。
+# webhook 負責即日即時計數;呢個 job 每晚用 API 真數對賬取代(synth 行剷走,
+# ctwa 廣告入口標記過戶)。API key 讀 app_config(SLEEKFLOW_API_KEY),
+# 唔使加新 GitHub secret。
+
+on:
+  schedule:
+    # 每天 HKT 凌晨 02:20 = UTC 18:20(前一天)— 跟大隊批次錯開
+    - cron: "20 18 * * *"
+  workflow_dispatch:
+    inputs:
+      days_back:
+        description: "How many days back to sync"
+        required: false
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet requests
+
+      - name: Sync SleekFlow inquiries
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DAYS_BACK: ${{ github.event.inputs.days_back || '3' }}
+        run: python scripts/sleekflow_sync.py
