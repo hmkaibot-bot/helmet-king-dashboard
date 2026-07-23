@@ -32,6 +32,8 @@ interface Normalized {
   direction: 'inbound' | 'outbound';
   timestamp: string | null;
   source: string | null; // 'ctwa' = 經 Meta 廣告(Click-to-WhatsApp)入嚟;null = 直接
+  business: string | null; // 'retail' | '26king' | 'rental' — 邊盤生意嘅查詢
+  channelIdentityId: string | null; // 邊條線(WhatsApp 號碼 / IG account id)
 }
 
 // SleekFlow webhook payload 欄位名各版本有出入 — 對映集中一處,方便日後照 payload 調整
@@ -53,6 +55,10 @@ function normalize(b: any): Normalized {
         : 'inbound',
     timestamp: msg?.createdAt ?? msg?.timestamp ?? b?.createdAt ?? null,
     source: String(b?.source ?? msg?.source ?? '').toLowerCase() || null,
+    // Flow Builder 條 flow 只掛零售 Main WhatsApp → 預設 retail;payload 有明示就跟 payload
+    business: String(b?.business ?? msg?.business ?? '').toLowerCase() || 'retail',
+    channelIdentityId:
+      String(msg?.channelIdentityId ?? b?.channelIdentityId ?? '') || null,
   };
 }
 
@@ -104,6 +110,8 @@ export default async function handler(req: any, res: any) {
         p_team: e.team,
         p_occurred_at: e.timestamp,
         p_source: e.source,
+        p_business: e.business,
+        p_channel_identity_id: e.channelIdentityId,
       }),
     });
     if (!r.ok) {

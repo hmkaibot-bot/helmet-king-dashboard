@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
 import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
+import { campaignBusiness, isRetailInquiry, type Business } from '@/lib/business-filter';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -60,6 +61,16 @@ export default function MarketingPage() {
   const [marselloCustomers, setMarselloCustomers] = useState<any[]>([]);
   // SleekFlow 客服查詢事件(webhook 落 inquiry_events;只有 metadata 冇訊息內容)
   const [inquiries, setInquiries] = useState<any[]>([]);
+  // campaign × 日成效(GitHub Actions 每晚同步)— 零售模式要逐 campaign 加總先分到業務
+  const [campaignDaily, setCampaignDaily] = useState<any[]>([]);
+  // 🪖 淨睇零售(預設開;戶口同時孭 26King 賣車/租車廣告,零售以外全部隱藏)
+  const [retailOnly, setRetailOnly] = useState(() => {
+    try { return localStorage.getItem('mkt_retail_only') !== '0'; } catch { return true; }
+  });
+  const toggleRetailOnly = (v: boolean) => {
+    setRetailOnly(v);
+    try { localStorage.setItem('mkt_retail_only', v ? '1' : '0'); } catch { /* ignore */ }
+  };
 
   // Campaign Performance state
   const [campaigns, setCampaigns] = useState<any[]>([]);
@@ -76,14 +87,15 @@ export default function MarketingPage() {
     async function load() {
       setLoading(true);
       try {
-        const [ads, orders, retail, marsello, inq] = await Promise.all([
+        const [ads, orders, retail, marsello, inq, campDaily] = await Promise.all([
           queryWithDateRange('meta_ad_insights', 'date,spend,impressions,clicks,reach,cpm,cpc,ctr', 'date', bounds),
           queryWithDateRange('shopify_orders', 'created_at,total_price,financial_status,cancelled_at', 'created_at', bounds),
           // 實體零售 = BC 車房店 (CARSHOP),不含車房維修 (GARAGE)。同 overview「零售 Retail」口徑一致。
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
           queryAll('marsello_customers', 'id,created_at,last_seen,tier_name,subscribed'),
           // SleekFlow 查詢(唔 select 電話 — 呢頁用唔到,少擺 PII 喺前端)
-          queryWithDateRange('inquiry_events', 'message_id,conversation_id,contact_id,channel,occurred_at,matched_brand,matched_title,source', 'occurred_at', bounds),
+          queryWithDateRange('inquiry_events', 'message_id,conversation_id,contact_id,channel,occurred_at,matched_brand,matched_title,source,business', 'occurred_at', bounds),
+          queryWithDateRange('meta_campaign_daily', 'campaign_id,date,spend,impressions,clicks,conversations', 'date', bounds),
         ]);
         if (cancelled) return;
 
@@ -99,13 +111,15 @@ export default function MarketingPage() {
         setRetailRevByDay(retailDayMap);
         setMarselloCustomers(marsello);
         setInquiries(inq);
+        setCampaignDaily(campDaily);
       } catch (e) { console.error('Marketing error:', e); } finally { if (!cancelled) setLoading(false); }
     }
     load();
     return () => { cancelled = true; };
   }, [bounds]);
 
-  // Load meta_campaigns
+  // Load meta_campaigns(全表 — 冇 90 日支出嘅都要,business 對照 campaign_daily 用)
+  const [allCampaignRows, setAllCampaignRows] = useState<any[]>([]);
   useEffect(() => {
     let cancelled = false;
     async function loadCampaigns() {
@@ -114,22 +128,115 @@ export default function MarketingPage() {
         const { data, error } = await supabase
           .from('meta_campaigns')
           .select('*')
-          .gt('spend_90d', 0)
           .order('spend_90d', { ascending: false })
           .limit(2000);
         if (cancelled) return;
         if (error) { console.error('Campaigns error:', error); setCampaigns([]); return; }
-        setCampaigns((data || []).map(computeCampaignFields));
+        setAllCampaignRows(data || []);
+        setCampaigns((data || []).filter((c: any) => (parseFloat(c.spend_90d) || 0) > 0).map(computeCampaignFields));
       } catch (e) { console.error('Campaigns fetch error:', e); } finally { if (!cancelled) setCampaignsLoading(false); }
     }
     loadCampaigns();
     return () => { cancelled = true; };
   }, []);
 
+  /* ── 🪖 業務分流:campaign → 零售 / 非零售(26King 賣車·租車) ── */
+  // 有效業務 = DB override 優先,冇就按名稱關鍵字自動分
+  const bizById = useMemo(() => {
+    const m: Record<string, Business> = {};
+    for (const c of allCampaignRows) m[String(c.campaign_id)] = campaignBusiness(c);
+    return m;
+  }, [allCampaignRows]);
+
+  // 撳活動表個業務 chip 反轉分類 — override 寫入 DB,以後都記得
+  const [savingBizId, setSavingBizId] = useState<string | null>(null);
+  async function flipCampaignBusiness(c: any, ev: React.MouseEvent) {
+    ev.stopPropagation(); // 唔好順手打開 drill-down 彈窗
+    const next: Business = bizById[String(c.campaign_id)] === 'retail' ? 'nonretail' : 'retail';
+    setSavingBizId(String(c.campaign_id));
+    try {
+      const { error } = await supabase.from('meta_campaigns').update({ business: next }).eq('campaign_id', c.campaign_id);
+      if (error) throw error;
+      setAllCampaignRows((rows) => rows.map((r) => (r.campaign_id === c.campaign_id ? { ...r, business: next } : r)));
+      setCampaigns((rows) => rows.map((r) => (r.campaign_id === c.campaign_id ? { ...r, business: next } : r)));
+    } catch (e) {
+      console.error('flip business error:', e);
+    } finally {
+      setSavingBizId(null);
+    }
+  }
+
+  // 零售模式下頁面用嘅 campaign / 查詢子集
+  const viewCampaigns = useMemo(
+    () => (retailOnly ? campaigns.filter((c) => bizById[String(c.campaign_id)] !== 'nonretail') : campaigns),
+    [campaigns, retailOnly, bizById]
+  );
+  const hiddenCampaignCount = campaigns.length - viewCampaigns.length;
+  const viewInquiries = useMemo(
+    () => (retailOnly ? inquiries.filter(isRetailInquiry) : inquiries),
+    [inquiries, retailOnly]
+  );
+
+  /* 零售模式廣告日數:meta_ad_insights 係成個戶口(零售+賣車+租車撈埋),
+     零售要由 meta_campaign_daily 逐 campaign 加總。未識別 campaign(對照唔到)唔計入零售。 */
+  const retailAdByDay = useMemo(() => {
+    const m: Record<string, { spend: number; impressions: number; clicks: number }> = {};
+    for (const d of campaignDaily) {
+      if (bizById[String(d.campaign_id)] !== 'retail') continue;
+      const day = String(d.date || '').slice(0, 10);
+      if (!day) continue;
+      const row = (m[day] = m[day] || { spend: 0, impressions: 0, clicks: 0 });
+      row.spend += parseFloat(d.spend) || 0;
+      row.impressions += parseInt(d.impressions) || 0;
+      row.clicks += parseInt(d.clicks) || 0;
+    }
+    return m;
+  }, [campaignDaily, bizById]);
+
+  /* ── Meta 廣告日 series(模式感知)──
+     全部業務:meta_ad_insights(戶口級,n8n 每晚同步,歷史最齊)。
+     淨睇零售:meta_campaign_daily 零售 campaign 加總(campaign 級先分到業務;
+     覆蓋範圍由每日同步 job 開始回填,太舊嘅日子可能未有數)。 */
+  const adSeries = useMemo(() => {
+    if (retailOnly) {
+      return Object.entries(retailAdByDay)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, v]) => ({
+          date,
+          spend: v.spend,
+          impressions: v.impressions,
+          clicks: v.clicks,
+          ctr: v.impressions > 0 ? (v.clicks / v.impressions) * 100 : 0,
+          cpc: v.clicks > 0 ? v.spend / v.clicks : 0,
+          cpm: v.impressions > 0 ? (v.spend / v.impressions) * 1000 : 0,
+        }));
+    }
+    const byDay: Record<string, { spend: number; impressions: number; clicks: number }> = {};
+    for (const a of adInsights) {
+      const day = String(a.date || '').slice(0, 10);
+      if (!day) continue;
+      const row = (byDay[day] = byDay[day] || { spend: 0, impressions: 0, clicks: 0 });
+      row.spend += parseFloat(a.spend) || 0;
+      row.impressions += parseInt(a.impressions) || 0;
+      row.clicks += parseInt(a.clicks) || 0;
+    }
+    return Object.entries(byDay)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, v]) => ({
+        date,
+        spend: v.spend,
+        impressions: v.impressions,
+        clicks: v.clicks,
+        ctr: v.impressions > 0 ? (v.clicks / v.impressions) * 100 : 0,
+        cpc: v.clicks > 0 ? v.spend / v.clicks : 0,
+        cpm: v.impressions > 0 ? (v.spend / v.impressions) * 1000 : 0,
+      }));
+  }, [retailOnly, retailAdByDay, adInsights]);
+
   /* ── Existing KPIs ── */
-  const totalSpend = adInsights.reduce((s, a) => s + (parseFloat(a.spend) || 0), 0);
-  const totalImpressions = adInsights.reduce((s, a) => s + (parseInt(a.impressions) || 0), 0);
-  const totalClicks = adInsights.reduce((s, a) => s + (parseInt(a.clicks) || 0), 0);
+  const totalSpend = adSeries.reduce((s, a) => s + a.spend, 0);
+  const totalImpressions = adSeries.reduce((s, a) => s + a.impressions, 0);
+  const totalClicks = adSeries.reduce((s, a) => s + a.clicks, 0);
   const avgCPC = totalClicks > 0 ? totalSpend / totalClicks : 0;
   const avgCTR = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
   const totalShopifyRev = Object.values(shopifyRevByDay).reduce((s, v) => s + v, 0);
@@ -152,7 +259,7 @@ export default function MarketingPage() {
     const contactSet = new Set<string>();
     const byChannel: Record<string, Set<string>> = { whatsapp: new Set(), instagram: new Set(), facebook: new Set(), other: new Set() };
     const byDay: Record<string, Set<string>> = {};
-    for (const e of inquiries) {
+    for (const e of viewInquiries) {
       const conv = String(e.conversation_id || e.message_id);
       convSet.add(conv);
       if (e.contact_id) contactSet.add(String(e.contact_id));
@@ -168,7 +275,7 @@ export default function MarketingPage() {
     const adConvSet = new Set<string>();
     const brandConv: Record<string, Set<string>> = {};
     const prodConv: Record<string, Set<string>> = {};
-    for (const e of inquiries) {
+    for (const e of viewInquiries) {
       const conv = String(e.conversation_id || e.message_id);
       if (e.source === 'ctwa') adConvSet.add(conv);
       if (e.matched_brand) (brandConv[e.matched_brand] = brandConv[e.matched_brand] || new Set()).add(conv);
@@ -187,25 +294,25 @@ export default function MarketingPage() {
       topBrands: topOf(brandConv),
       topProducts: topOf(prodConv),
     };
-  }, [inquiries]);
+  }, [viewInquiries]);
   const costPerInquiry = inquiryStats.total > 0 ? totalSpend / inquiryStats.total : 0;
 
   const salesVsSpend = useMemo(() => {
     const adMap: Record<string, number> = {};
-    adInsights.forEach((a) => { adMap[a.date] = (adMap[a.date] || 0) + (parseFloat(a.spend) || 0); });
-    const allDays = new Set([...adInsights.map((a) => a.date), ...Object.keys(shopifyRevByDay), ...Object.keys(retailRevByDay), ...Object.keys(inquiryStats.dayCounts)]);
+    adSeries.forEach((a) => { adMap[a.date] = a.spend; });
+    const allDays = new Set([...adSeries.map((a) => a.date), ...Object.keys(shopifyRevByDay), ...Object.keys(retailRevByDay), ...Object.keys(inquiryStats.dayCounts)]);
     return Array.from(allDays).sort().map((d) => {
       const online = shopifyRevByDay[d] || 0;
       const retail = retailRevByDay[d] || 0;
       return { date: d.slice(5), online, retail, total: online + retail, spend: adMap[d] || 0, inquiries: inquiryStats.dayCounts[d] || 0 };
     });
-  }, [adInsights, shopifyRevByDay, retailRevByDay, inquiryStats]);
+  }, [adSeries, shopifyRevByDay, retailRevByDay, inquiryStats]);
 
   // P3: 每日貢獻表 — 完整日期、廣告成本佔比,由新到舊
   const dailyRows = useMemo(() => {
     const adMap: Record<string, number> = {};
-    adInsights.forEach((a) => { adMap[a.date] = (adMap[a.date] || 0) + (parseFloat(a.spend) || 0); });
-    const allDays = new Set([...adInsights.map((a) => a.date), ...Object.keys(shopifyRevByDay), ...Object.keys(retailRevByDay), ...Object.keys(inquiryStats.dayCounts)]);
+    adSeries.forEach((a) => { adMap[a.date] = a.spend; });
+    const allDays = new Set([...adSeries.map((a) => a.date), ...Object.keys(shopifyRevByDay), ...Object.keys(retailRevByDay), ...Object.keys(inquiryStats.dayCounts)]);
     return Array.from(allDays).filter(Boolean).sort((a, b) => b.localeCompare(a)).map((d) => {
       const online = shopifyRevByDay[d] || 0;
       const retail = retailRevByDay[d] || 0;
@@ -213,11 +320,11 @@ export default function MarketingPage() {
       const total = online + retail;
       return { date: d, online, retail, total, spend, inquiries: inquiryStats.dayCounts[d] || 0, costPct: total > 0 ? (spend / total) * 100 : 0 };
     });
-  }, [adInsights, shopifyRevByDay, retailRevByDay, inquiryStats]);
+  }, [adSeries, shopifyRevByDay, retailRevByDay, inquiryStats]);
 
-  const ctrTrend = adInsights.sort((a, b) => a.date.localeCompare(b.date)).map((a) => ({ date: a.date.slice(5), ctr: parseFloat(a.ctr) || 0 }));
-  const costTrend = adInsights.sort((a, b) => a.date.localeCompare(b.date)).map((a) => ({ date: a.date.slice(5), cpm: parseFloat(a.cpm) || 0, cpc: parseFloat(a.cpc) || 0 }));
-  const impClickTrend = adInsights.sort((a, b) => a.date.localeCompare(b.date)).map((a) => ({ date: a.date.slice(5), impressions: parseInt(a.impressions) || 0, clicks: parseInt(a.clicks) || 0 }));
+  const ctrTrend = adSeries.map((a) => ({ date: a.date.slice(5), ctr: a.ctr }));
+  const costTrend = adSeries.map((a) => ({ date: a.date.slice(5), cpm: a.cpm, cpc: a.cpc }));
+  const impClickTrend = adSeries.map((a) => ({ date: a.date.slice(5), impressions: a.impressions, clicks: a.clicks }));
 
   const ninetyAgo = new Date(Date.now() - 90 * 86400000).toISOString();
   const activeMembers = marselloCustomers.filter((c) => c.last_seen && c.last_seen >= ninetyAgo).length;
@@ -238,7 +345,7 @@ export default function MarketingPage() {
 
   /* ── Campaign Performance computations ── */
   const filteredCampaigns = useMemo(() => {
-    let result = [...campaigns];
+    let result = [...viewCampaigns];
 
     // Status filter
     if (statusFilter === 'ACTIVE') result = result.filter(c => c.status === 'ACTIVE');
@@ -263,21 +370,21 @@ export default function MarketingPage() {
       }); break;
     }
     return result;
-  }, [campaigns, statusFilter, perfFilter, sortBy]);
+  }, [viewCampaigns, statusFilter, perfFilter, sortBy]);
 
   // Reset page when filters change
-  useEffect(() => { setPage(0); }, [statusFilter, perfFilter, sortBy]);
+  useEffect(() => { setPage(0); }, [statusFilter, perfFilter, sortBy, retailOnly]);
 
   const totalPages = Math.ceil(filteredCampaigns.length / PAGE_SIZE);
   const paginatedCampaigns = filteredCampaigns.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   /* ── Campaign Summary KPIs ── */
   const campSummary = useMemo(() => {
-    const withSpend = campaigns.length;
-    const withPurchases = campaigns.filter(c => c.purchases > 0).length;
-    const totalPurchases = campaigns.reduce((s, c) => s + c.purchases, 0);
-    const totalAdSpend = campaigns.reduce((s, c) => s + c.spend, 0);
-    const purchaseCampaigns = campaigns.filter(c => c.purchases > 0);
+    const withSpend = viewCampaigns.length;
+    const withPurchases = viewCampaigns.filter(c => c.purchases > 0).length;
+    const totalPurchases = viewCampaigns.reduce((s, c) => s + c.purchases, 0);
+    const totalAdSpend = viewCampaigns.reduce((s, c) => s + c.spend, 0);
+    const purchaseCampaigns = viewCampaigns.filter(c => c.purchases > 0);
     const bestRoas = purchaseCampaigns.length > 0
       ? purchaseCampaigns.reduce((best, c) => c.roas > best.roas ? c : best, purchaseCampaigns[0])
       : null;
@@ -285,11 +392,11 @@ export default function MarketingPage() {
       ? purchaseCampaigns.reduce((s, c) => s + (c.cpa || 0), 0) / purchaseCampaigns.length
       : 0;
     return { withSpend, withPurchases, totalPurchases, totalAdSpend, bestRoas, avgCpa };
-  }, [campaigns]);
+  }, [viewCampaigns]);
 
   /* ── Section 2: ROAS & Ad Efficiency ── */
   const roasSection = useMemo(() => {
-    const purchaseCampaigns = campaigns.filter(c => c.purchases > 0);
+    const purchaseCampaigns = viewCampaigns.filter(c => c.purchases > 0);
     const totalPurchases = purchaseCampaigns.reduce((s, c) => s + c.purchases, 0);
     const totalSpendPurch = purchaseCampaigns.reduce((s, c) => s + c.spend, 0);
     const overallRoas = totalSpendPurch > 0 ? (totalPurchases * AOV) / totalSpendPurch : 0;
@@ -300,7 +407,7 @@ export default function MarketingPage() {
       ? purchaseCampaigns.reduce((best, c) => c.roas > best.roas ? c : best, purchaseCampaigns[0])
       : null;
 
-    const zeroPurchSpenders = campaigns.filter(c => c.purchases === 0).sort((a, b) => b.spend - a.spend);
+    const zeroPurchSpenders = viewCampaigns.filter(c => c.purchases === 0).sort((a, b) => b.spend - a.spend);
     const worstSpender = zeroPurchSpenders.length > 0 ? zeroPurchSpenders[0] : null;
 
     // Top 10 by purchases for bar chart
@@ -322,10 +429,10 @@ export default function MarketingPage() {
     const shouldRedo = purchaseCampaigns.filter(c => c.purchases >= 5).sort((a, b) => b.purchases - a.purchases);
 
     // Avoid list
-    const avoid = campaigns.filter(c => c.spend > 500 && c.purchases === 0 && c.ctr < 3).sort((a, b) => b.spend - a.spend);
+    const avoid = viewCampaigns.filter(c => c.spend > 500 && c.purchases === 0 && c.ctr < 3).sort((a, b) => b.spend - a.spend);
 
     return { overallRoas, targetRoas, roasProgress, bestCampaign, worstSpender, top10, top15, shouldRedo, avoid };
-  }, [campaigns]);
+  }, [viewCampaigns]);
 
   /* ── Status color helper ── */
   function statusColor(status: string) {
@@ -343,9 +450,37 @@ export default function MarketingPage() {
 
   return (
     <div className="space-y-4">
+      {/* ── 🪖 業務切換:淨睇零售 vs 全部(戶口同時孭 26King 賣車/租車廣告) ── */}
+      <div className="flex items-center gap-2 flex-wrap" data-testid="business-toggle">
+        <button
+          onClick={() => toggleRetailOnly(true)}
+          data-testid="toggle-retail-only"
+          className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${retailOnly ? 'bg-primary text-primary-foreground border-primary' : 'border-border/60 text-muted-foreground hover:text-foreground hover:border-border'}`}
+        >
+          🪖 淨睇零售
+        </button>
+        <button
+          onClick={() => toggleRetailOnly(false)}
+          data-testid="toggle-all-business"
+          className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${!retailOnly ? 'bg-primary text-primary-foreground border-primary' : 'border-border/60 text-muted-foreground hover:text-foreground hover:border-border'}`}
+        >
+          全部業務
+        </button>
+        {retailOnly && !campaignsLoading && hiddenCampaignCount > 0 && (
+          <span className="text-[11px] text-muted-foreground">
+            已隱藏 {hiddenCampaignCount} 個非零售活動（26King 賣車／租車）· 查詢亦只計零售線
+          </span>
+        )}
+        {retailOnly && (
+          <span className="text-[10px] text-muted-foreground ml-auto">
+            * 零售廣告數字按 campaign 分類逐日加總；分類唔啱可以喺活動表撳「業務」chip 反轉
+          </span>
+        )}
+      </div>
+
       {/* ── Existing Meta KPIs ── */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <KpiCard title="Meta 支出" subtitle="Spend" value={formatCurrency(totalSpend)} icon={DollarSign} loading={loading} testId="kpi-spend" />
+        <KpiCard title={retailOnly ? 'Meta 支出（零售）' : 'Meta 支出'} subtitle="Spend" value={formatCurrency(totalSpend)} icon={DollarSign} loading={loading} testId="kpi-spend" />
         <KpiCard title="曝光量" subtitle="Impressions" value={formatNumber(totalImpressions)} icon={Eye} loading={loading} testId="kpi-imp" />
         <KpiCard title="點擊" subtitle="Clicks" value={formatNumber(totalClicks)} icon={MousePointer} loading={loading} testId="kpi-clicks" />
         <KpiCard title="CPC" subtitle="Avg" value={`HK$${avgCPC.toFixed(2)}`} icon={BarChart3} loading={loading} testId="kpi-cpc" />
@@ -684,6 +819,7 @@ export default function MarketingPage() {
                     <tr className="border-b border-border/40 bg-muted/30">
                       <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">評分</th>
                       <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">活動名稱 Campaign</th>
+                      <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">業務</th>
                       <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">狀態</th>
                       <th className="text-right px-3 py-2.5 font-medium text-muted-foreground">花費 Spend</th>
                       <th className="text-right px-3 py-2.5 font-medium text-muted-foreground">曝光 Imp</th>
@@ -714,6 +850,22 @@ export default function MarketingPage() {
                           >
                             {c.campaign_name?.length > 35 ? c.campaign_name.slice(0, 35) + '…' : (c.campaign_name || '—')}
                           </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          {/* 業務 chip — 撳一下反轉零售/非零售(override 入 DB;分類錯先需要撳) */}
+                          <button
+                            onClick={(ev) => flipCampaignBusiness(c, ev)}
+                            disabled={savingBizId === String(c.campaign_id)}
+                            title="撳嚟反轉零售/非零售分類(會記住)"
+                            data-testid={`biz-chip-${i}`}
+                            className={`px-1.5 py-0.5 rounded text-[10px] border whitespace-nowrap transition-colors disabled:opacity-40 ${
+                              bizById[String(c.campaign_id)] === 'nonretail'
+                                ? 'border-orange-500/40 bg-orange-500/10 text-orange-300 hover:border-orange-400'
+                                : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:border-emerald-400'
+                            }`}
+                          >
+                            {savingBizId === String(c.campaign_id) ? '…' : bizById[String(c.campaign_id)] === 'nonretail' ? '非零售' : '零售'}
+                          </button>
                         </td>
                         <td className="px-3 py-2">
                           <span className={`${statusColor(c.status)} font-medium`}>

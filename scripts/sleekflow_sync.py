@@ -34,6 +34,19 @@ MAX_CONV_PAGES = 40
 CONV_PAGE_SIZE = 100
 MSG_PAGE_SIZE = 200
 
+# channel 身份 → 業務(老闆「淨係睇零售」用)。同一個 SleekFlow workspace 內
+# 三盤生意各有自己條線 — 用返條線分業務最準(唔使靠估內容)。
+# 可用 app_config key SLEEKFLOW_CHANNEL_BUSINESS(JSON object)補充/覆蓋。
+CHANNEL_BUSINESS = {
+    "85263858830": "retail",   # 頭盔王 Main WhatsApp(helmetking.com 官網嗰條)
+    "85262039357": "26king",   # 26King 賣車/回收/寄賣 WhatsApp
+    "85259614354": "rental",   # Rentalbike 租車 WhatsApp
+    "17841401978965150": "retail",  # IG @helmetking_hk
+    "17841446002032010": "26king",  # IG @26kinghk
+    "110139034178233": "26king",    # IG @26kinghk 嘅 FB page id(部分訊息用呢個做 identity)
+    "1607355899494029": "retail",   # FB 頭盔王 Helmetking.com page
+}
+
 
 def fail(msg: str) -> None:
     print(f"ERROR: {msg}", file=sys.stderr)
@@ -62,6 +75,24 @@ def sleekflow_key() -> str:
         return str(rows[0]["value"])
     fail("搵唔到 SLEEKFLOW_API_KEY(env 同 app_config 都冇)")
     return ""
+
+
+def channel_business_map() -> dict:
+    """內置對照 + app_config SLEEKFLOW_CHANNEL_BUSINESS(JSON)覆蓋 — 新開線唔使改 code。"""
+    merged = dict(CHANNEL_BUSINESS)
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/app_config",
+        params={"key": "eq.SLEEKFLOW_CHANNEL_BUSINESS", "select": "value"},
+        headers=sb_headers(),
+        timeout=30,
+    )
+    rows = r.json() if r.status_code == 200 else []
+    if rows and rows[0].get("value"):
+        try:
+            merged.update({str(k): str(v) for k, v in json.loads(rows[0]["value"]).items()})
+        except (ValueError, AttributeError):
+            print("WARN: app_config SLEEKFLOW_CHANNEL_BUSINESS 唔係有效 JSON,用內置對照")
+    return merged
 
 
 def sf_get(key: str, path: str, params: dict) -> list:
@@ -104,7 +135,8 @@ def build_dictionary():
 
     brands = sorted({str(p["vendor"]).strip().upper() for p in active if p.get("vendor")})
     # 通用英文字做「品牌」會亂中(FULL FACE 嘅 FULL、PHONE CASE 嘅 CASE)— 剔走
-    stop = {"FULL", "CASE", "PART", "PARTS", "SET", "NEW", "GENERAL"}
+    # 車牌/OVER/TBC:vendor 值撞正常用語(講車牌照、英文 over)一樣要剔
+    stop = {"FULL", "CASE", "PART", "PARTS", "SET", "NEW", "GENERAL", "OVER", "TBC", "車牌"}
     # 短品牌(<=3 字)要 word-boundary 先算中 — 免「K」「Z」亂中
     brand_res = []
     for b in brands:
@@ -157,6 +189,7 @@ def main() -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(days=DAYS_BACK)
     cutoff_iso = cutoff.isoformat()
     brand_res, model_tokens = build_dictionary()
+    biz_map = channel_business_map()
 
     # 1. 對話(modifiedAt 新→舊;過咗 cutoff 停)
     convs: list = []
@@ -171,12 +204,14 @@ def main() -> None:
     recent = [c for c in convs if str(c.get("modifiedAt") or c.get("updatedTime") or "") >= cutoff_iso]
     print(f"對話:掃咗 {len(convs)},{DAYS_BACK} 日內有活動 {len(recent)}")
 
-    # 2+3. 逐對話拉訊息 → inbound → 對照
+    # 2+3. 逐對話拉訊息 → inbound → 對照 + 業務歸屬(邊條線 = 邊盤生意)
     rows: list = []
     matched_brand_n = matched_prod_n = 0
+    unknown_idents: dict = {}
     for c in recent:
         conv_id = c.get("conversationId")
         up = c.get("userProfile") or {}
+        conv_ident = str(c.get("lastChannelIdentityId") or "")
         msgs = sf_get(key, f"conversation/message/{conv_id}", {"offset": 0, "limit": MSG_PAGE_SIZE})
         for m in msgs:
             created = str(m.get("createdAt") or "")
@@ -184,12 +219,18 @@ def main() -> None:
                 continue
             if m.get("isSentFromSleekflow") is True:
                 continue  # 店方覆,唔計
+            if str(m.get("channel") or "") == "note":
+                continue  # 同事內部 note,唔係客人查詢
             text = str(m.get("messageContent") or "") if str(m.get("messageType")) == "text" else ""
             brand, pid, title = match_text(text, brand_res, model_tokens)
             if brand:
                 matched_brand_n += 1
             if pid:
                 matched_prod_n += 1
+            ident = str(m.get("channelIdentityId") or "") or conv_ident
+            business = biz_map.get(ident)
+            if ident and not business:
+                unknown_idents[ident] = unknown_idents.get(ident, 0) + 1
             rows.append(
                 {
                     "message_id": str(m.get("messageUniqueID") or m.get("id") or ""),
@@ -201,10 +242,17 @@ def main() -> None:
                     "matched_brand": brand,
                     "matched_product_id": pid,
                     "matched_title": title,
+                    "channel_identity_id": ident or None,
+                    "business": business,
                 }
             )
     rows = [r for r in rows if r["message_id"]]
-    print(f"inbound 訊息:{len(rows)} | 認到品牌 {matched_brand_n} | 認到單品 {matched_prod_n}")
+    biz_n = {}
+    for r_ in rows:
+        biz_n[r_["business"] or "unknown"] = biz_n.get(r_["business"] or "unknown", 0) + 1
+    print(f"inbound 訊息:{len(rows)} | 認到品牌 {matched_brand_n} | 認到單品 {matched_prod_n} | 業務分佈 {biz_n}")
+    if unknown_idents:
+        print(f"WARN: 未識別 channel 線(要加入對照/app_config SLEEKFLOW_CHANNEL_BUSINESS):{unknown_idents}")
 
     # 4. upsert(batch 500)
     for i in range(0, len(rows), 500):
@@ -255,6 +303,14 @@ def main() -> None:
             timeout=60,
         )
     print(f"對賬:剷走 {len(synth)} 行 synth(webhook 即時數),ctwa 過戶 {len(ctwa_pairs)} 對")
+
+    # 歷史清理:早期版本將同事內部 note 當咗查詢入咗庫 — 剷走(而家唔會再寫,呢步好快變 no-op)
+    requests.delete(
+        f"{SUPABASE_URL}/rest/v1/inquiry_events",
+        params={"channel": "eq.note"},
+        headers=sb_headers(),
+        timeout=60,
+    )
 
 
 if __name__ == "__main__":
