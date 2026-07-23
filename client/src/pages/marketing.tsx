@@ -58,6 +58,8 @@ export default function MarketingPage() {
   const [shopifyRevByDay, setShopifyRevByDay] = useState<Record<string, number>>({});
   const [retailRevByDay, setRetailRevByDay] = useState<Record<string, number>>({});
   const [marselloCustomers, setMarselloCustomers] = useState<any[]>([]);
+  // SleekFlow 客服查詢事件(webhook 落 inquiry_events;只有 metadata 冇訊息內容)
+  const [inquiries, setInquiries] = useState<any[]>([]);
 
   // Campaign Performance state
   const [campaigns, setCampaigns] = useState<any[]>([]);
@@ -74,12 +76,14 @@ export default function MarketingPage() {
     async function load() {
       setLoading(true);
       try {
-        const [ads, orders, retail, marsello] = await Promise.all([
+        const [ads, orders, retail, marsello, inq] = await Promise.all([
           queryWithDateRange('meta_ad_insights', 'date,spend,impressions,clicks,reach,cpm,cpc,ctr', 'date', bounds),
           queryWithDateRange('shopify_orders', 'created_at,total_price,financial_status,cancelled_at', 'created_at', bounds),
           // 實體零售 = BC 車房店 (CARSHOP),不含車房維修 (GARAGE)。同 overview「零售 Retail」口徑一致。
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
           queryAll('marsello_customers', 'id,created_at,last_seen,tier_name,subscribed'),
+          // SleekFlow 查詢(唔 select 電話 — 呢頁用唔到,少擺 PII 喺前端)
+          queryWithDateRange('inquiry_events', 'message_id,conversation_id,contact_id,channel,occurred_at', 'occurred_at', bounds),
         ]);
         if (cancelled) return;
 
@@ -94,6 +98,7 @@ export default function MarketingPage() {
         setShopifyRevByDay(dayRevMap);
         setRetailRevByDay(retailDayMap);
         setMarselloCustomers(marsello);
+        setInquiries(inq);
       } catch (e) { console.error('Marketing error:', e); } finally { if (!cancelled) setLoading(false); }
     }
     load();
@@ -139,30 +144,61 @@ export default function MarketingPage() {
   const newMembersInRange = marselloCustomers.filter((c) => { const d = c.created_at?.slice(0, 10); return d && d >= bounds.from && d <= bounds.to; }).length;
   const blendedCAC = newMembersInRange > 0 ? totalSpend / newMembersInRange : 0;
 
+  /* ── SleekFlow 客服查詢統計 ──
+     查詢量 = distinct 對話數(貼「幾多個客嚟問」;同一單對話幾條訊息計一次)。
+     日期用 occurred_at.slice(0,10) — 同本頁銷售/廣告日期切法一致,先對得埋。 */
+  const inquiryStats = useMemo(() => {
+    const convSet = new Set<string>();
+    const contactSet = new Set<string>();
+    const byChannel: Record<string, Set<string>> = { whatsapp: new Set(), instagram: new Set(), facebook: new Set(), other: new Set() };
+    const byDay: Record<string, Set<string>> = {};
+    for (const e of inquiries) {
+      const conv = String(e.conversation_id || e.message_id);
+      convSet.add(conv);
+      if (e.contact_id) contactSet.add(String(e.contact_id));
+      const ch = String(e.channel || '');
+      const bucket = ch.includes('whatsapp') ? 'whatsapp' : ch.includes('instagram') ? 'instagram' : ch.includes('facebook') || ch.includes('messenger') ? 'facebook' : 'other';
+      byChannel[bucket].add(conv);
+      const d = String(e.occurred_at || '').slice(0, 10);
+      if (d) { byDay[d] = byDay[d] || new Set(); byDay[d].add(conv); }
+    }
+    const dayCounts: Record<string, number> = {};
+    Object.entries(byDay).forEach(([d, s]) => { dayCounts[d] = s.size; });
+    return {
+      total: convSet.size,
+      contacts: contactSet.size,
+      whatsapp: byChannel.whatsapp.size,
+      instagram: byChannel.instagram.size,
+      facebook: byChannel.facebook.size,
+      dayCounts,
+    };
+  }, [inquiries]);
+  const costPerInquiry = inquiryStats.total > 0 ? totalSpend / inquiryStats.total : 0;
+
   const salesVsSpend = useMemo(() => {
     const adMap: Record<string, number> = {};
     adInsights.forEach((a) => { adMap[a.date] = (adMap[a.date] || 0) + (parseFloat(a.spend) || 0); });
-    const allDays = new Set([...adInsights.map((a) => a.date), ...Object.keys(shopifyRevByDay), ...Object.keys(retailRevByDay)]);
+    const allDays = new Set([...adInsights.map((a) => a.date), ...Object.keys(shopifyRevByDay), ...Object.keys(retailRevByDay), ...Object.keys(inquiryStats.dayCounts)]);
     return Array.from(allDays).sort().map((d) => {
       const online = shopifyRevByDay[d] || 0;
       const retail = retailRevByDay[d] || 0;
-      return { date: d.slice(5), online, retail, total: online + retail, spend: adMap[d] || 0 };
+      return { date: d.slice(5), online, retail, total: online + retail, spend: adMap[d] || 0, inquiries: inquiryStats.dayCounts[d] || 0 };
     });
-  }, [adInsights, shopifyRevByDay, retailRevByDay]);
+  }, [adInsights, shopifyRevByDay, retailRevByDay, inquiryStats]);
 
   // P3: 每日貢獻表 — 完整日期、廣告成本佔比,由新到舊
   const dailyRows = useMemo(() => {
     const adMap: Record<string, number> = {};
     adInsights.forEach((a) => { adMap[a.date] = (adMap[a.date] || 0) + (parseFloat(a.spend) || 0); });
-    const allDays = new Set([...adInsights.map((a) => a.date), ...Object.keys(shopifyRevByDay), ...Object.keys(retailRevByDay)]);
+    const allDays = new Set([...adInsights.map((a) => a.date), ...Object.keys(shopifyRevByDay), ...Object.keys(retailRevByDay), ...Object.keys(inquiryStats.dayCounts)]);
     return Array.from(allDays).filter(Boolean).sort((a, b) => b.localeCompare(a)).map((d) => {
       const online = shopifyRevByDay[d] || 0;
       const retail = retailRevByDay[d] || 0;
       const spend = adMap[d] || 0;
       const total = online + retail;
-      return { date: d, online, retail, total, spend, costPct: total > 0 ? (spend / total) * 100 : 0 };
+      return { date: d, online, retail, total, spend, inquiries: inquiryStats.dayCounts[d] || 0, costPct: total > 0 ? (spend / total) * 100 : 0 };
     });
-  }, [adInsights, shopifyRevByDay, retailRevByDay]);
+  }, [adInsights, shopifyRevByDay, retailRevByDay, inquiryStats]);
 
   const ctrTrend = adInsights.sort((a, b) => a.date.localeCompare(b.date)).map((a) => ({ date: a.date.slice(5), ctr: parseFloat(a.ctr) || 0 }));
   const costTrend = adInsights.sort((a, b) => a.date.localeCompare(b.date)).map((a) => ({ date: a.date.slice(5), cpm: parseFloat(a.cpm) || 0, cpc: parseFloat(a.cpc) || 0 }));
@@ -315,16 +351,35 @@ export default function MarketingPage() {
         <KpiCard title="Blended CAC" subtitle="廣告費/新會員" value={blendedCAC > 0 ? formatCurrency(blendedCAC) : '—'} icon={Target} loading={loading} testId="kpi-blended-cac" />
       </div>
 
-      <ChartCard title="每日 總銷售 vs 廣告費" subtitle="Daily Total Sales (Online + Retail) vs Ad Spend" note="* 總銷售 = 線上 Shopify + 實體 BC 車房店(不含車房維修)。實體零售多數非廣告驅動,故以「廣告成本佔比」睇整體強度;上方「廣告佔比率」卡為線上 ROAS,相對可歸因。非逐單歸因。">
+      {/* ═══ 💬 客服查詢 SleekFlow ═══ */}
+      <h2 className="text-sm font-semibold pt-2" data-testid="section-inquiries">
+        💬 客服查詢 <span className="text-xs font-normal text-muted-foreground">SleekFlow Inquiries</span>
+      </h2>
+      {!loading && inquiries.length === 0 && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs text-amber-300">
+          未收到 SleekFlow 數據 — 要喺 SleekFlow Flow Builder 設一次 webhook(收到訊息 → HTTP Request 指去 dashboard),設定咗之後新查詢就會自動出現喺度。
+        </div>
+      )}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <KpiCard title="查詢對話" subtitle="Conversations" value={formatNumber(inquiryStats.total)} icon={MessageCircle} loading={loading} testId="kpi-inq-total" />
+        <KpiCard title="獨立客人" subtitle="Unique Contacts" value={formatNumber(inquiryStats.contacts)} icon={Target} loading={loading} testId="kpi-inq-contacts" />
+        <KpiCard title="WhatsApp" subtitle="對話" value={formatNumber(inquiryStats.whatsapp)} icon={MessageCircle} loading={loading} testId="kpi-inq-wa" />
+        <KpiCard title="Instagram" subtitle="對話" value={formatNumber(inquiryStats.instagram)} icon={MessageCircle} loading={loading} testId="kpi-inq-ig" />
+        <KpiCard title="Facebook" subtitle="對話" value={formatNumber(inquiryStats.facebook)} icon={MessageCircle} loading={loading} testId="kpi-inq-fb" />
+        <KpiCard title="每查詢廣告成本" subtitle="Spend/Inquiry" value={costPerInquiry > 0 ? formatCurrency(costPerInquiry) : '—'} icon={DollarSign} loading={loading} testId="kpi-inq-cost" />
+      </div>
+
+      <ChartCard title="每日 總銷售 vs 廣告費 vs 客服查詢" subtitle="Daily Total Sales vs Ad Spend vs Inquiries" note="* 總銷售 = 線上 Shopify + 實體 BC 車房店(不含車房維修)。查詢 = SleekFlow 每日 distinct 對話數。實體零售多數非廣告驅動,故以「廣告成本佔比」睇整體強度;上方「廣告佔比率」卡為線上 ROAS,相對可歸因。非逐單歸因。">
         <ResponsiveContainer width="100%" height={300}>
           <ComposedChart data={salesVsSpend}>
             <CartesianGrid {...GRID_STYLE} /><XAxis dataKey="date" tick={AXIS_STYLE} />
             <YAxis yAxisId="left" tick={AXIS_STYLE} tickFormatter={(v) => `${(v / 1000).toFixed(0)}K`} />
             <YAxis yAxisId="right" orientation="right" tick={AXIS_STYLE} tickFormatter={(v) => `$${v.toFixed(0)}`} />
-            <Tooltip {...TOOLTIP_STYLE} formatter={(v: number, n: string) => n === 'Ad Spend' ? [`HK$${v.toFixed(0)}`, n] : [formatCurrency(v), n]} />
+            <Tooltip {...TOOLTIP_STYLE} formatter={(v: number, n: string) => n === 'Ad Spend' ? [`HK$${v.toFixed(0)}`, n] : n === '查詢 Inquiries' ? [formatNumber(v), n] : [formatCurrency(v), n]} />
             <Area yAxisId="left" type="monotone" dataKey="online" stackId="sales" name="線上 Online" stroke={CHART_COLORS.primary} fill={CHART_COLORS.primary} fillOpacity={0.25} strokeWidth={1.5} />
             <Area yAxisId="left" type="monotone" dataKey="retail" stackId="sales" name="實體零售 Retail" stroke={CHART_COLORS.tertiary} fill={CHART_COLORS.tertiary} fillOpacity={0.25} strokeWidth={1.5} />
             <Line yAxisId="right" type="monotone" dataKey="spend" name="Ad Spend" stroke={CHART_COLORS.fifth} strokeWidth={2} dot={false} />
+            <Line yAxisId="right" type="monotone" dataKey="inquiries" name="查詢 Inquiries" stroke={CHART_COLORS.secondary} strokeWidth={2} strokeDasharray="4 2" dot={false} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
           </ComposedChart>
         </ResponsiveContainer>
@@ -343,6 +398,7 @@ export default function MarketingPage() {
                 <tr className="border-b border-border/40 bg-muted/30">
                   <th className="text-left px-3 py-2 font-medium text-muted-foreground">日期 Date</th>
                   <th className="text-right px-3 py-2 font-medium text-muted-foreground">廣告費 Spend</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">查詢 Inq</th>
                   <th className="text-right px-3 py-2 font-medium text-muted-foreground">線上 Online</th>
                   <th className="text-right px-3 py-2 font-medium text-muted-foreground">實體零售 Retail</th>
                   <th className="text-right px-3 py-2 font-medium text-muted-foreground">總銷售 Total</th>
@@ -351,14 +407,15 @@ export default function MarketingPage() {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">載入中...</td></tr>
+                  <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">載入中...</td></tr>
                 ) : dailyRows.length === 0 ? (
-                  <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">此期間冇數據</td></tr>
+                  <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">此期間冇數據</td></tr>
                 ) : (
                   <>
                     <tr className="border-b border-border/40 bg-muted/40 font-semibold" data-testid="daily-row-total">
                       <td className="px-3 py-2">合計 Total</td>
                       <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalSpend)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{inquiryStats.total > 0 ? formatNumber(inquiryStats.total) : '—'}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalShopifyRev)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalRetailRev)}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalSales)}</td>
@@ -368,6 +425,7 @@ export default function MarketingPage() {
                       <tr key={r.date} className="border-b border-border/20 hover:bg-muted/20" data-testid={`daily-row-${r.date}`}>
                         <td className="px-3 py-2 tabular-nums">{r.date}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{r.spend > 0 ? formatCurrency(r.spend) : '—'}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{r.inquiries > 0 ? formatNumber(r.inquiries) : '—'}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(r.online)}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(r.retail)}</td>
                         <td className="px-3 py-2 text-right tabular-nums font-medium">{formatCurrency(r.total)}</td>
