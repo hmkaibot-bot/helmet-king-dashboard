@@ -1252,7 +1252,16 @@ const DETAIL_PRESETS: { key: string; label: string }[] = [
 ];
 
 function CampaignDetailModal({ campaign, onClose }: { campaign: any; onClose: () => void }) {
-  const [preset, setPreset] = useState('last_30d');
+  // 智能預設時段:campaign 完咗幾耐就開邊個 preset — 免得撳開見到全零
+  // (例:5 月尾完嘅 campaign 預設「30日」會全零,應該直接開「90日/全期」)
+  const [preset, setPreset] = useState(() => {
+    const stop = campaign?.stop_time ? new Date(campaign.stop_time).getTime() : NaN;
+    if (!Number.isFinite(stop)) return 'last_30d'; // 冇完結時間(通常仲行緊)
+    const daysAgo = (Date.now() - stop) / 86400000;
+    if (daysAgo <= 25) return 'last_30d';
+    if (daysAgo <= 85) return 'last_90d';
+    return 'maximum';
+  });
   const [state, setState] = useState<{ loading: boolean; error: string | null; data: any | null }>({
     loading: true,
     error: null,
