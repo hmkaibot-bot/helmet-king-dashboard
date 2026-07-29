@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
 import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
@@ -51,6 +51,16 @@ function computeCampaignFields(c: any) {
 type SortBy = 'purchases' | 'ctr' | 'spend' | 'roas' | 'cpa';
 type StatusFilter = 'all' | 'ACTIVE' | 'PAUSED' | 'ended';
 type PerfFilter = 'all' | 'has_purchases' | 'no_purchases';
+
+/* ── SleekFlow 對話彈窗共用 ── */
+type InqMsg = { at: string; who: string; text: string };
+// SleekFlow 時間係 UTC — 顯示轉香港時間(28/7 下午1:58)
+const fmtHK = (iso: string) => {
+  const d = new Date(iso);
+  return isNaN(d.getTime())
+    ? ''
+    : d.toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', day: 'numeric', month: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+};
 
 export default function MarketingPage() {
   const { bounds } = useDateRange();
@@ -275,8 +285,7 @@ export default function MarketingPage() {
     const adConvSet = new Set<string>();
     const brandConv: Record<string, Set<string>> = {};
     const prodConv: Record<string, Set<string>> = {};
-    // 撳品牌/單品行展開嘅對話原文(sync 只儲認到商品嘅訊息)
-    type InqMsg = { at: string; who: string; text: string };
+    // 撳品牌/單品行彈出嘅對話原文(sync 只儲認到商品嘅訊息)
     const brandMsgs: Record<string, InqMsg[]> = {};
     const prodMsgs: Record<string, InqMsg[]> = {};
     const whoOf = (e: any) =>
@@ -310,14 +319,8 @@ export default function MarketingPage() {
       topProducts: topOf(prodConv, prodMsgs),
     };
   }, [viewInquiries]);
-  // 品牌/單品 Top 10 撳行展開對話
-  const [expandedBrand, setExpandedBrand] = useState<string | null>(null);
-  const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
-  // SleekFlow 時間係 UTC — 顯示轉香港時間,格式跟車房 system(28/7 下午1:58)
-  const fmtHK = (iso: string) => {
-    const d = new Date(iso);
-    return isNaN(d.getTime()) ? '' : d.toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', day: 'numeric', month: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
-  };
+  // 品牌/單品 Top 10 撳行 → 對話彈窗
+  const [inquiryDetail, setInquiryDetail] = useState<{ title: string; count: number; msgs: InqMsg[] } | null>(null);
   const costPerInquiry = inquiryStats.total > 0 ? totalSpend / inquiryStats.total : 0;
 
   const salesVsSpend = useMemo(() => {
@@ -569,40 +572,19 @@ export default function MarketingPage() {
               <table className="w-full text-xs">
                 <tbody>
                   {inquiryStats.topBrands.map((b, i) => (
-                    <Fragment key={b.name}>
-                      <tr
-                        className="border-b border-border/20 cursor-pointer hover:bg-muted/20 transition-colors"
-                        onClick={() => setExpandedBrand(expandedBrand === b.name ? null : b.name)}
-                        title="撳嚟睇 SleekFlow 對話"
-                        data-testid={`brand-row-${i}`}
-                      >
-                        <td className="py-1 text-muted-foreground w-6 tabular-nums">{i + 1}</td>
-                        <td className="py-1 font-medium">
-                          <span className="text-muted-foreground mr-1">{expandedBrand === b.name ? '▾' : '▸'}</span>
-                          {b.name}
-                        </td>
-                        <td className="py-1 text-right tabular-nums">{b.count} 單</td>
-                      </tr>
-                      {expandedBrand === b.name && (
-                        <tr>
-                          <td colSpan={3} className="py-1.5">
-                            <div className="rounded-md bg-muted/30 border border-border/30 p-2 space-y-1.5 max-h-[220px] overflow-auto">
-                              {b.msgs.length === 0 ? (
-                                <p className="text-[11px] text-muted-foreground">呢批對話係舊數據,未有存低原文（新查詢會自動有）</p>
-                              ) : (
-                                b.msgs.map((m, j) => (
-                                  <p key={j} className="text-[11px] leading-snug">
-                                    <span className="text-muted-foreground tabular-nums whitespace-nowrap">{fmtHK(m.at)}</span>
-                                    <span className="text-muted-foreground"> · {m.who} · </span>
-                                    <span>{m.text}</span>
-                                  </p>
-                                ))
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
+                    <tr
+                      key={b.name}
+                      className="border-b border-border/20 cursor-pointer hover:bg-muted/20 transition-colors"
+                      onClick={() => setInquiryDetail({ title: b.name, count: b.count, msgs: b.msgs })}
+                      title="撳嚟睇 SleekFlow 對話"
+                      data-testid={`brand-row-${i}`}
+                    >
+                      <td className="py-1 text-muted-foreground w-6 tabular-nums">{i + 1}</td>
+                      <td className="py-1 font-medium">{b.name}</td>
+                      <td className="py-1 text-right tabular-nums whitespace-nowrap">
+                        {b.count} 單<MessageCircle className="inline h-3 w-3 text-muted-foreground ml-1.5 -mt-0.5" />
+                      </td>
+                    </tr>
                   ))}
                 </tbody>
               </table>
@@ -617,40 +599,19 @@ export default function MarketingPage() {
                 <table className="w-full text-xs">
                   <tbody>
                     {inquiryStats.topProducts.map((p, i) => (
-                      <Fragment key={p.name}>
-                        <tr
-                          className="border-b border-border/20 cursor-pointer hover:bg-muted/20 transition-colors"
-                          onClick={() => setExpandedProduct(expandedProduct === p.name ? null : p.name)}
-                          title="撳嚟睇 SleekFlow 對話"
-                          data-testid={`product-row-${i}`}
-                        >
-                          <td className="py-1 text-muted-foreground w-6 tabular-nums">{i + 1}</td>
-                          <td className="py-1 truncate max-w-[260px]" title={p.name}>
-                            <span className="text-muted-foreground mr-1">{expandedProduct === p.name ? '▾' : '▸'}</span>
-                            {p.name.length > 42 ? p.name.slice(0, 42) + '…' : p.name}
-                          </td>
-                          <td className="py-1 text-right tabular-nums whitespace-nowrap">{p.count} 單</td>
-                        </tr>
-                        {expandedProduct === p.name && (
-                          <tr>
-                            <td colSpan={3} className="py-1.5">
-                              <div className="rounded-md bg-muted/30 border border-border/30 p-2 space-y-1.5 max-h-[220px] overflow-auto">
-                                {p.msgs.length === 0 ? (
-                                  <p className="text-[11px] text-muted-foreground">呢批對話係舊數據,未有存低原文（新查詢會自動有）</p>
-                                ) : (
-                                  p.msgs.map((m, j) => (
-                                    <p key={j} className="text-[11px] leading-snug">
-                                      <span className="text-muted-foreground tabular-nums whitespace-nowrap">{fmtHK(m.at)}</span>
-                                      <span className="text-muted-foreground"> · {m.who} · </span>
-                                      <span>{m.text}</span>
-                                    </p>
-                                  ))
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
+                      <tr
+                        key={p.name}
+                        className="border-b border-border/20 cursor-pointer hover:bg-muted/20 transition-colors"
+                        onClick={() => setInquiryDetail({ title: p.name, count: p.count, msgs: p.msgs })}
+                        title="撳嚟睇 SleekFlow 對話"
+                        data-testid={`product-row-${i}`}
+                      >
+                        <td className="py-1 text-muted-foreground w-6 tabular-nums">{i + 1}</td>
+                        <td className="py-1 truncate max-w-[260px]" title={p.name}>{p.name.length > 42 ? p.name.slice(0, 42) + '…' : p.name}</td>
+                        <td className="py-1 text-right tabular-nums whitespace-nowrap">
+                          {p.count} 單<MessageCircle className="inline h-3 w-3 text-muted-foreground ml-1.5 -mt-0.5" />
+                        </td>
+                      </tr>
                     ))}
                   </tbody>
                 </table>
@@ -1175,6 +1136,68 @@ export default function MarketingPage() {
       {detailCampaign && (
         <CampaignDetailModal campaign={detailCampaign} onClose={() => setDetailCampaign(null)} />
       )}
+
+      {/* SleekFlow 對話彈窗(品牌/單品 Top 10 撳行打開) */}
+      {inquiryDetail && (
+        <InquiryChatModal
+          title={inquiryDetail.title}
+          count={inquiryDetail.count}
+          msgs={inquiryDetail.msgs}
+          onClose={() => setInquiryDetail(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── SleekFlow 對話彈窗 — 客人訊息用聊天 bubble 排版,新至舊 ── */
+function InquiryChatModal({ title, count, msgs, onClose }: { title: string; count: number; msgs: InqMsg[]; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-card border border-border rounded-lg shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col"
+        onClick={e => e.stopPropagation()}
+        data-testid="inquiry-chat-modal"
+      >
+        {/* header */}
+        <div className="flex items-center gap-3 p-4 border-b border-border/60">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold leading-snug truncate" title={title}>💬 {title}</h2>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              {count} 單對話 · 顯示 {msgs.length} 條認到商品嘅訊息 · 新至舊
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-accent/60 text-muted-foreground shrink-0" title="關閉 (Esc)">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* body — 聊天 bubble */}
+        <div className="overflow-y-auto p-4 space-y-3">
+          {msgs.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-8">
+              呢批對話係舊數據,未有存低原文（新查詢會自動有）
+            </p>
+          ) : (
+            msgs.map((m, i) => (
+              <div key={i}>
+                <p className="text-[10px] text-muted-foreground mb-1 tabular-nums">
+                  {fmtHK(m.at)} · {m.who}
+                </p>
+                <div className="rounded-lg rounded-tl-sm bg-muted/40 border border-border/30 px-3 py-2 text-xs leading-relaxed w-fit max-w-[92%] whitespace-pre-wrap break-words">
+                  {m.text}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
     </div>
   );
 }
