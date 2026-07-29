@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { Fragment, useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
 import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
@@ -93,8 +93,8 @@ export default function MarketingPage() {
           // 實體零售 = BC 門市 (dimension CARSHOP),一直不含車房維修 (GARAGE)。同 overview「零售 Retail」口徑一致。
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
           queryAll('marsello_customers', 'id,created_at,last_seen,tier_name,subscribed'),
-          // SleekFlow 查詢(唔 select 電話 — 呢頁用唔到,少擺 PII 喺前端)
-          queryWithDateRange('inquiry_events', 'message_id,conversation_id,contact_id,channel,occurred_at,matched_brand,matched_title,source,business', 'occurred_at', bounds),
+          // SleekFlow 查詢(電話+原文係品牌 Top 10 撳入去睇對話用;原文只有認到商品嘅訊息先有)
+          queryWithDateRange('inquiry_events', 'message_id,conversation_id,contact_id,contact_phone,channel,occurred_at,matched_brand,matched_title,message_text,source,business', 'occurred_at', bounds),
           queryWithDateRange('meta_campaign_daily', 'campaign_id,date,spend,impressions,clicks,conversations', 'date', bounds),
         ]);
         if (cancelled) return;
@@ -275,14 +275,29 @@ export default function MarketingPage() {
     const adConvSet = new Set<string>();
     const brandConv: Record<string, Set<string>> = {};
     const prodConv: Record<string, Set<string>> = {};
+    // 撳品牌/單品行展開嘅對話原文(sync 只儲認到商品嘅訊息)
+    type InqMsg = { at: string; who: string; text: string };
+    const brandMsgs: Record<string, InqMsg[]> = {};
+    const prodMsgs: Record<string, InqMsg[]> = {};
+    const whoOf = (e: any) =>
+      e.contact_phone || (String(e.channel).includes('instagram') ? 'IG 客人' : String(e.channel).includes('facebook') ? 'FB 客人' : '客人');
     for (const e of viewInquiries) {
       const conv = String(e.conversation_id || e.message_id);
       if (e.source === 'ctwa') adConvSet.add(conv);
-      if (e.matched_brand) (brandConv[e.matched_brand] = brandConv[e.matched_brand] || new Set()).add(conv);
-      if (e.matched_title) (prodConv[e.matched_title] = prodConv[e.matched_title] || new Set()).add(conv);
+      if (e.matched_brand) {
+        (brandConv[e.matched_brand] = brandConv[e.matched_brand] || new Set()).add(conv);
+        if (e.message_text) (brandMsgs[e.matched_brand] = brandMsgs[e.matched_brand] || []).push({ at: String(e.occurred_at), who: whoOf(e), text: String(e.message_text) });
+      }
+      if (e.matched_title) {
+        (prodConv[e.matched_title] = prodConv[e.matched_title] || new Set()).add(conv);
+        if (e.message_text) (prodMsgs[e.matched_title] = prodMsgs[e.matched_title] || []).push({ at: String(e.occurred_at), who: whoOf(e), text: String(e.message_text) });
+      }
     }
-    const topOf = (m: Record<string, Set<string>>) =>
-      Object.entries(m).map(([k, s]) => ({ name: k, count: s.size })).sort((a, b) => b.count - a.count).slice(0, 10);
+    const topOf = (m: Record<string, Set<string>>, msgs: Record<string, InqMsg[]>) =>
+      Object.entries(m)
+        .map(([k, s]) => ({ name: k, count: s.size, msgs: (msgs[k] || []).sort((a, b) => b.at.localeCompare(a.at)) }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
     return {
       total: convSet.size,
       contacts: contactSet.size,
@@ -291,10 +306,18 @@ export default function MarketingPage() {
       facebook: byChannel.facebook.size,
       dayCounts,
       adConvs: adConvSet.size,
-      topBrands: topOf(brandConv),
-      topProducts: topOf(prodConv),
+      topBrands: topOf(brandConv, brandMsgs),
+      topProducts: topOf(prodConv, prodMsgs),
     };
   }, [viewInquiries]);
+  // 品牌/單品 Top 10 撳行展開對話
+  const [expandedBrand, setExpandedBrand] = useState<string | null>(null);
+  const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
+  // SleekFlow 時間係 UTC — 顯示轉香港時間,格式跟車房 system(28/7 下午1:58)
+  const fmtHK = (iso: string) => {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? '' : d.toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', day: 'numeric', month: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+  };
   const costPerInquiry = inquiryStats.total > 0 ? totalSpend / inquiryStats.total : 0;
 
   const salesVsSpend = useMemo(() => {
@@ -542,15 +565,44 @@ export default function MarketingPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Card className="border-border/40">
             <CardContent className="p-3">
-              <h3 className="text-xs font-semibold mb-2">🔥 最多人查詢品牌 Top 10 <span className="font-normal text-muted-foreground">按對話數</span></h3>
+              <h3 className="text-xs font-semibold mb-2">🔥 最多人查詢品牌 Top 10 <span className="font-normal text-muted-foreground">按對話數 · 撳一行睇對話</span></h3>
               <table className="w-full text-xs">
                 <tbody>
                   {inquiryStats.topBrands.map((b, i) => (
-                    <tr key={b.name} className="border-b border-border/20">
-                      <td className="py-1 text-muted-foreground w-6 tabular-nums">{i + 1}</td>
-                      <td className="py-1 font-medium">{b.name}</td>
-                      <td className="py-1 text-right tabular-nums">{b.count} 單</td>
-                    </tr>
+                    <Fragment key={b.name}>
+                      <tr
+                        className="border-b border-border/20 cursor-pointer hover:bg-muted/20 transition-colors"
+                        onClick={() => setExpandedBrand(expandedBrand === b.name ? null : b.name)}
+                        title="撳嚟睇 SleekFlow 對話"
+                        data-testid={`brand-row-${i}`}
+                      >
+                        <td className="py-1 text-muted-foreground w-6 tabular-nums">{i + 1}</td>
+                        <td className="py-1 font-medium">
+                          <span className="text-muted-foreground mr-1">{expandedBrand === b.name ? '▾' : '▸'}</span>
+                          {b.name}
+                        </td>
+                        <td className="py-1 text-right tabular-nums">{b.count} 單</td>
+                      </tr>
+                      {expandedBrand === b.name && (
+                        <tr>
+                          <td colSpan={3} className="py-1.5">
+                            <div className="rounded-md bg-muted/30 border border-border/30 p-2 space-y-1.5 max-h-[220px] overflow-auto">
+                              {b.msgs.length === 0 ? (
+                                <p className="text-[11px] text-muted-foreground">呢批對話係舊數據,未有存低原文（新查詢會自動有）</p>
+                              ) : (
+                                b.msgs.map((m, j) => (
+                                  <p key={j} className="text-[11px] leading-snug">
+                                    <span className="text-muted-foreground tabular-nums whitespace-nowrap">{fmtHK(m.at)}</span>
+                                    <span className="text-muted-foreground"> · {m.who} · </span>
+                                    <span>{m.text}</span>
+                                  </p>
+                                ))
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -558,23 +610,52 @@ export default function MarketingPage() {
           </Card>
           <Card className="border-border/40">
             <CardContent className="p-3">
-              <h3 className="text-xs font-semibold mb-2">🔥 最多人查詢單品 <span className="font-normal text-muted-foreground">認到型號先計</span></h3>
+              <h3 className="text-xs font-semibold mb-2">🔥 最多人查詢單品 <span className="font-normal text-muted-foreground">認到型號先計 · 撳一行睇對話</span></h3>
               {inquiryStats.topProducts.length === 0 ? (
                 <p className="text-xs text-muted-foreground py-4 text-center">未有認到型號嘅查詢</p>
               ) : (
                 <table className="w-full text-xs">
                   <tbody>
                     {inquiryStats.topProducts.map((p, i) => (
-                      <tr key={p.name} className="border-b border-border/20">
-                        <td className="py-1 text-muted-foreground w-6 tabular-nums">{i + 1}</td>
-                        <td className="py-1 truncate max-w-[260px]" title={p.name}>{p.name.length > 42 ? p.name.slice(0, 42) + '…' : p.name}</td>
-                        <td className="py-1 text-right tabular-nums whitespace-nowrap">{p.count} 單</td>
-                      </tr>
+                      <Fragment key={p.name}>
+                        <tr
+                          className="border-b border-border/20 cursor-pointer hover:bg-muted/20 transition-colors"
+                          onClick={() => setExpandedProduct(expandedProduct === p.name ? null : p.name)}
+                          title="撳嚟睇 SleekFlow 對話"
+                          data-testid={`product-row-${i}`}
+                        >
+                          <td className="py-1 text-muted-foreground w-6 tabular-nums">{i + 1}</td>
+                          <td className="py-1 truncate max-w-[260px]" title={p.name}>
+                            <span className="text-muted-foreground mr-1">{expandedProduct === p.name ? '▾' : '▸'}</span>
+                            {p.name.length > 42 ? p.name.slice(0, 42) + '…' : p.name}
+                          </td>
+                          <td className="py-1 text-right tabular-nums whitespace-nowrap">{p.count} 單</td>
+                        </tr>
+                        {expandedProduct === p.name && (
+                          <tr>
+                            <td colSpan={3} className="py-1.5">
+                              <div className="rounded-md bg-muted/30 border border-border/30 p-2 space-y-1.5 max-h-[220px] overflow-auto">
+                                {p.msgs.length === 0 ? (
+                                  <p className="text-[11px] text-muted-foreground">呢批對話係舊數據,未有存低原文（新查詢會自動有）</p>
+                                ) : (
+                                  p.msgs.map((m, j) => (
+                                    <p key={j} className="text-[11px] leading-snug">
+                                      <span className="text-muted-foreground tabular-nums whitespace-nowrap">{fmtHK(m.at)}</span>
+                                      <span className="text-muted-foreground"> · {m.who} · </span>
+                                      <span>{m.text}</span>
+                                    </p>
+                                  ))
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>
               )}
-              <p className="text-[10px] text-muted-foreground mt-2">* 由訊息文字對照商品字典(只存對照結果,唔存訊息原文);「呢個幾錢」呢類認唔到嘅唔入榜</p>
+              <p className="text-[10px] text-muted-foreground mt-2">* 由訊息文字對照商品字典;認到商品嘅訊息會存原文,撳行可以睇返對話。「呢個幾錢」呢類認唔到嘅唔入榜、唔存原文</p>
             </CardContent>
           </Card>
         </div>

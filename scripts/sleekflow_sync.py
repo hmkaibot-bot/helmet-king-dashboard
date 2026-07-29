@@ -5,7 +5,8 @@ SleekFlow 查詢同步 — 拉對話+訊息內容,對照商品,寫入 inquiry_ev
 1. GET /api/conversation/all(分頁,modifiedAt 新→舊,行到過咗 DAYS_BACK 就停)
 2. 每個對話 GET /api/conversation/message/{id},只要 inbound(客人發嘅)
 3. 訊息文字 → 品牌/型號對照(字典由 shopify_products 即場起):
-   只存 matched_brand / matched_product_id / matched_title —— 原文唔入庫(私隱)
+   存 matched_brand / matched_product_id / matched_title;認到商品嘅訊息
+   會存埋原文(截 200 字)俾 dashboard 撳入去睇對話 — 認唔到嘅唔存原文
 4. upsert inquiry_events(真 message id / conversation id,channel 正規化
    whatsappcloudapi→whatsapp、instagram、facebook)
 5. 對賬:同一時段 webhook 嘅 synth 行(即時計數用)刪走,由 API 真數取代;
@@ -258,6 +259,8 @@ def main() -> None:
                     "matched_brand": brand,
                     "matched_product_id": pid,
                     "matched_title": title,
+                    # 認到商品先存原文(dashboard 品牌 Top 10 撳入去睇對話用)
+                    "message_text": text[:200] if (brand or pid) else None,
                     "channel_identity_id": ident or None,
                     "business": business,
                 }
