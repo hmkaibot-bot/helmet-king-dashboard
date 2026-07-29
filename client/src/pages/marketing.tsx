@@ -1161,15 +1161,15 @@ function InquiryChatModal({ title, count, msgs, onClose }: { title: string; coun
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
       <div
-        className="bg-card border border-border rounded-lg shadow-xl w-full max-w-3xl max-h-[92vh] flex flex-col"
+        className="bg-card border border-border rounded-lg shadow-xl w-full max-w-5xl min-h-[55vh] max-h-[92vh] flex flex-col"
         onClick={e => e.stopPropagation()}
         data-testid="inquiry-chat-modal"
       >
         {/* header */}
         <div className="flex items-center gap-3 p-4 border-b border-border/60">
           <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold leading-snug truncate" title={title}>💬 {title}</h2>
-            <p className="text-[11px] text-muted-foreground mt-0.5">
+            <h2 className="text-base font-semibold leading-snug truncate" title={title}>💬 {title}</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
               {count} 單對話 · 顯示 {msgs.length} 條認到商品嘅訊息 · 新至舊
             </p>
           </div>
@@ -1187,10 +1187,10 @@ function InquiryChatModal({ title, count, msgs, onClose }: { title: string; coun
           ) : (
             msgs.map((m, i) => (
               <div key={i}>
-                <p className="text-[11px] text-muted-foreground mb-1 tabular-nums">
+                <p className="text-xs text-muted-foreground mb-1 tabular-nums">
                   {fmtHK(m.at)} · {m.who}
                 </p>
-                <div className="rounded-lg rounded-tl-sm bg-muted/40 border border-border/30 px-3.5 py-2.5 text-sm leading-relaxed w-fit max-w-[92%] whitespace-pre-wrap break-words">
+                <div className="rounded-lg rounded-tl-sm bg-muted/40 border border-border/30 px-4 py-3 text-base leading-relaxed w-fit max-w-[85%] whitespace-pre-wrap break-words">
                   {m.text}
                 </div>
               </div>
