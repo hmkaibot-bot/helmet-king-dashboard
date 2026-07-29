@@ -1161,7 +1161,7 @@ function InquiryChatModal({ title, count, msgs, onClose }: { title: string; coun
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
       <div
-        className="bg-card border border-border rounded-lg shadow-xl w-full max-w-2xl max-h-[88vh] flex flex-col"
+        className="bg-card border border-border rounded-lg shadow-xl w-full max-w-3xl max-h-[92vh] flex flex-col"
         onClick={e => e.stopPropagation()}
         data-testid="inquiry-chat-modal"
       >
