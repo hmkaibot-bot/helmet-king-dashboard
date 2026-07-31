@@ -495,7 +495,7 @@ export default function MarketingPage() {
         </button>
         {retailOnly && !campaignsLoading && hiddenCampaignCount > 0 && (
           <span className="text-[11px] text-muted-foreground">
-            已隱藏 {hiddenCampaignCount} 個非零售活動（26King 賣車／租車／車房／自駕團）· 查詢按同事分隊＋channel 線過濾
+            已隱藏 {hiddenCampaignCount} 個非零售活動（26King 賣車／租車／車房／自駕團）· 查詢按同事分隊＋channel 線過濾，認唔到業務嘅唔計
           </span>
         )}
         {retailOnly && (

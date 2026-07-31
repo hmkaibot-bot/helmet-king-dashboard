@@ -50,11 +50,12 @@ export function campaignBusiness(c: { campaign_name?: string | null; business?: 
  * 1) SleekFlow 同事分隊(assignedTeam:Retail/26KING/Garage/RentalbikeHK/Tour)
  *    — 客人搵零售線但問車/維修嗰批,靠同事 triage 先分得出
  * 2) 冇分隊就按條線(零售 Main WhatsApp / @helmetking_hk / 頭盔王 FB = retail)
- * null = 舊行/未識別 — 當零售計。
+ * null = 兩樣都認唔到(多數係 SleekFlow 未回傳欄位嘅早期 webhook 行)—— 唔當零售,
+ * 寧願少計都唔好混入其他業務(老闆 2026-07-31 確認)。
  * tour(自駕團)都唔算零售 — 老闆 2026-07-23 確認。
  */
 export function isRetailInquiry(e: { business?: string | null }): boolean {
-  return !e.business || e.business === 'retail';
+  return e.business === 'retail';
 }
 
 export const BUSINESS_LABELS: Record<string, string> = {
