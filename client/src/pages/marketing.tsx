@@ -104,7 +104,7 @@ export default function MarketingPage() {
           queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
           queryAll('marsello_customers', 'id,created_at,last_seen,tier_name,subscribed'),
           // SleekFlow 查詢(電話+原文係品牌 Top 10 撳入去睇對話用;原文只有認到商品嘅訊息先有)
-          queryWithDateRange('inquiry_events', 'message_id,conversation_id,contact_id,contact_phone,channel,occurred_at,matched_brand,matched_title,message_text,source,business', 'occurred_at', bounds),
+          queryWithDateRange('inquiry_events', 'message_id,conversation_id,contact_id,contact_phone,channel,occurred_at,matched_brand,matched_title,matched_product_type,message_text,source,business', 'occurred_at', bounds),
           queryWithDateRange('meta_campaign_daily', 'campaign_id,date,spend,impressions,clicks,conversations', 'date', bounds),
         ]);
         if (cancelled) return;
@@ -290,14 +290,28 @@ export default function MarketingPage() {
     const prodMsgs: Record<string, InqMsg[]> = {};
     const whoOf = (e: any) =>
       e.contact_phone || (String(e.channel).includes('instagram') ? 'IG 客人' : String(e.channel).includes('facebook') ? 'FB 客人' : '客人');
+    const adMsgs: InqMsg[] = [];
     for (const e of viewInquiries) {
       const conv = String(e.conversation_id || e.message_id);
-      if (e.source === 'ctwa') adConvSet.add(conv);
+      if (e.source === 'ctwa') {
+        adConvSet.add(conv);
+        // 原文只有「認到商品」嘅訊息先會存 — 其餘照列出時間/渠道,至少睇到係邊單
+        adMsgs.push({
+          at: String(e.occurred_at),
+          who: whoOf(e),
+          text:
+            e.message_text ||
+            (e.matched_title || e.matched_brand
+              ? `查詢：${e.matched_title || e.matched_brand}`
+              : '（只記錄咗查詢時間同渠道,未有存低原文）'),
+        });
+      }
       if (e.matched_brand) {
         (brandConv[e.matched_brand] = brandConv[e.matched_brand] || new Set()).add(conv);
         if (e.message_text) (brandMsgs[e.matched_brand] = brandMsgs[e.matched_brand] || []).push({ at: String(e.occurred_at), who: whoOf(e), text: String(e.message_text) });
       }
-      if (e.matched_title) {
+      // 車件(MOTORCYCLE PARTS)同服務唔算零售商品 — sync 每晚會清,呢度做多重保險
+      if (e.matched_title && !/^(MOTORCYCLE PARTS|SERVICES)/i.test(String(e.matched_product_type || ''))) {
         (prodConv[e.matched_title] = prodConv[e.matched_title] || new Set()).add(conv);
         if (e.message_text) (prodMsgs[e.matched_title] = prodMsgs[e.matched_title] || []).push({ at: String(e.occurred_at), who: whoOf(e), text: String(e.message_text) });
       }
@@ -317,10 +331,11 @@ export default function MarketingPage() {
       adConvs: adConvSet.size,
       topBrands: topOf(brandConv, brandMsgs),
       topProducts: topOf(prodConv, prodMsgs),
+      adMsgs: adMsgs.sort((a, b) => b.at.localeCompare(a.at)),
     };
   }, [viewInquiries]);
   // 品牌/單品 Top 10 撳行 → 對話彈窗
-  const [inquiryDetail, setInquiryDetail] = useState<{ title: string; count: number; msgs: InqMsg[] } | null>(null);
+  const [inquiryDetail, setInquiryDetail] = useState<{ title: string; count: number; msgs: InqMsg[]; subtitle?: string } | null>(null);
   const costPerInquiry = inquiryStats.total > 0 ? totalSpend / inquiryStats.total : 0;
 
   const salesVsSpend = useMemo(() => {
@@ -351,23 +366,6 @@ export default function MarketingPage() {
   const ctrTrend = adSeries.map((a) => ({ date: a.date.slice(5), ctr: a.ctr }));
   const costTrend = adSeries.map((a) => ({ date: a.date.slice(5), cpm: a.cpm, cpc: a.cpc }));
   const impClickTrend = adSeries.map((a) => ({ date: a.date.slice(5), impressions: a.impressions, clicks: a.clicks }));
-
-  const ninetyAgo = new Date(Date.now() - 90 * 86400000).toISOString();
-  const activeMembers = marselloCustomers.filter((c) => c.last_seen && c.last_seen >= ninetyAgo).length;
-  const inactiveMembers = marselloCustomers.length - activeMembers;
-
-  const memberGrowth = useMemo(() => {
-    const monthMap: Record<string, number> = {};
-    marselloCustomers.forEach((c) => { if (!c.created_at) return; const m = c.created_at.slice(0, 7); monthMap[m] = (monthMap[m] || 0) + 1; });
-    let cum = 0;
-    return Object.entries(monthMap).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => { cum += count; return { month, total: cum }; });
-  }, [marselloCustomers]);
-
-  const tierDist = useMemo(() => {
-    const map: Record<string, number> = {};
-    marselloCustomers.forEach((c) => { const t = c.tier_name || '未分層'; map[t] = (map[t] || 0) + 1; });
-    return Object.entries(map).map(([name, value]) => ({ name, value }));
-  }, [marselloCustomers]);
 
   /* ── Campaign Performance computations ── */
   const filteredCampaigns = useMemo(() => {
@@ -549,9 +547,23 @@ export default function MarketingPage() {
       {!loading && inquiryStats.total > 0 && (
         <div className="flex items-center gap-2 flex-wrap text-xs">
           <span className="text-muted-foreground">查詢入口:</span>
-          <span className="px-2 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 text-sky-300 tabular-nums">
+          <button
+            onClick={() =>
+              setInquiryDetail({
+                title: '經廣告入口嘅查詢',
+                count: inquiryStats.adConvs,
+                msgs: inquiryStats.adMsgs,
+                subtitle: `${inquiryStats.adConvs} 單對話 · 由 Meta 廣告(CTWA)撳入嚟 · 新至舊`,
+              })
+            }
+            disabled={inquiryStats.adConvs === 0}
+            title={inquiryStats.adConvs > 0 ? '撳嚟睇邊幾單係經廣告入嚟' : '呢個期間未有經廣告入口嘅查詢'}
+            data-testid="chip-ad-entry"
+            className="px-2 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 text-sky-300 tabular-nums transition-colors enabled:hover:border-sky-400 enabled:cursor-pointer disabled:opacity-60"
+          >
             經廣告 {inquiryStats.adConvs}
-          </span>
+            {inquiryStats.adConvs > 0 && <MessageCircle className="inline h-3 w-3 ml-1.5 -mt-0.5" />}
+          </button>
           <span className="px-2 py-0.5 rounded border border-border bg-card tabular-nums">
             直接 {inquiryStats.total - inquiryStats.adConvs}
           </span>
@@ -638,85 +650,6 @@ export default function MarketingPage() {
         </ResponsiveContainer>
       </ChartCard>
 
-      {/* ── P3: 每日貢獻表 Daily Contribution ── */}
-      <Card className="border-border/40 overflow-hidden">
-        <CardContent className="p-0">
-          <div className="px-4 pt-3 pb-2 flex items-baseline justify-between">
-            <h3 className="text-sm font-semibold">每日貢獻表 <span className="text-xs font-normal text-muted-foreground">Daily Contribution</span></h3>
-            <span className="text-[11px] text-muted-foreground">由新到舊 · 廣告成本佔比 &gt;30% 標橙</span>
-          </div>
-          <div className="overflow-auto max-h-[440px]">
-            <table className="w-full text-xs" data-testid="daily-contribution-table">
-              <thead className="sticky top-0 z-10 bg-card">
-                <tr className="border-b border-border/40 bg-muted/30">
-                  <th className="text-left px-3 py-2 font-medium text-muted-foreground">日期 Date</th>
-                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">廣告費 Spend</th>
-                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">查詢 Inq</th>
-                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">線上 Online</th>
-                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">實體零售 Retail</th>
-                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">總銷售 Total</th>
-                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">廣告成本佔比</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">載入中...</td></tr>
-                ) : dailyRows.length === 0 ? (
-                  <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">此期間冇數據</td></tr>
-                ) : (
-                  <>
-                    <tr className="border-b border-border/40 bg-muted/40 font-semibold" data-testid="daily-row-total">
-                      <td className="px-3 py-2">合計 Total</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalSpend)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{inquiryStats.total > 0 ? formatNumber(inquiryStats.total) : '—'}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalShopifyRev)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalRetailRev)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalSales)}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{totalSpend > 0 ? formatPercent(adCostPct) : '—'}</td>
-                    </tr>
-                    {dailyRows.map((r) => (
-                      <tr key={r.date} className="border-b border-border/20 hover:bg-muted/20" data-testid={`daily-row-${r.date}`}>
-                        <td className="px-3 py-2 tabular-nums">{r.date}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{r.spend > 0 ? formatCurrency(r.spend) : '—'}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{r.inquiries > 0 ? formatNumber(r.inquiries) : '—'}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(r.online)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(r.retail)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums font-medium">{formatCurrency(r.total)}</td>
-                        <td className={`px-3 py-2 text-right tabular-nums ${r.spend > 0 && r.total > 0 ? (r.costPct > 30 ? 'text-orange-400' : 'text-green-400') : 'text-muted-foreground'}`}>{r.spend > 0 && r.total > 0 ? formatPercent(r.costPct) : '—'}</td>
-                      </tr>
-                    ))}
-                  </>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="CTR 趨勢" subtitle="Click-Through Rate" loading={loading}>
-          <ResponsiveContainer width="100%" height={240}>
-            <AreaChart data={ctrTrend}>
-              <CartesianGrid {...GRID_STYLE} /><XAxis dataKey="date" tick={AXIS_STYLE} /><YAxis tick={AXIS_STYLE} tickFormatter={(v) => `${v.toFixed(1)}%`} />
-              <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => `${v.toFixed(2)}%`} />
-              <Area type="monotone" dataKey="ctr" stroke={CHART_COLORS.tertiary} fill={CHART_COLORS.tertiary} fillOpacity={0.15} strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </ChartCard>
-        <ChartCard title="CPM / CPC" subtitle="Cost Trends" loading={loading}>
-          <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={costTrend}>
-              <CartesianGrid {...GRID_STYLE} /><XAxis dataKey="date" tick={AXIS_STYLE} />
-              <YAxis yAxisId="left" tick={AXIS_STYLE} /><YAxis yAxisId="right" orientation="right" tick={AXIS_STYLE} />
-              <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => `HK$${v.toFixed(2)}`} />
-              <Line yAxisId="left" type="monotone" dataKey="cpm" name="CPM" stroke={CHART_COLORS.secondary} strokeWidth={2} dot={false} />
-              <Line yAxisId="right" type="monotone" dataKey="cpc" name="CPC" stroke={CHART_COLORS.quaternary} strokeWidth={2} dot={false} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-            </LineChart>
-          </ResponsiveContainer>
-        </ChartCard>
-      </div>
-
       <ChartCard title="曝光 vs 點擊" subtitle="Impressions vs Clicks" loading={loading}>
         <ResponsiveContainer width="100%" height={240}>
           <AreaChart data={impClickTrend}>
@@ -730,37 +663,6 @@ export default function MarketingPage() {
           </AreaChart>
         </ResponsiveContainer>
       </ChartCard>
-
-      {/* ── Marsello Section (existing) ── */}
-      <h2 className="text-sm font-semibold pt-2">Marsello 會員 <span className="text-xs font-normal text-muted-foreground">Analytics</span></h2>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <ChartCard title="會員增長" subtitle="Cumulative" loading={loading}>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={memberGrowth}>
-              <CartesianGrid {...GRID_STYLE} /><XAxis dataKey="month" tick={AXIS_STYLE} /><YAxis tick={AXIS_STYLE} />
-              <Tooltip {...TOOLTIP_STYLE} /><Line type="monotone" dataKey="total" stroke={CHART_COLORS.primary} strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </ChartCard>
-        <ChartCard title="活躍 vs 非活躍" subtitle="Active Split" loading={loading}>
-          <ResponsiveContainer width="100%" height={220}>
-            <PieChart>
-              <Pie data={[{ name: '活躍', value: activeMembers }, { name: '非活躍', value: inactiveMembers }]} cx="50%" cy="50%" innerRadius={50} outerRadius={75} dataKey="value" paddingAngle={2}>
-                <Cell fill={CHART_COLORS.tertiary} /><Cell fill={CHART_COLORS.fifth} />
-              </Pie>
-              <Tooltip {...TOOLTIP_STYLE} /><Legend wrapperStyle={{ fontSize: 11 }} />
-            </PieChart>
-          </ResponsiveContainer>
-        </ChartCard>
-        <ChartCard title="等級分佈" subtitle="Tier" loading={loading}>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={tierDist}>
-              <CartesianGrid {...GRID_STYLE} /><XAxis dataKey="name" tick={AXIS_STYLE} /><YAxis tick={AXIS_STYLE} />
-              <Tooltip {...TOOLTIP_STYLE} /><Bar dataKey="value" fill={CHART_COLORS.quaternary} radius={[3, 3, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-      </div>
 
       {/* ═══════════════════════════════════════════════════════════════
            Section 1: 📊 廣告活動表現 Campaign Performance
@@ -1132,6 +1034,86 @@ export default function MarketingPage() {
         </div>
       )}
 
+      {/* ── 明細區(放最底):每日貢獻表 + CTR / CPM / CPC 趨勢 ── */}
+      {/* ── P3: 每日貢獻表 Daily Contribution ── */}
+      <Card className="border-border/40 overflow-hidden">
+        <CardContent className="p-0">
+          <div className="px-4 pt-3 pb-2 flex items-baseline justify-between">
+            <h3 className="text-sm font-semibold">每日貢獻表 <span className="text-xs font-normal text-muted-foreground">Daily Contribution</span></h3>
+            <span className="text-[11px] text-muted-foreground">由新到舊 · 廣告成本佔比 &gt;30% 標橙</span>
+          </div>
+          <div className="overflow-auto max-h-[440px]">
+            <table className="w-full text-xs" data-testid="daily-contribution-table">
+              <thead className="sticky top-0 z-10 bg-card">
+                <tr className="border-b border-border/40 bg-muted/30">
+                  <th className="text-left px-3 py-2 font-medium text-muted-foreground">日期 Date</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">廣告費 Spend</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">查詢 Inq</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">線上 Online</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">實體零售 Retail</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">總銷售 Total</th>
+                  <th className="text-right px-3 py-2 font-medium text-muted-foreground">廣告成本佔比</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">載入中...</td></tr>
+                ) : dailyRows.length === 0 ? (
+                  <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">此期間冇數據</td></tr>
+                ) : (
+                  <>
+                    <tr className="border-b border-border/40 bg-muted/40 font-semibold" data-testid="daily-row-total">
+                      <td className="px-3 py-2">合計 Total</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalSpend)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{inquiryStats.total > 0 ? formatNumber(inquiryStats.total) : '—'}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalShopifyRev)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalRetailRev)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(totalSales)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{totalSpend > 0 ? formatPercent(adCostPct) : '—'}</td>
+                    </tr>
+                    {dailyRows.map((r) => (
+                      <tr key={r.date} className="border-b border-border/20 hover:bg-muted/20" data-testid={`daily-row-${r.date}`}>
+                        <td className="px-3 py-2 tabular-nums">{r.date}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{r.spend > 0 ? formatCurrency(r.spend) : '—'}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{r.inquiries > 0 ? formatNumber(r.inquiries) : '—'}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(r.online)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{formatCurrency(r.retail)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums font-medium">{formatCurrency(r.total)}</td>
+                        <td className={`px-3 py-2 text-right tabular-nums ${r.spend > 0 && r.total > 0 ? (r.costPct > 30 ? 'text-orange-400' : 'text-green-400') : 'text-muted-foreground'}`}>{r.spend > 0 && r.total > 0 ? formatPercent(r.costPct) : '—'}</td>
+                      </tr>
+                    ))}
+                  </>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <ChartCard title="CTR 趨勢" subtitle="Click-Through Rate" loading={loading}>
+          <ResponsiveContainer width="100%" height={240}>
+            <AreaChart data={ctrTrend}>
+              <CartesianGrid {...GRID_STYLE} /><XAxis dataKey="date" tick={AXIS_STYLE} /><YAxis tick={AXIS_STYLE} tickFormatter={(v) => `${v.toFixed(1)}%`} />
+              <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => `${v.toFixed(2)}%`} />
+              <Area type="monotone" dataKey="ctr" stroke={CHART_COLORS.tertiary} fill={CHART_COLORS.tertiary} fillOpacity={0.15} strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </ChartCard>
+        <ChartCard title="CPM / CPC" subtitle="Cost Trends" loading={loading}>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart data={costTrend}>
+              <CartesianGrid {...GRID_STYLE} /><XAxis dataKey="date" tick={AXIS_STYLE} />
+              <YAxis yAxisId="left" tick={AXIS_STYLE} /><YAxis yAxisId="right" orientation="right" tick={AXIS_STYLE} />
+              <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => `HK$${v.toFixed(2)}`} />
+              <Line yAxisId="left" type="monotone" dataKey="cpm" name="CPM" stroke={CHART_COLORS.secondary} strokeWidth={2} dot={false} />
+              <Line yAxisId="right" type="monotone" dataKey="cpc" name="CPC" stroke={CHART_COLORS.quaternary} strokeWidth={2} dot={false} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      </div>
+
       {/* Campaign drill-down 彈窗 */}
       {detailCampaign && (
         <CampaignDetailModal campaign={detailCampaign} onClose={() => setDetailCampaign(null)} />
@@ -1143,6 +1125,7 @@ export default function MarketingPage() {
           title={inquiryDetail.title}
           count={inquiryDetail.count}
           msgs={inquiryDetail.msgs}
+          subtitle={inquiryDetail.subtitle}
           onClose={() => setInquiryDetail(null)}
         />
       )}
@@ -1151,7 +1134,7 @@ export default function MarketingPage() {
 }
 
 /* ── SleekFlow 對話彈窗 — 客人訊息用聊天 bubble 排版,新至舊 ── */
-function InquiryChatModal({ title, count, msgs, onClose }: { title: string; count: number; msgs: InqMsg[]; onClose: () => void }) {
+function InquiryChatModal({ title, count, msgs, subtitle, onClose }: { title: string; count: number; msgs: InqMsg[]; subtitle?: string; onClose: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -1170,7 +1153,7 @@ function InquiryChatModal({ title, count, msgs, onClose }: { title: string; coun
           <div className="min-w-0 flex-1">
             <h2 className="text-base font-semibold leading-snug truncate" title={title}>💬 {title}</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              {count} 單對話 · 顯示 {msgs.length} 條認到商品嘅訊息 · 新至舊
+              {subtitle ?? `${count} 單對話 · 顯示 ${msgs.length} 條認到商品嘅訊息 · 新至舊`}
             </p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded hover:bg-accent/60 text-muted-foreground shrink-0" title="關閉 (Esc)">

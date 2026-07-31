@@ -127,6 +127,19 @@ def sf_get(key: str, path: str, params: dict) -> list:
     return data if isinstance(data, list) else []
 
 
+# ── 零售 vs 車件商品類型 ────────────────────────────────────────────────
+# Shopify product_type 前綴分得清楚:HELMET / RIDER GEARS / ACCESSORIES 係零售賣嘅
+# 嘢;MOTORCYCLE PARTS 係車件(車房嗰邊),SERVICES & EVENTS 唔係貨。
+def is_retail_type(pt) -> bool:
+    t = str(pt or "").upper()
+    return t.startswith(("HELMET", "RIDER GEARS", "ACCESSORIES"))
+
+
+def is_parts_type(pt) -> bool:
+    t = str(pt or "").upper()
+    return t.startswith(("MOTORCYCLE PARTS", "SERVICES"))
+
+
 # ── 商品對照字典(shopify_products 即場起)─────────────────────────────────
 def build_dictionary():
     rows: list = []
@@ -134,7 +147,11 @@ def build_dictionary():
     while True:
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/shopify_products",
-            params={"select": "id,title,vendor,status", "limit": "1000", "offset": str(offset)},
+            params={
+                "select": "id,title,vendor,status,product_type",
+                "limit": "1000",
+                "offset": str(offset),
+            },
             headers=sb_headers(),
             timeout=60,
         )
@@ -145,7 +162,28 @@ def build_dictionary():
         offset += 1000
     active = [p for p in rows if str(p.get("status", "")).lower() == "active"]
 
-    brands = sorted({str(p["vendor"]).strip().upper() for p in active if p.get("vendor")})
+    # 起型號 token 用「唔係車件」嘅商品 —— 有啲貨 product_type 空白,唔可以當車件剔走
+    retail = [p for p in active if not is_parts_type(p.get("product_type"))]
+
+    # 品牌:一個 vendor 車件多過零售商品就唔當零售品牌 —— 咁 YAMAHA / HONDA /
+    # BABYFACE / CBR250RR 呢啲車廠同車件牌自動出局,SCORPION / SHOEI 照留。
+    per_vendor: dict = {}
+    for p in active:
+        v = str(p.get("vendor") or "").strip().upper()
+        if not v:
+            continue
+        cnt = per_vendor.setdefault(v, {"parts": 0, "retail": 0})
+        if is_parts_type(p.get("product_type")):
+            cnt["parts"] += 1
+        elif is_retail_type(p.get("product_type")):
+            cnt["retail"] += 1
+    # 有車件 而且 車件唔少過零售商品先剔 —— 冇車件嘅 vendor(包括 product_type
+    # 空白嗰啲)一律照留,唔好誤殺正經裝備牌子
+    brands = sorted(
+        v for v, c in per_vendor.items() if not (c["parts"] > 0 and c["parts"] >= c["retail"])
+    )
+    dropped = len(per_vendor) - len(brands)
+
     # 通用英文字做「品牌」會亂中(FULL FACE 嘅 FULL、PHONE CASE 嘅 CASE)— 剔走
     # 車牌/OVER/TBC:vendor 值撞正常用語(講車牌照、英文 over)一樣要剔
     stop = {"FULL", "CASE", "PART", "PARTS", "SET", "NEW", "GENERAL", "OVER", "TBC", "車牌"}
@@ -157,30 +195,35 @@ def build_dictionary():
         pat = re.escape(b)
         brand_res.append((b, re.compile(rf"(?<![A-Z0-9]){pat}(?![A-Z0-9])") if len(b) <= 3 else re.compile(pat)))
 
-    # 型號 token:title 入面「帶數字」嘅字;齋對應一件商品先可以指向單品
+    # 型號 token:title 入面「帶數字」嘅字;齋對應一件零售商品先可以指向單品
     token_map: dict = {}
-    for p in active:
+    for p in retail:
         for t in re.split(r"[\s/\[\]()]+", str(p.get("title", ""))):
             if 2 <= len(t) <= 12 and re.search(r"[0-9]", t) and re.fullmatch(r"[A-Za-z0-9#-]+", t):
-                token_map.setdefault(t.upper(), set()).add((p["id"], str(p.get("title", ""))[:120]))
+                token_map.setdefault(t.upper(), set()).add(
+                    (p["id"], str(p.get("title", ""))[:120], str(p.get("product_type") or ""))
+                )
     model_tokens = {
         tok: next(iter(ids)) for tok, ids in token_map.items() if len(ids) == 1 and len(tok) >= 3
     }
-    print(f"字典:{len(active)} 件活躍商品 | {len(brand_res)} 品牌 | {len(model_tokens)} 個單品型號 token")
+    print(
+        f"字典:{len(active)} 件活躍商品(非車件 {len(retail)})| {len(brand_res)} 品牌"
+        f"(剔走 {dropped} 個車件為主嘅 vendor)| {len(model_tokens)} 個單品型號 token"
+    )
     return brand_res, model_tokens
 
 
 def match_text(text: str, brand_res, model_tokens):
     if not text:
-        return None, None, None
+        return None, None, None, None
     up = text.upper()
     brand = next((b for b, rx in brand_res if rx.search(up)), None)
-    pid = title = None
-    for tok, (tpid, ttitle) in model_tokens.items():
+    pid = title = ptype = None
+    for tok, (tpid, ttitle, tptype) in model_tokens.items():
         if re.search(rf"(?<![A-Z0-9]){re.escape(tok)}(?![A-Z0-9])", up):
-            pid, title = tpid, ttitle
+            pid, title, ptype = tpid, ttitle, tptype
             break
-    return brand, pid, title
+    return brand, pid, title, ptype
 
 
 def norm_channel(ch: str) -> str:
@@ -237,7 +280,7 @@ def main() -> None:
             if str(m.get("channel") or "") == "note":
                 continue  # 同事內部 note,唔係客人查詢
             text = str(m.get("messageContent") or "") if str(m.get("messageType")) == "text" else ""
-            brand, pid, title = match_text(text, brand_res, model_tokens)
+            brand, pid, title, ptype = match_text(text, brand_res, model_tokens)
             if brand:
                 matched_brand_n += 1
             if pid:
@@ -259,6 +302,7 @@ def main() -> None:
                     "matched_brand": brand,
                     "matched_product_id": pid,
                     "matched_title": title,
+                    "matched_product_type": ptype,
                     # 認到商品先存原文(dashboard 品牌 Top 10 撳入去睇對話用)
                     "message_text": text[:200] if (brand or pid) else None,
                     "channel_identity_id": ident or None,
@@ -322,6 +366,52 @@ def main() -> None:
             timeout=60,
         )
     print(f"對賬:剷走 {len(synth)} 行 synth(webhook 即時數),ctwa 過戶 {len(ctwa_pairs)} 對")
+
+    # 歷史清理:字典會變(例如「車件為主嘅 vendor」規則收緊),舊行可能仲留住
+    # 而家唔算零售嘅品牌/商品對照。逐晚用最新字典掃全表,唔止今次同步嗰批。
+    valid_brands = {b for b, _ in brand_res}
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/inquiry_events",
+        params={"select": "matched_brand", "matched_brand": "not.is.null", "limit": "100000"},
+        headers=sb_headers(),
+        timeout=60,
+    )
+    seen_brands = {str(x["matched_brand"]) for x in (r.json() if r.status_code == 200 else [])}
+    stale_brands = sorted(seen_brands - valid_brands)
+    if stale_brands:
+        quoted = ",".join('"' + b.replace('"', '') + '"' for b in stale_brands)
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/inquiry_events",
+            params={"matched_brand": f"in.({quoted})"},
+            headers={**sb_headers(), "Prefer": "return=minimal"},
+            data=json.dumps({"matched_brand": None}),
+            timeout=60,
+        )
+
+    valid_pids = {pid for pid, _, _ in model_tokens.values()}
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/inquiry_events",
+        params={
+            "select": "matched_product_id",
+            "matched_product_id": "not.is.null",
+            "limit": "100000",
+        },
+        headers=sb_headers(),
+        timeout=60,
+    )
+    seen_pids = {x["matched_product_id"] for x in (r.json() if r.status_code == 200 else [])}
+    stale_pids = [p for p in seen_pids if p not in valid_pids]
+    if stale_pids:
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/inquiry_events",
+            params={"matched_product_id": f"in.({','.join(str(p) for p in stale_pids)})"},
+            headers={**sb_headers(), "Prefer": "return=minimal"},
+            data=json.dumps(
+                {"matched_product_id": None, "matched_title": None, "matched_product_type": None}
+            ),
+            timeout=60,
+        )
+    print(f"字典清理:剷走 {len(stale_brands)} 個過期品牌對照、{len(stale_pids)} 件過期商品對照")
 
     # 歷史清理:早期版本將同事內部 note 當咗查詢入咗庫 — 剷走(而家唔會再寫,呢步好快變 no-op)
     requests.delete(
