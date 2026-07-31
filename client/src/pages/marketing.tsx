@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { Fragment, useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
 import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
@@ -46,6 +46,13 @@ function computeCampaignFields(c: any) {
   const rating = getRating({ ...c, spend_90d: spend, purchases_90d: purchases, ctr_90d: ctr });
   const recommendation = getRecommendation({ ...c, spend_90d: spend, purchases_90d: purchases, ctr_90d: ctr });
   return { ...c, spend, purchases, ctr, impressions, cpc, estimatedRev, roas, cpa, rating, recommendation };
+}
+
+/** 2026-07-22T… / 2026-07-22 → 22/7;冇日子就空白 */
+function shortDate(v: string | null | undefined): string {
+  const d = v ? new Date(v) : null;
+  if (!d || isNaN(d.getTime())) return '';
+  return `${d.getDate()}/${d.getMonth() + 1}`;
 }
 
 type SortBy = 'purchases' | 'ctr' | 'spend' | 'roas' | 'cpa';
@@ -133,6 +140,8 @@ export default function MarketingPage() {
 
   // Load meta_campaigns(全表 — 冇 90 日支出嘅都要,business 對照 campaign_daily 用)
   const [allCampaignRows, setAllCampaignRows] = useState<any[]>([]);
+  // campaign_id → 最近一次有花費嘅日子 + 最近 7 日花費(用嚟分「仲投緊」/「已停投放」)
+  const [recentSpend, setRecentSpend] = useState<Record<string, { last: string; spend7: number }>>({});
   useEffect(() => {
     let cancelled = false;
     async function loadCampaigns() {
@@ -147,6 +156,28 @@ export default function MarketingPage() {
         if (error) { console.error('Campaigns error:', error); setCampaigns([]); return; }
         setAllCampaignRows(data || []);
         setCampaigns((data || []).filter((c: any) => (parseFloat(c.spend_90d) || 0) > 0).map(computeCampaignFields));
+
+        // 「仲有冇俾錢」睇最近 14 日實際花費 —— status 靠唔住:好多活動投放期完咗
+        // 但一直冇關,Meta 照顯示 ACTIVE。呢個查詢固定睇最近 14 日,唔跟頁面日期範圍,
+        // 唔係揀「今日」就會全部睇落好似停晒。
+        const since = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
+        const { data: recent } = await supabase
+          .from('meta_campaign_daily')
+          .select('campaign_id,date,spend')
+          .gte('date', since)
+          .gt('spend', 0)
+          .limit(5000);
+        if (cancelled) return;
+        const map: Record<string, { last: string; spend7: number }> = {};
+        const sevenAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+        for (const r of recent || []) {
+          const id = String((r as any).campaign_id);
+          const day = String((r as any).date).slice(0, 10);
+          const row = (map[id] = map[id] || { last: '', spend7: 0 });
+          if (day > row.last) row.last = day;
+          if (day >= sevenAgo) row.spend7 += parseFloat((r as any).spend) || 0;
+        }
+        setRecentSpend(map);
       } catch (e) { console.error('Campaigns fetch error:', e); } finally { if (!cancelled) setCampaignsLoading(false); }
     }
     loadCampaigns();
@@ -371,6 +402,13 @@ export default function MarketingPage() {
   const impClickTrend = adSeries.map((a) => ({ date: a.date.slice(5), impressions: a.impressions, clicks: a.clicks }));
 
   /* ── Campaign Performance computations ── */
+  // 仲投緊 = 最近 7 日有實際花費。Meta 個 status 靠唔住(投放期完咗都可以一直 ACTIVE)。
+  const liveCutoff = useMemo(() => new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10), []);
+  const isLive = useMemo(
+    () => (c: any) => (recentSpend[String(c.campaign_id)]?.last || '') >= liveCutoff,
+    [recentSpend, liveCutoff]
+  );
+
   const filteredCampaigns = useMemo(() => {
     let result = [...viewCampaigns];
 
@@ -396,8 +434,10 @@ export default function MarketingPage() {
         return a.cpa - b.cpa; // lower is better
       }); break;
     }
+    // 「仲投緊」永遠排前,組內先跟上面揀嘅排序 —— 分頁都唔會撈亂兩組
+    result.sort((a, b) => Number(isLive(b)) - Number(isLive(a)));
     return result;
-  }, [viewCampaigns, statusFilter, perfFilter, sortBy]);
+  }, [viewCampaigns, statusFilter, perfFilter, sortBy, isLive]);
 
   // Reset page when filters change
   useEffect(() => { setPage(0); }, [statusFilter, perfFilter, sortBy, retailOnly]);
@@ -768,6 +808,7 @@ export default function MarketingPage() {
                       <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">活動名稱 Campaign</th>
                       <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">業務</th>
                       <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">狀態</th>
+                      <th className="text-left px-3 py-2.5 font-medium text-muted-foreground whitespace-nowrap">投放期 Run dates</th>
                       <th className="text-right px-3 py-2.5 font-medium text-muted-foreground">花費 Spend</th>
                       <th className="text-right px-3 py-2.5 font-medium text-muted-foreground">曝光 Imp</th>
                       <th className="text-right px-3 py-2.5 font-medium text-muted-foreground">CTR</th>
@@ -779,9 +820,27 @@ export default function MarketingPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {paginatedCampaigns.map((c, i) => (
+                    {paginatedCampaigns.map((c, i) => {
+                      const live = isLive(c);
+                      const showHeader = i === 0 || isLive(paginatedCampaigns[i - 1]) !== live;
+                      return (
+                      <Fragment key={c.campaign_id || i}>
+                      {showHeader && (
+                        <tr className="bg-muted/40">
+                          <td colSpan={13} className="px-3 py-1.5 text-[11px] font-semibold">
+                            {live ? (
+                              <span className="text-green-400">
+                                ● 仲投緊 · 最近 7 日有實際花費（{filteredCampaigns.filter(isLive).length}）
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">
+                                ○ 已停投放 · 7 日內冇再俾錢（{filteredCampaigns.filter((x) => !isLive(x)).length}）—— 部分狀態仍係 ACTIVE，只係投放期完咗未關
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      )}
                       <tr
-                        key={c.campaign_id || i}
                         data-testid={`campaign-row-${i}`}
                         onClick={() => setDetailCampaign(c)}
                         title="撳嚟睇深度數據(人數/查詢/每日趨勢/受眾)"
@@ -819,6 +878,14 @@ export default function MarketingPage() {
                             {c.status || '—'}
                           </span>
                         </td>
+                        <td className="px-3 py-2 tabular-nums whitespace-nowrap text-muted-foreground">
+                          {shortDate(c.start_time)} – {shortDate(c.stop_time) || '未設'}
+                          {recentSpend[String(c.campaign_id)]?.last && (
+                            <span className="block text-[10px] opacity-70">
+                              最後花費 {shortDate(recentSpend[String(c.campaign_id)].last)}
+                            </span>
+                          )}
+                        </td>
                         <td className="px-3 py-2 text-right tabular-nums">HK${c.spend.toLocaleString('en-HK', { maximumFractionDigits: 0 })}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{formatNumber(c.impressions)}</td>
                         <td className={`px-3 py-2 text-right tabular-nums ${ctrColor(c.ctr, c.spend)}`}>{c.ctr.toFixed(2)}%</td>
@@ -841,7 +908,9 @@ export default function MarketingPage() {
                           </span>
                         </td>
                       </tr>
-                    ))}
+                      </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
