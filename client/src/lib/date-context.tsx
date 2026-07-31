@@ -15,7 +15,8 @@ interface DateContextType {
 const DateContext = createContext<DateContextType | null>(null);
 
 export function DateProvider({ children }: { children: ReactNode }) {
-  const [dateRange, setDateRange] = useState<DateRange>('30d');
+  // 預設「本月」— 老闆日常睇緊嘅係當月表現,唔係滾動 30 日
+  const [dateRange, setDateRange] = useState<DateRange>('this_month');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
 
