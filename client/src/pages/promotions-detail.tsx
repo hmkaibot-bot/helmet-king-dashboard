@@ -329,13 +329,15 @@ export default function PromotionDetailPage() {
       setSavingId(productId);
       try {
         const productIdNum = Number(productId);
-        const { error: upErr } = await supabase
+        // 同樣唔 filter is_archived — 頁面會顯示 archived 行,唔改到就會靜靜失敗
+        const { data: upRows, error: upErr } = await supabase
           .from('promotion_items')
           .update({ promo_price: newPrice })
           .eq('promotion_id', promoId)
           .eq('product_id', productIdNum)
-          .eq('is_archived', false);
+          .select('product_id');
         if (upErr) throw upErr;
+        if (!upRows || upRows.length === 0) throw new Error('搵唔到呢件商品喺呢個推廣入面(冇行更新到)');
         setItems(prev =>
           prev.map(it =>
             String(it.product_id) === productId ? { ...it, promo_price: newPrice } : it
@@ -605,17 +607,22 @@ export default function PromotionDetailPage() {
           .filter((x) => x.ok && (x.updated ?? 0) > 0)
           .map((x) => String(x.productId));
         if (okIds.length) {
-          const { error: clrErr } = await supabase
+          // 注意:唔可以 filter is_archived — 頁面本身係顯示晒全部行(包括 archived),
+          // 加咗個 filter 就會出現「Shopify 還原成功但推廣價一直清唔走」嘅情況。
+          const { data: clrRows, error: clrErr } = await supabase
             .from('promotion_items')
             .update({ promo_price: null })
             .eq('promotion_id', promoId)
             .in('product_id', okIds.map(Number))
-            .eq('is_archived', false);
+            .select('product_id');
           if (clrErr) {
             // 還原本身已成功 — 清推廣價失敗唔當致命,記低就算,唔好擋住完成提示。
             console.warn('還原後清除推廣價失敗:', clrErr);
+          } else if (!clrRows || clrRows.length === 0) {
+            // 一行都改唔到 = 靜靜失敗,一定要話俾用家知,唔好扮成功
+            console.warn('還原後清除推廣價:0 行受影響', { promoId, okIds });
           } else {
-            cleared = okIds.length;
+            cleared = clrRows.length;
             const okSet = new Set(okIds);
             setItems((prev) =>
               prev.map((it) =>
