@@ -126,6 +126,8 @@ type SystemStatus = '正常' | '慢移貨' | '死貨';
 
 interface DeadStockItem {
   sku: string;
+  /** Shopify product id — 對推廣活動分派用 */
+  product_id: string;
   product_title: string;
   variant_title: string | null;
   vendor: string;
@@ -227,7 +229,7 @@ interface FilterState {
   actions: string[];
   hide_zero_stock: boolean;
   aging_bucket: AgingBucket | null;
-  is_promoting: 'all' | 'on' | 'off';
+  is_promoting: 'all' | 'on' | 'off' | 'orphan';
 }
 
 // 預設分類（用戶指定 24 個）
@@ -421,6 +423,8 @@ export default function DeadStockPage() {
   const [receiveStatsView, setReceiveStatsView] = useState<SkuReceiveStatsRow[] | null>(null);
   const [reviews, setReviews] = useState<DeadStockReview[]>([]);
   const [shopifyProducts, setShopifyProducts] = useState<ShopifyProductRow[]>([]);
+  // 已派入「進行中」推廣活動嘅 product_id —— 用嚟捉勾咗推廣中但冇活動嘅 SKU
+  const [promoAssignedIds, setPromoAssignedIds] = useState<Set<string>>(new Set());
   const [purchaseInvoices, setPurchaseInvoices] = useState<BcPurchaseInvoiceRow[]>([]);
   const [purchaseInvoiceLines, setPurchaseInvoiceLines] = useState<BcPurchaseInvoiceLineRow[]>([]);
 
@@ -631,7 +635,7 @@ export default function DeadStockPage() {
       // 同樣用 view 取代 bc_purchase_invoices + bc_purchase_invoice_lines 兩張表
       const receiveViewPromise = tryView('sku_receive_stats', 'sku,first_receive_date,last_receive_date');
 
-      const [statsView, receiveView, invRows, bcRows, reviewsRows, productsRows] = await Promise.all([
+      const [statsView, receiveView, invRows, bcRows, reviewsRows, productsRows, promoItemRows, promoRows] = await Promise.all([
         statsViewPromise,
         receiveViewPromise,
         // V2.2: 一次 load 全部 SKU（包括 0-stock），令母行 best-of 全面正確
@@ -641,6 +645,9 @@ export default function DeadStockPage() {
         // V2.3: 用 queryAllPages 避免 Supabase 1000-row default cap (reviews 表已過 1k 行)
         queryAllPages('dead_stock_reviews', '*'),
         queryAllPages('shopify_products', 'id,status,created_at'),
+        // 推廣分派 —— 用嚟捉「勾咗推廣中但冇派入任何進行中活動」嘅漏網 SKU
+        queryAllPages('promotion_items', 'promotion_id,product_id,is_archived'),
+        queryAllPages('promotions', 'id,status,start_date,end_date'),
       ]);
       // 注意: dead_stock_audit_log 唔再開頁全載 (1.5 萬行) — 展開 SKU 時先逐個 lazy fetch
 
@@ -671,6 +678,26 @@ export default function DeadStockPage() {
       setOrderLines(linesRows as OrderLineRow[]);
       setOrders(ordersRows as OrderRow[]);
       setReviews(reviewsRows as DeadStockReview[]);
+      {
+        const today = new Date().toISOString().slice(0, 10);
+        const liveIds = new Set(
+          (promoRows as any[])
+            .filter(pr => {
+              if (String(pr.status) === 'cancelled') return false;
+              const started = !pr.start_date || String(pr.start_date) <= today;
+              const notEnded = !pr.end_date || String(pr.end_date) >= today;
+              return started && notEnded;
+            })
+            .map(pr => String(pr.id))
+        );
+        setPromoAssignedIds(
+          new Set(
+            (promoItemRows as any[])
+              .filter(it => !it.is_archived && liveIds.has(String(it.promotion_id)))
+              .map(it => String(it.product_id))
+          )
+        );
+      }
       setShopifyProducts(productsRows as ShopifyProductRow[]);
       setPurchaseInvoices(piRows as BcPurchaseInvoiceRow[]);
       setPurchaseInvoiceLines(pilRows as BcPurchaseInvoiceLineRow[]);
@@ -883,6 +910,7 @@ export default function DeadStockPage() {
 
       result.push({
         sku: inv.sku,
+        product_id: String(inv.product_id ?? ''),
         product_title: inv.product_title,
         variant_title: inv.variant_title ?? null,
         vendor: inv.vendor,
@@ -984,6 +1012,9 @@ export default function DeadStockPage() {
       items = items.filter(i => i.is_promoting === true);
     } else if (filters.is_promoting === 'off') {
       items = items.filter(i => i.is_promoting !== true);
+    } else if (filters.is_promoting === 'orphan') {
+      // 勾咗「推廣中」但冇派入任何進行中推廣活動 —— 即係冇活動管住嘅平價貨
+      items = items.filter(i => i.is_promoting === true && !promoAssignedIds.has(String(i.product_id)));
     }
     if (filters.aging_bucket) {
       const b = filters.aging_bucket;
@@ -1074,7 +1105,7 @@ export default function DeadStockPage() {
     });
 
     return visibleGroups;
-  }, [computedItems, filters, sortKey, sortDir]);
+  }, [computedItems, filters, sortKey, sortDir, promoAssignedIds]);
 
   const totalFilteredSkus = useMemo(() => productGroups.reduce((s, g) => s + g.skus.length, 0), [productGroups]);
 
@@ -2242,6 +2273,7 @@ export default function DeadStockPage() {
             { key: 'all', label: '全部' },
             { key: 'on', label: '只看推廣中' },
             { key: 'off', label: '排除推廣中' },
+            { key: 'orphan', label: '⚠ 推廣中但冇活動' },
           ] as const).map(({ key, label }) => {
             const active = filters.is_promoting === key;
             return (
@@ -2254,10 +2286,20 @@ export default function DeadStockPage() {
                         ? 'bg-purple-500/90 text-white border-purple-500'
                         : key === 'off'
                           ? 'bg-amber-500/90 text-white border-amber-500'
-                          : 'bg-primary text-primary-foreground border-primary')
+                          : key === 'orphan'
+                            ? 'bg-rose-500/90 text-white border-rose-500'
+                            : 'bg-primary text-primary-foreground border-primary')
                     : 'border-border/60 bg-background hover:bg-accent'
                 }`}
-                title={key === 'on' ? '只顯示勾咗推廣中嘅 SKU' : key === 'off' ? '排除勾咗推廣中嘅 SKU' : '不篩'}
+                title={
+                  key === 'on'
+                    ? '只顯示勾咗推廣中嘅 SKU'
+                    : key === 'off'
+                      ? '排除勾咗推廣中嘅 SKU'
+                      : key === 'orphan'
+                        ? '勾咗「推廣中」但冇派入任何進行中推廣活動 —— 冇活動管住、亦唔會自動還原原價'
+                        : '不篩'
+                }
               >
                 <span className="inline-block w-3 mr-1 text-center">{active ? '✓' : ''}</span>
                 {label}
