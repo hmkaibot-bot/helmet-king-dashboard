@@ -8,7 +8,7 @@ import {
 } from '@/lib/retail-commission';
 
 /**
- * 零售佣金 — 門市全職同事(KENNY/DICKY/ZOE/BEAN)月結佣金。
+ * 零售佣金 — 門市全職同事(KENNY/DICKY/ZOE/BEAN;VAVA 2026-08 起)月結佣金。
  * 數據源 ShopifyQL(Sales by staff),server 端計。可揀月份,default 當月至今。
  */
 
@@ -102,7 +102,7 @@ export default function RetailCommissionPage() {
         <div className="flex items-center gap-2">
           <Receipt className="h-5 w-5 text-primary" />
           <h1 className="text-lg font-semibold">零售佣金</h1>
-          <span className="text-xs text-muted-foreground">門市全職 · KENNY / DICKY / ZOE / BEAN</span>
+          <span className="text-xs text-muted-foreground">門市全職 · KENNY / DICKY / ZOE / BEAN / VAVA</span>
         </div>
         <div className="flex items-center gap-2">
           <select

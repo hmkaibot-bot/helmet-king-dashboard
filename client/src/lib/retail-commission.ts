@@ -53,7 +53,7 @@ async function fetchLive(month: string): Promise<CommissionResult> {
   };
 }
 
-const STAFF_ORDER = ['KENNY', 'DICKY', 'ZOE', 'BEAN'];
+const STAFF_ORDER = ['KENNY', 'DICKY', 'ZOE', 'BEAN', 'VAVA'];
 
 /** Fallback:讀 Supabase 快照(ShopifyQL read_reports 未開通時用);冇資料回 null。 */
 async function fetchSnapshot(month: string): Promise<CommissionResult | null> {
