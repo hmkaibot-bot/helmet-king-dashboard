@@ -180,7 +180,15 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({ '/retail': true, '/garage': true, '/procurement': true, '/performance': true, '/crm': true, '/marketing': true, '/finance': true });
   const [location] = useLocation();
-  const { dateRange, setDateRange, customFrom, customTo, setCustomFrom, setCustomTo } = useDateRange();
+  const { dateRange, setDateRange, customFrom, customTo, setCustomFrom, setCustomTo, bounds } = useDateRange();
+
+  // 轉去自訂模式:預填而家範圍,兩個日期格自帶日歷揀日
+  const openCustomRange = () => {
+    if (dateRange === 'custom') return;
+    if (!customFrom) setCustomFrom(bounds.from);
+    if (!customTo) setCustomTo(bounds.to);
+    setDateRange('custom');
+  };
 
   // 呢啲頁面冇 subscribe date filter (見 useDateRange / bounds usage)，所以隱藏 dropdown 避免誤導
   const PAGES_WITHOUT_DATE_FILTER = [
@@ -388,8 +396,21 @@ export function AppLayout({ children }: { children: ReactNode }) {
             )}
             {showDateFilter && (
               <>
-                <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-                <Select value={dateRange} onValueChange={(v) => setDateRange(v as DateRange)}>
+                <button
+                  onClick={openCustomRange}
+                  title="用日歷自訂日期範圍"
+                  className={`h-8 w-8 flex items-center justify-center rounded-md transition-colors ${dateRange === 'custom' ? 'text-primary bg-primary/10' : 'text-muted-foreground hover:text-foreground hover:bg-accent'}`}
+                  data-testid="button-custom-range"
+                >
+                  <Calendar className="h-3.5 w-3.5" />
+                </button>
+                <Select
+                  value={dateRange}
+                  onValueChange={(v) => {
+                    if (v === 'custom') { openCustomRange(); return; }
+                    setDateRange(v as DateRange);
+                  }}
+                >
                   <SelectTrigger className="w-[130px] h-8 text-xs" data-testid="select-date-range">
                     <SelectValue />
                   </SelectTrigger>
