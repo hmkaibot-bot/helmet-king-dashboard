@@ -57,7 +57,45 @@ interface WallAd {
   start: string | null; // 投放開始(adset 排程,冇就廣告建立日)
   end: string | null;   // 投放結束;null = 冇設結束日
   adCount: number;      // 同一個 post 合併咗幾多個 ad(server 端 dedup)
+  parts: WallAdPart[];  // 每個 ad 自己嘅一行(類型/投放期/數字分開睇)
   dept: Dept; // client 端按 campaign 名+廣告名分部門
+}
+
+interface WallAdPart {
+  goal: string;
+  name: string;
+  status: string;
+  start: string | null;
+  end: string | null;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  inquiries: number;
+}
+
+// Meta adset optimization_goal → 中文類型
+const GOAL_LABELS: Record<string, string> = {
+  POST_ENGAGEMENT: '互動',
+  CONVERSATIONS: '對話',
+  LANDING_PAGE_VIEWS: '流量',
+  LINK_CLICKS: '流量',
+  REACH: '觸及',
+  IMPRESSIONS: '曝光',
+  THRUPLAY: '影片',
+  OFFSITE_CONVERSIONS: '轉換',
+  CONVERSIONS: '轉換',
+  LEAD_GENERATION: '名單',
+  PAGE_LIKES: '讚好',
+};
+
+/** ad 類型:Meta 實際投放目標優先,冇就靠團隊改名嘅字頭估 */
+function goalLabel(p: { goal: string; name: string }): string {
+  if (GOAL_LABELS[p.goal]) return GOAL_LABELS[p.goal];
+  const n = p.name.toLowerCase();
+  if (n.startsWith('engagement')) return '互動';
+  if (n.startsWith('traffic')) return '流量';
+  if (n.startsWith('message')) return '對話';
+  return '推廣';
 }
 
 /** '2026-07-03' → '7月3日'(唔係今年先加年份) */
@@ -376,27 +414,60 @@ export default function InquiryConversionPage() {
                       {/* 文案全文 — 唔截字 */}
                       <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed whitespace-pre-wrap">{a.copy || '(冇文案 — 可能係 dark post 或動態素材)'}</p>
                     </div>
-                    {/* 投放期 + 四格數據平排、大字 */}
-                    <div className="shrink-0 flex gap-6 text-right w-full md:w-auto justify-end border-t md:border-t-0 border-border/30 pt-3 md:pt-0">
-                      <div>
-                        <p className="text-xs text-muted-foreground">投放期</p>
-                        <p className="text-base font-bold tabular-nums whitespace-nowrap mt-1">
-                          {a.start ? fmtDay(a.start) : '—'}
-                          {a.end
-                            ? ` – ${fmtDay(a.end)}`
-                            : a.status === 'ACTIVE'
-                              ? ' 起'
-                              : ' 起(已停)'}
-                        </p>
-                        {!a.end && a.status === 'ACTIVE' && (
-                          <p className="text-[10px] text-emerald-300 leading-none">進行中</p>
-                        )}
-                      </div>
-                      <div><p className="text-xs text-muted-foreground">花費</p><p className="text-xl font-bold tabular-nums">{formatCurrency(a.spend)}</p></div>
-                      <div><p className="text-xs text-muted-foreground">曝光</p><p className="text-xl font-bold tabular-nums">{formatNumber(a.impressions)}</p></div>
-                      <div><p className="text-xs text-muted-foreground">點擊</p><p className="text-xl font-bold tabular-nums">{formatNumber(a.clicks)}</p></div>
-                      <div><p className="text-xs text-muted-foreground">查詢</p><p className={`text-xl font-bold tabular-nums ${a.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(a.inquiries)}</p></div>
-                    </div>
+                    {/* 類型 + 投放期 + 四格數據:合併咗嘅 post 每個 ad 一行,底加合共 */}
+                    {(() => {
+                      const parts: WallAdPart[] = a.parts?.length
+                        ? a.parts
+                        : [{ goal: '', name: a.name, status: a.status, start: a.start, end: a.end, spend: a.spend, impressions: a.impressions, clicks: a.clicks, inquiries: a.inquiries }];
+                      const multi = parts.length > 1;
+                      const num = multi ? 'text-sm font-semibold tabular-nums leading-6 whitespace-nowrap' : 'text-xl font-bold tabular-nums';
+                      const dateCls = multi ? 'text-sm font-semibold tabular-nums leading-6 whitespace-nowrap' : 'text-base font-bold tabular-nums whitespace-nowrap mt-1';
+                      const totalCls = 'text-sm font-bold tabular-nums leading-6 whitespace-nowrap border-t border-border/40 mt-1 pt-1';
+                      const period = (s: string | null, e: string | null, st: string) =>
+                        `${s ? fmtDay(s) : '—'}${e ? ` – ${fmtDay(e)}` : st === 'ACTIVE' ? ' 起' : ' 起(已停)'}`;
+                      return (
+                        <div className="shrink-0 flex gap-6 text-right w-full md:w-auto justify-end border-t md:border-t-0 border-border/30 pt-3 md:pt-0">
+                          <div>
+                            <p className="text-xs text-muted-foreground">類型</p>
+                            {parts.map((p, i) => (
+                              <p key={i} className={multi ? 'leading-6' : 'mt-1'} title={p.name}>
+                                <span className="inline-block px-1.5 rounded border border-border/60 bg-muted/30 text-[11px] leading-5">{goalLabel(p)}</span>
+                              </p>
+                            ))}
+                            {multi && <p className={`${totalCls} text-muted-foreground font-semibold`}>合共</p>}
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">投放期</p>
+                            {parts.map((p, i) => (
+                              <p key={i} className={dateCls}>{period(p.start, p.end, p.status)}</p>
+                            ))}
+                            {multi && <p className={totalCls}>{period(a.start, a.end, a.status)}</p>}
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">花費</p>
+                            {parts.map((p, i) => <p key={i} className={num}>{formatCurrency(p.spend)}</p>)}
+                            {multi && <p className={totalCls}>{formatCurrency(a.spend)}</p>}
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">曝光</p>
+                            {parts.map((p, i) => <p key={i} className={num}>{formatNumber(p.impressions)}</p>)}
+                            {multi && <p className={totalCls}>{formatNumber(a.impressions)}</p>}
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">點擊</p>
+                            {parts.map((p, i) => <p key={i} className={num}>{formatNumber(p.clicks)}</p>)}
+                            {multi && <p className={totalCls}>{formatNumber(a.clicks)}</p>}
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">查詢</p>
+                            {parts.map((p, i) => (
+                              <p key={i} className={`${num} ${p.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(p.inquiries)}</p>
+                            ))}
+                            {multi && <p className={`${totalCls} ${a.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(a.inquiries)}</p>}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </CardContent>
                 </Card>
               );
