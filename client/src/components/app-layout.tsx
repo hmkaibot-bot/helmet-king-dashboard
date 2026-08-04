@@ -45,6 +45,7 @@ import {
   PenLine,
   Coins,
   Radar,
+  MessageCircle,
 } from 'lucide-react';
 import { clearQueryCache } from '@/lib/query-helpers';
 import { Button } from '@/components/ui/button';
@@ -139,6 +140,7 @@ const NAV_ITEMS: NavItem[] = [
       { path: '/marketing', label: '營銷效果', sublabel: 'Marketing', icon: BarChart3 },
       { path: '/marketing/posts', label: '營銷貼文', sublabel: 'Post Studio', icon: PenLine },
       { path: '/marketing/promo-watch', label: '推廣監察', sublabel: 'Promo Watch', icon: Radar },
+      { path: '/marketing/inquiry-conversion', label: '查詢與轉換', sublabel: 'Conversion', icon: MessageCircle },
     ],
   },
   {
