@@ -72,12 +72,21 @@ export default async function handler(req: any, res: any) {
   let body: any = req.body;
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
   const preset = PRESETS.has(String(body?.datePreset)) ? String(body.datePreset) : 'last_30d';
+  // 精確日期範圍優先(老闆用日歷自訂)— preset 係由「今日」倒數,對唔準自訂範圍
+  const RX_DATE = /^\d{4}-\d{2}-\d{2}$/;
+  let since = String(body?.since ?? '');
+  let until = String(body?.until ?? '');
+  const useRange = RX_DATE.test(since) && RX_DATE.test(until);
+  if (useRange && since > until) [since, until] = [until, since];
 
   try {
+    const insightsField = useRange
+      ? `insights.time_range({"since":"${since}","until":"${until}"}){spend,impressions,reach,clicks,actions}`
+      : `insights.date_preset(${preset}){spend,impressions,reach,clicks,actions}`;
     const fields =
       'name,campaign_id,effective_status,' +
       'creative.thumbnail_width(512).thumbnail_height(512){thumbnail_url,body,title,object_story_spec},' +
-      `insights.date_preset(${preset}){spend,impressions,reach,clicks,actions}`;
+      insightsField;
     const ads: any[] = [];
     let url = `${GRAPH}/${AD_ACCOUNT}/ads?fields=${encodeURIComponent(fields)}&limit=100&access_token=${encodeURIComponent(metaToken)}`;
     for (let page = 0; page < 5 && url; page++) {
@@ -119,7 +128,7 @@ export default async function handler(req: any, res: any) {
       .filter((x): x is NonNullable<typeof x> => !!x && (x.spend > 0 || x.impressions > 0))
       .sort((a, b) => b.spend - a.spend);
 
-    return res.status(200).json({ ok: true, preset, ads: rows });
+    return res.status(200).json({ ok: true, preset: useRange ? null : preset, since: useRange ? since : null, until: useRange ? until : null, ads: rows });
   } catch (e: any) {
     return res.status(200).json({ ok: false, error: e?.message || String(e) });
   }

@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { Card, CardContent } from '@/components/ui/card';
 import { CampaignDetailModal } from '@/components/campaign-detail-modal';
-import { campaignBusiness } from '@/lib/business-filter';
+import { adDepartment, DEPT_LABELS, DEPT_ORDER, type Dept } from '@/lib/business-filter';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/format';
 import { MessageCircle, Users, Target, DollarSign, Store, Megaphone, Sparkles } from 'lucide-react';
 
@@ -14,7 +14,9 @@ import { MessageCircle, Users, Target, DollarSign, Store, Megaphone, Sparkles } 
  *
  * 數據:inquiry_conversions(每晚 GitHub Actions 對數;電話做 join key)。
  * 轉換定義:首次查詢後 14 日內有購買。查詢前 60 日內有單 = 售後查詢。
- * 日期範圍用右上角全站選擇器(有「自訂」)— 按「首次查詢日」過濾。
+ * 日期範圍用右上角全站選擇器(撳日歷 icon 即自訂)— 查詢按「首次查詢日」過濾,
+ * post 牆就直接攞該範圍嘅 Meta time_range 數據(唔再用 preset 近似)。
+ * post 牆全部門都攞,用 chips 分開睇(零售/車房/賣車/旅行團/租車/尻片/通告/工作坊/其他)。
  */
 
 interface ConvRow {
@@ -52,7 +54,21 @@ interface WallAd {
   reach: number;
   clicks: number;
   inquiries: number;
+  dept: Dept; // client 端按 campaign 名+廣告名分部門
 }
+
+// 部門 badge/chip 顏色
+const DEPT_CLS: Record<Dept, string> = {
+  retail: 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10',
+  garage: 'text-amber-300 border-amber-500/40 bg-amber-500/10',
+  bikesale: 'text-sky-300 border-sky-500/40 bg-sky-500/10',
+  tour: 'text-violet-300 border-violet-500/40 bg-violet-500/10',
+  rental: 'text-cyan-300 border-cyan-500/40 bg-cyan-500/10',
+  video: 'text-pink-300 border-pink-500/40 bg-pink-500/10',
+  notice: 'text-slate-300 border-slate-500/40 bg-slate-500/10',
+  workshop: 'text-orange-300 border-orange-500/40 bg-orange-500/10',
+  other: 'text-muted-foreground border-border bg-card',
+};
 
 const CLASS_LABELS: Record<string, { label: string; cls: string }> = {
   converted: { label: '✅ 已轉化', cls: 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' },
@@ -64,16 +80,6 @@ const CLASS_LABELS: Record<string, { label: string; cls: string }> = {
 
 const tail = (p: string) => `…${p.slice(-4)}`;
 
-/** bounds 日數 → post 牆用嘅 Meta date preset */
-function presetForBounds(from: string, to: string): string {
-  const days = Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86400000) + 1;
-  if (days <= 7) return 'last_7d';
-  if (days <= 14) return 'last_14d';
-  if (days <= 31) return 'last_30d';
-  if (days <= 90) return 'last_90d';
-  return 'maximum';
-}
-
 export default function InquiryConversionPage() {
   const { bounds } = useDateRange();
   const [rows, setRows] = useState<ConvRow[]>([]);
@@ -84,6 +90,7 @@ export default function InquiryConversionPage() {
   const [wall, setWall] = useState<{ loading: boolean; error: string | null; ads: WallAd[] }>({
     loading: true, error: null, ads: [],
   });
+  const [deptFilter, setDeptFilter] = useState<'all' | Dept>('retail');
   const [campaignById, setCampaignById] = useState<Record<string, any>>({});
   const [detailCampaign, setDetailCampaign] = useState<any | null>(null);
   // 案例/明細行 drill-down(睇購買紀錄+對話)
@@ -105,7 +112,7 @@ export default function InquiryConversionPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // post 牆:campaign 分類(淨零售)+ 廣告 creative/成效
+  // post 牆:精確跟日期範圍攞 Meta 數據,再按 campaign 名+廣告名分部門
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -123,22 +130,32 @@ export default function InquiryConversionPage() {
         const resp = await fetch('/api/meta-post-wall', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ datePreset: presetForBounds(bounds.from, bounds.to) }),
+          body: JSON.stringify({ since: bounds.from, until: bounds.to }),
         });
         const j: any = await resp.json().catch(() => null);
         if (cancelled) return;
         if (!resp.ok || j?.ok === false) throw new Error(j?.error || `HTTP ${resp.status}（未 deploy 前呢部分見唔到)`);
-        const retailAds = (j.ads as WallAd[]).filter(a => {
+        const ads = (j.ads as WallAd[]).map(a => {
           const c = byId[a.campaignId];
-          return !c || campaignBusiness(c) === 'retail'; // 搵唔到 campaign 嘅照顯示
+          return { ...a, dept: adDepartment(`${c?.campaign_name ?? ''} ${a.name}`, c?.business) };
         });
-        setWall({ loading: false, error: null, ads: retailAds });
+        setWall({ loading: false, error: null, ads });
       } catch (e) {
         if (!cancelled) setWall({ loading: false, error: e instanceof Error ? e.message : String(e), ads: [] });
       }
     })();
     return () => { cancelled = true; };
   }, [bounds]);
+
+  const deptCounts = useMemo(() => {
+    const m = {} as Record<Dept, number>;
+    for (const a of wall.ads) m[a.dept] = (m[a.dept] ?? 0) + 1;
+    return m;
+  }, [wall.ads]);
+  const shownAds = useMemo(
+    () => (deptFilter === 'all' ? wall.ads : wall.ads.filter(a => a.dept === deptFilter)),
+    [wall.ads, deptFilter]
+  );
 
   // ── 按日期範圍(首次查詢日)過濾 ─────────────────────────────────────────
   const inRange = useMemo(
@@ -285,18 +302,41 @@ export default function InquiryConversionPage() {
         </div>
       )}
 
-      {/* 廣告 post 牆:左圖+文案,右數據,撳入睇 detail */}
+      {/* 廣告 post 牆:左圖+文案,右數據,撳入睇 detail;部門 chips 分開睇 */}
       <div>
-        <h3 className="text-xs font-semibold mb-2">📣 廣告 Post 一覽 <span className="font-normal text-muted-foreground">左邊係個 post,右邊係數據 · 撳一行睇深度數據</span></h3>
+        <div className="flex items-center gap-2 flex-wrap mb-2">
+          <h3 className="text-xs font-semibold">📣 廣告 Post 一覽 <span className="font-normal text-muted-foreground">左邊係個 post,右邊係數據 · 撳一行睇深度數據</span></h3>
+          <div className="flex gap-1 flex-wrap ml-auto">
+            <button
+              onClick={() => setDeptFilter('all')}
+              className={`px-2 py-0.5 rounded-full border text-[11px] transition-colors ${deptFilter === 'all' ? 'border-primary bg-primary/15 text-primary font-semibold' : 'border-border text-muted-foreground hover:text-foreground'}`}
+              data-testid="dept-chip-all"
+            >
+              全部 {wall.ads.length}
+            </button>
+            {DEPT_ORDER.map(d => (
+              <button
+                key={d}
+                onClick={() => setDeptFilter(d)}
+                className={`px-2 py-0.5 rounded-full border text-[11px] transition-colors ${deptFilter === d ? `${DEPT_CLS[d]} font-semibold` : 'border-border text-muted-foreground hover:text-foreground'}`}
+                data-testid={`dept-chip-${d}`}
+              >
+                {DEPT_LABELS[d]} {deptCounts[d] ?? 0}
+              </button>
+            ))}
+          </div>
+        </div>
         {wall.loading ? (
           <p className="text-xs text-muted-foreground py-6 text-center animate-pulse">向 Meta 攞緊廣告 post…</p>
         ) : wall.error ? (
           <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs text-amber-300">{wall.error}</div>
-        ) : wall.ads.length === 0 ? (
-          <p className="text-xs text-muted-foreground py-6 text-center">呢個時段冇零售廣告投放</p>
+        ) : shownAds.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-6 text-center">
+            呢個時段冇{deptFilter === 'all' ? '' : `「${DEPT_LABELS[deptFilter as Dept]}」`}廣告投放
+          </p>
         ) : (
           <div className="space-y-2">
-            {wall.ads.map(a => {
+            {shownAds.map(a => {
               const camp = campaignById[a.campaignId];
               return (
                 <Card
@@ -313,7 +353,10 @@ export default function InquiryConversionPage() {
                       <div className="w-28 h-28 rounded-md bg-muted/40 border border-border/40 shrink-0 flex items-center justify-center text-muted-foreground text-[10px]">冇圖</div>
                     )}
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold" title={camp?.campaign_name || a.name}>{camp?.campaign_name || a.name}</p>
+                      <p className="text-sm font-semibold" title={camp?.campaign_name || a.name}>
+                        <span className={`inline-block align-middle mr-2 px-1.5 py-0.5 rounded border text-[10px] font-medium ${DEPT_CLS[a.dept]}`}>{DEPT_LABELS[a.dept]}</span>
+                        {camp?.campaign_name || a.name}
+                      </p>
                       {/* 文案全文 — 唔截字 */}
                       <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed whitespace-pre-wrap">{a.copy || '(冇文案 — 可能係 dark post 或動態素材)'}</p>
                     </div>

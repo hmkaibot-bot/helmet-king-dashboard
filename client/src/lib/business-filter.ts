@@ -66,3 +66,59 @@ export const BUSINESS_LABELS: Record<string, string> = {
   tour: '自駕團',
   nonretail: '非零售',
 };
+
+// ── 部門細分(廣告 post 牆用)────────────────────────────────────────────
+// 老闆 2026-08-04:「廣告 Post 一覽旁我想分返開唔同部門」。
+// 比 retail/nonretail 細:通告/尻片/工作坊呢啲 post 唔想溝埋喺零售廣告度睇。
+// 淨係睇 campaign 名+廣告名(唔睇文案 — 零售文案成日有「預約試戴」會誤中車房)。
+
+export type Dept =
+  | 'retail' | 'garage' | 'bikesale' | 'tour' | 'rental'
+  | 'video' | 'notice' | 'workshop' | 'other';
+
+export const DEPT_LABELS: Record<Dept, string> = {
+  retail: '零售',
+  garage: '車房',
+  bikesale: '賣車',
+  tour: '旅行團',
+  rental: '租車',
+  video: '尻片',
+  notice: '通告',
+  workshop: '工作坊',
+  other: '其他',
+};
+
+export const DEPT_ORDER: Dept[] = [
+  'retail', 'garage', 'bikesale', 'tour', 'rental', 'video', 'notice', 'workshop', 'other',
+];
+
+// 次序有意思:specific 行先(工作坊/通告/尻片),旅行團行喺租車前
+// (團名可能夾住 Rental819),對唔中任何 pattern 先當零售。
+const DEPT_PATTERNS: Array<[RegExp, Dept]> = [
+  [/工作坊|WORKSHOP|體驗班|講座|課程/i, 'workshop'],
+  [/通告|公告|通知|營業時間|休息|放假|颱風|暴雨|搬遷|停業|NOTICE|ANNOUNCEMENT/i, 'notice'],
+  [/尻片|遊車河|短片|新片|影片|拍片|VLOG|YOUTUBE|\bYT\b/i, 'video'],
+  [/自駕團|自駕遊|旅行團|導賞團|白川鄉|昇龍道|西藏團|蒙古團/i, 'tour'],
+  [/車房|維修|保養|驗車|洗車(?!用品)|鏈條|EK\s*鏈|預約|MICHELIN|米芝蓮/i, 'garage'],
+  // 26Pack 套票係 26King 嗰邊嘅產品(老闆確認)→ 跟賣車部門
+  [/26\s*KING|26\s*PACK/i, 'bikesale'],
+  [/現貨車|新車|舊車|二手車|易手車|賣車|寄賣|回收|換車|銀行按揭|上會|電單車出售|車行/, 'bikesale'],
+  [/TRADE\s*-?\s*IN/i, 'bikesale'],
+  // 車款型號(同 NONRETAIL_PATTERNS 同一套;R1 剔走 — Scorpion EXO-R1 係頭盔)
+  [/\bGSX\b|GSX-?\d|\bNMAX\b|\bXMAX\b|\bPCX\b|\bADV\s?1\d0\b|\bCBR?\s?\d{3}\b|\bMT-?\d{1,2}\b|\bR[37]\b|\bZ\s?900\b|\bZX-?\d+\b|NINJA|\bREBEL\b|\bCT125\b|\bMSX\b|\bDAX\b|\bMONKEY\b|\bXSR\b|\bTMAX\b|\bNVX\b|\bAEROX\b|\bFORCE\s?155\b|TENERE|VESPA/i, 'bikesale'],
+  [/租車|租借|RENTAL|RENT\s*A?\s*BIKE/i, 'rental'],
+  [/招聘|請人|HIRING|JOIN\s*US/i, 'other'],
+];
+
+/**
+ * 廣告歸邊個部門 — campaign 業務 override(meta_campaigns.business)優先:
+ * override 話 retail 就 retail;話 nonretail 但 pattern 認唔出邊瓣 → 其他。
+ */
+export function adDepartment(name: string | null | undefined, override?: string | null): Dept {
+  if (override === 'retail') return 'retail';
+  const n = String(name || '');
+  const hit = DEPT_PATTERNS.find(([rx]) => rx.test(n));
+  const dept = hit ? hit[1] : 'retail';
+  if (override === 'nonretail' && dept === 'retail') return 'other';
+  return dept;
+}
