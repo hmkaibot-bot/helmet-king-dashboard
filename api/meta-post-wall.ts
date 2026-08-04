@@ -84,7 +84,7 @@ export default async function handler(req: any, res: any) {
       ? `insights.time_range({"since":"${since}","until":"${until}"}){spend,impressions,reach,clicks,actions}`
       : `insights.date_preset(${preset}){spend,impressions,reach,clicks,actions}`;
     const fields =
-      'name,campaign_id,effective_status,' +
+      'name,campaign_id,effective_status,created_time,adset{start_time,end_time},' +
       'creative.thumbnail_width(512).thumbnail_height(512){thumbnail_url,body,title,object_story_spec},' +
       insightsField;
     const ads: any[] = [];
@@ -116,6 +116,9 @@ export default async function handler(req: any, res: any) {
           name: String(a.name ?? ''),
           campaignId: String(a.campaign_id ?? ''),
           status: String(a.effective_status ?? ''),
+          // 投放期:adset 排程優先,冇就用廣告建立日;end null = 冇設結束日
+          start: String(a?.adset?.start_time || a?.created_time || '').slice(0, 10) || null,
+          end: a?.adset?.end_time ? String(a.adset.end_time).slice(0, 10) : null,
           image: a?.creative?.thumbnail_url || null,
           copy: String(copy).slice(0, 400),
           spend: num(ins.spend),
