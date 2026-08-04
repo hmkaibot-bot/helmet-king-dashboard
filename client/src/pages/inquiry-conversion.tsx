@@ -404,9 +404,16 @@ export default function InquiryConversionPage() {
                 >
                   <CardContent className="p-4 flex gap-4 items-start flex-wrap md:flex-nowrap">
                     {a.image ? (
-                      <img src={a.image} alt="" className="w-28 h-28 rounded-md object-cover shrink-0 border border-border/40" loading="lazy" />
+                      <img
+                        src={a.image}
+                        alt=""
+                        className="w-48 h-48 rounded-md object-cover shrink-0 border border-border/40 cursor-zoom-in"
+                        loading="lazy"
+                        title="撳開原圖"
+                        onClick={(e) => { e.stopPropagation(); window.open(a.image!, '_blank', 'noopener'); }}
+                      />
                     ) : (
-                      <div className="w-28 h-28 rounded-md bg-muted/40 border border-border/40 shrink-0 flex items-center justify-center text-muted-foreground text-[10px]">冇圖</div>
+                      <div className="w-48 h-48 rounded-md bg-muted/40 border border-border/40 shrink-0 flex items-center justify-center text-muted-foreground text-[10px]">冇圖</div>
                     )}
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-semibold" title={camp?.campaign_name || a.name}>

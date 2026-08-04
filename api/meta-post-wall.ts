@@ -94,7 +94,7 @@ export default async function handler(req: any, res: any) {
       : `insights.date_preset(${preset}){spend,impressions,reach,clicks,actions}`;
     const fields =
       'name,campaign_id,effective_status,created_time,adset{start_time,end_time,optimization_goal},' +
-      'creative.thumbnail_width(512).thumbnail_height(512){thumbnail_url,body,title,object_story_spec,effective_object_story_id},' +
+      'creative.thumbnail_width(1080).thumbnail_height(1080){thumbnail_url,image_url,body,title,object_story_spec,effective_object_story_id},' +
       insightsField;
     const ads: any[] = [];
     let url = `${GRAPH}/${AD_ACCOUNT}/ads?fields=${encodeURIComponent(fields)}&limit=100&access_token=${encodeURIComponent(metaToken)}`;
@@ -130,7 +130,13 @@ export default async function handler(req: any, res: any) {
           // 投放期:adset 排程優先,冇就用廣告建立日;end null = 冇設結束日
           start: String(a?.adset?.start_time || a?.created_time || '').slice(0, 10) || null,
           end: a?.adset?.end_time ? String(a.adset.end_time).slice(0, 10) : null,
-          image: a?.creative?.thumbnail_url || null,
+          // 大圖優先:creative 原圖 / 片嘅封面 / link 圖,冇先退返 thumbnail(1080)
+          image:
+            a?.creative?.image_url ||
+            story?.video_data?.image_url ||
+            story?.link_data?.picture ||
+            a?.creative?.thumbnail_url ||
+            null,
           copy: String(copy).slice(0, 400),
           spend: num(ins.spend),
           impressions: num(ins.impressions),
@@ -170,6 +176,7 @@ export default async function handler(req: any, res: any) {
         }
         return {
           ...rep,
+          image: rep.image ?? g.find((x) => x.image)?.image ?? null,
           status: g.some((x) => x.status === 'ACTIVE') ? 'ACTIVE' : rep.status,
           start,
           end: openEnd ? null : end,
