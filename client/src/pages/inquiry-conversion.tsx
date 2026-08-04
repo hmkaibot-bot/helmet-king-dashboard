@@ -416,15 +416,15 @@ export default function InquiryConversionPage() {
                       <img
                         src={a.image}
                         alt=""
-                        className="w-48 h-auto rounded-md shrink-0 border border-border/40 cursor-zoom-in"
+                        className="w-80 max-w-full h-auto rounded-md shrink-0 border border-border/40 cursor-zoom-in"
                         loading="lazy"
                         title="撳嚟彈大圖"
                         onClick={(e) => { e.stopPropagation(); setLightbox(a.image); }}
                       />
                     ) : (
-                      <div className="w-48 h-48 rounded-md bg-muted/40 border border-border/40 shrink-0 flex items-center justify-center text-muted-foreground text-[10px]">冇圖</div>
+                      <div className="w-80 h-44 rounded-md bg-muted/40 border border-border/40 shrink-0 flex items-center justify-center text-muted-foreground text-[10px]">冇圖</div>
                     )}
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-[16rem] flex-1">
                       <p className="text-sm font-semibold" title={camp?.campaign_name || a.name}>
                         <span className={`inline-block align-middle mr-2 px-1.5 py-0.5 rounded border text-[10px] font-medium ${DEPT_CLS[a.dept]}`}>{DEPT_LABELS[a.dept]}</span>
                         {camp?.campaign_name || a.name}
