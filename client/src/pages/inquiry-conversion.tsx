@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useDateRange } from '@/lib/date-context';
 import { queryAll } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
@@ -414,56 +414,52 @@ export default function InquiryConversionPage() {
                       {/* 文案全文 — 唔截字 */}
                       <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed whitespace-pre-wrap">{a.copy || '(冇文案 — 可能係 dark post 或動態素材)'}</p>
                     </div>
-                    {/* 類型 + 投放期 + 四格數據:合併咗嘅 post 每個 ad 一行,底加合共 */}
+                    {/* 類型 + 投放期 + 四格數據:真 grid,每行同一 baseline,合併 post 每個 ad 一行 + 合共 */}
                     {(() => {
                       const parts: WallAdPart[] = a.parts?.length
                         ? a.parts
                         : [{ goal: '', name: a.name, status: a.status, start: a.start, end: a.end, spend: a.spend, impressions: a.impressions, clicks: a.clicks, inquiries: a.inquiries }];
                       const multi = parts.length > 1;
-                      const num = multi ? 'text-sm font-semibold tabular-nums leading-6 whitespace-nowrap' : 'text-xl font-bold tabular-nums';
-                      const dateCls = multi ? 'text-sm font-semibold tabular-nums leading-6 whitespace-nowrap' : 'text-base font-bold tabular-nums whitespace-nowrap mt-1';
-                      const totalCls = 'text-sm font-bold tabular-nums leading-6 whitespace-nowrap border-t border-border/40 mt-1 pt-1';
+                      // 單一 ad:大字;合併咗:細啲但全部同一大小,唔會一欄大一欄細
+                      const val = `${multi ? 'text-sm font-semibold' : 'text-lg font-bold'} tabular-nums whitespace-nowrap leading-7`;
+                      const tot = 'text-sm font-bold tabular-nums whitespace-nowrap leading-7 border-t border-border/40 mt-1 pt-1';
+                      const cell = 'pl-6'; // 欄距用 padding,合共行條線先會連埋一齊
                       const period = (s: string | null, e: string | null, st: string) =>
                         `${s ? fmtDay(s) : '—'}${e ? ` – ${fmtDay(e)}` : st === 'ACTIVE' ? ' 起' : ' 起(已停)'}`;
+                      const chip = (p: WallAdPart) => (
+                        <span className="inline-block px-1.5 rounded border border-border/60 bg-muted/30 text-[11px] leading-5 align-baseline" title={p.name}>
+                          {goalLabel(p)}
+                        </span>
+                      );
                       return (
-                        <div className="shrink-0 flex gap-6 text-right w-full md:w-auto justify-end border-t md:border-t-0 border-border/30 pt-3 md:pt-0">
-                          <div>
-                            <p className="text-xs text-muted-foreground">類型</p>
-                            {parts.map((p, i) => (
-                              <p key={i} className={multi ? 'leading-6' : 'mt-1'} title={p.name}>
-                                <span className="inline-block px-1.5 rounded border border-border/60 bg-muted/30 text-[11px] leading-5">{goalLabel(p)}</span>
-                              </p>
+                        <div className="shrink-0 w-full md:w-auto border-t md:border-t-0 border-border/30 pt-3 md:pt-0 overflow-x-auto">
+                          <div
+                            className="grid items-baseline justify-end text-right"
+                            style={{ gridTemplateColumns: 'repeat(6, max-content)' }}
+                          >
+                            {['類型', '投放期', '花費', '曝光', '點擊', '查詢'].map((h, i) => (
+                              <p key={h} className={`text-xs text-muted-foreground pb-1 ${i ? cell : ''}`}>{h}</p>
                             ))}
-                            {multi && <p className={`${totalCls} text-muted-foreground font-semibold`}>合共</p>}
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground">投放期</p>
                             {parts.map((p, i) => (
-                              <p key={i} className={dateCls}>{period(p.start, p.end, p.status)}</p>
+                              <Fragment key={i}>
+                                <p className={val}>{chip(p)}</p>
+                                <p className={`${val} ${cell}`}>{period(p.start, p.end, p.status)}</p>
+                                <p className={`${val} ${cell}`}>{formatCurrency(p.spend)}</p>
+                                <p className={`${val} ${cell}`}>{formatNumber(p.impressions)}</p>
+                                <p className={`${val} ${cell}`}>{formatNumber(p.clicks)}</p>
+                                <p className={`${val} ${cell} ${p.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(p.inquiries)}</p>
+                              </Fragment>
                             ))}
-                            {multi && <p className={totalCls}>{period(a.start, a.end, a.status)}</p>}
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground">花費</p>
-                            {parts.map((p, i) => <p key={i} className={num}>{formatCurrency(p.spend)}</p>)}
-                            {multi && <p className={totalCls}>{formatCurrency(a.spend)}</p>}
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground">曝光</p>
-                            {parts.map((p, i) => <p key={i} className={num}>{formatNumber(p.impressions)}</p>)}
-                            {multi && <p className={totalCls}>{formatNumber(a.impressions)}</p>}
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground">點擊</p>
-                            {parts.map((p, i) => <p key={i} className={num}>{formatNumber(p.clicks)}</p>)}
-                            {multi && <p className={totalCls}>{formatNumber(a.clicks)}</p>}
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground">查詢</p>
-                            {parts.map((p, i) => (
-                              <p key={i} className={`${num} ${p.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(p.inquiries)}</p>
-                            ))}
-                            {multi && <p className={`${totalCls} ${a.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(a.inquiries)}</p>}
+                            {multi && (
+                              <Fragment>
+                                <p className={`${tot} text-muted-foreground`}>合共</p>
+                                <p className={`${tot} ${cell}`}>{period(a.start, a.end, a.status)}</p>
+                                <p className={`${tot} ${cell}`}>{formatCurrency(a.spend)}</p>
+                                <p className={`${tot} ${cell}`}>{formatNumber(a.impressions)}</p>
+                                <p className={`${tot} ${cell}`}>{formatNumber(a.clicks)}</p>
+                                <p className={`${tot} ${cell} ${a.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(a.inquiries)}</p>
+                              </Fragment>
+                            )}
                           </div>
                         </div>
                       );
