@@ -150,6 +150,15 @@ export default function InquiryConversionPage() {
   const [detailCampaign, setDetailCampaign] = useState<any | null>(null);
   // 案例/明細行 drill-down(睇購買紀錄+對話)
   const [caseRow, setCaseRow] = useState<ConvRow | null>(null);
+  // post 圖 lightbox(頁內彈大圖,唔開新分頁)
+  const [lightbox, setLightbox] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!lightbox) return;
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [lightbox]);
 
   useEffect(() => {
     let cancelled = false;
@@ -407,10 +416,10 @@ export default function InquiryConversionPage() {
                       <img
                         src={a.image}
                         alt=""
-                        className="w-48 h-48 rounded-md object-cover shrink-0 border border-border/40 cursor-zoom-in"
+                        className="w-48 h-auto rounded-md shrink-0 border border-border/40 cursor-zoom-in"
                         loading="lazy"
-                        title="撳開原圖"
-                        onClick={(e) => { e.stopPropagation(); window.open(a.image!, '_blank', 'noopener'); }}
+                        title="撳嚟彈大圖"
+                        onClick={(e) => { e.stopPropagation(); setLightbox(a.image); }}
                       />
                     ) : (
                       <div className="w-48 h-48 rounded-md bg-muted/40 border border-border/40 shrink-0 flex items-center justify-center text-muted-foreground text-[10px]">冇圖</div>
@@ -557,6 +566,17 @@ export default function InquiryConversionPage() {
       )}
 
       {caseRow && <CaseDetailModal row={caseRow} onClose={() => setCaseRow(null)} />}
+
+      {/* post 圖大圖 lightbox — 撳任何地方或 Esc 就閂 */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[100] bg-black/85 flex items-center justify-center p-6 cursor-zoom-out"
+          onClick={() => setLightbox(null)}
+          data-testid="image-lightbox"
+        >
+          <img src={lightbox} alt="" className="max-w-[92vw] max-h-[92vh] object-contain rounded-lg shadow-2xl" />
+        </div>
+      )}
     </div>
   );
 }
