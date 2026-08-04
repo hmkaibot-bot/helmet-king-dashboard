@@ -426,8 +426,8 @@ export default function InquiryConversionPage() {
                         ? a.parts
                         : [{ goal: '', name: a.name, status: a.status, start: a.start, end: a.end, spend: a.spend, impressions: a.impressions, clicks: a.clicks, inquiries: a.inquiries }];
                       const multi = parts.length > 1;
-                      // 成行同一個字碼(單一 ad 大字,合併行中字),對齊靠 grid baseline
-                      const val = `${multi ? 'text-base font-semibold' : 'text-xl font-bold'} tabular-nums whitespace-nowrap leading-8`;
+                      // 全部卡同一字碼 + 下面 grid 欄有固定最少闊度 → 上下唔同卡啲欄都對齊
+                      const val = 'text-base font-semibold tabular-nums whitespace-nowrap leading-8';
                       const tot = 'text-base font-bold tabular-nums whitespace-nowrap leading-8 border-t border-border/70 mt-1 pt-1';
                       const cell = 'pl-6'; // 欄距用 padding,合共行條線先會連埋一齊
                       const period = (s: string | null, e: string | null, st: string) =>
@@ -437,23 +437,28 @@ export default function InquiryConversionPage() {
                           {goalLabel(p)}
                         </span>
                       );
+                      // 類型仔一欄(右齊,個個互動企同一位)+ 字頭(ENGAGEMENT/TRAFFIC)自己一欄
+                      // 靠左;冇字頭就留空。兩欄都有固定最少闊度,唔同卡之間都對得齊。
+                      const tag = (name: string, cls: string) => (
+                        <p className={`${cls} text-left`}>
+                          <span className="pl-1.5 text-[10px] font-normal tracking-wide text-muted-foreground align-baseline">{adTag(name) || ' '}</span>
+                        </p>
+                      );
                       return (
                         <div className="shrink-0 w-full md:w-auto border-t md:border-t-0 border-border/30 pt-3 md:pt-0 overflow-x-auto">
                           <div
                             className="grid items-baseline justify-end text-right"
-                            style={{ gridTemplateColumns: 'repeat(6, max-content)' }}
+                            style={{ gridTemplateColumns: 'minmax(2.5rem,max-content) minmax(4.5rem,max-content) minmax(11rem,max-content) minmax(6.5rem,max-content) minmax(5rem,max-content) minmax(4rem,max-content) minmax(3rem,max-content)' }}
                           >
-                            {['類型', '投放期', '花費', '曝光', '點擊', '查詢'].map((h, i) => (
-                              <p key={h} className={`text-xs text-muted-foreground pb-1 ${i ? cell : ''}`}>{h}</p>
+                            <p className="text-xs text-muted-foreground pb-1">類型</p>
+                            <p className="text-xs text-muted-foreground pb-1">{' '}</p>
+                            {['投放期', '花費', '曝光', '點擊', '查詢'].map((h) => (
+                              <p key={h} className={`text-xs text-muted-foreground pb-1 ${cell}`}>{h}</p>
                             ))}
                             {parts.map((p, i) => (
                               <Fragment key={i}>
-                                <p className={val}>
-                                  {chip(p)}
-                                  {adTag(p.name) && (
-                                    <span className="ml-1.5 text-[10px] font-normal tracking-wide text-muted-foreground align-baseline">{adTag(p.name)}</span>
-                                  )}
-                                </p>
+                                <p className={val}>{chip(p)}</p>
+                                {tag(p.name, val)}
                                 <p className={`${val} ${cell}`}>{period(p.start, p.end, p.status)}</p>
                                 <p className={`${val} ${cell}`}>{formatCurrency(p.spend)}</p>
                                 <p className={`${val} ${cell}`}>{formatNumber(p.impressions)}</p>
@@ -464,6 +469,7 @@ export default function InquiryConversionPage() {
                             {multi && (
                               <Fragment>
                                 <p className={`${tot} text-muted-foreground`}>合共</p>
+                                <p className={tot}>{' '}</p>
                                 <p className={`${tot} ${cell}`}>{period(a.start, a.end, a.status)}</p>
                                 <p className={`${tot} ${cell}`}>{formatCurrency(a.spend)}</p>
                                 <p className={`${tot} ${cell}`}>{formatNumber(a.impressions)}</p>
