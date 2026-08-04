@@ -167,10 +167,11 @@ export default function InquiryConversionPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // post 牆:精確跟日期範圍攞 Meta 數據,再按 campaign 名+廣告名分部門
+  // post 牆:精確跟日期範圍攞 Meta 數據,再按 campaign 名+廣告名分部門。
+  // debounce 500ms — 老闆用日歷揀緊日期嗰陣唔好連環問 Meta(帳戶有 rate limit)。
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const timer = setTimeout(async () => {
       setWall(w => ({ ...w, loading: true, error: null }));
       try {
         const { data: camps } = await supabase.from('meta_campaigns').select('*').limit(2000);
@@ -198,8 +199,8 @@ export default function InquiryConversionPage() {
       } catch (e) {
         if (!cancelled) setWall({ loading: false, error: e instanceof Error ? e.message : String(e), ads: [] });
       }
-    })();
-    return () => { cancelled = true; };
+    }, 500);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [bounds]);
 
   const deptCounts = useMemo(() => {

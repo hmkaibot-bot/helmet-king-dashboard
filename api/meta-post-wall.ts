@@ -58,6 +58,10 @@ const num = (v: any): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+// warm serverless instance 內嘅 response cache(key = 日期範圍)
+const WALL_CACHE_TTL = 10 * 60 * 1000;
+const _wallCache = new Map<string, { t: number; body: any }>();
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -78,6 +82,11 @@ export default async function handler(req: any, res: any) {
   let until = String(body?.until ?? '');
   const useRange = RX_DATE.test(since) && RX_DATE.test(until);
   if (useRange && since > until) [since, until] = [until, since];
+
+  // 10 分鐘 cache — Meta ads 帳戶有 rate limit,狂 refresh/轉日期會俾佢落閘
+  const cacheKey = useRange ? `${since}|${until}` : `preset:${preset}`;
+  const hit = _wallCache.get(cacheKey);
+  if (hit && Date.now() - hit.t < WALL_CACHE_TTL) return res.status(200).json(hit.body);
 
   try {
     const insightsField = useRange
@@ -188,8 +197,19 @@ export default async function handler(req: any, res: any) {
       })
       .sort((a, b) => b.spend - a.spend);
 
-    return res.status(200).json({ ok: true, preset: useRange ? null : preset, since: useRange ? since : null, until: useRange ? until : null, ads: merged });
+    const out = { ok: true, preset: useRange ? null : preset, since: useRange ? since : null, until: useRange ? until : null, ads: merged };
+    _wallCache.set(cacheKey, { t: Date.now(), body: out });
+    return res.status(200).json(out);
   } catch (e: any) {
-    return res.status(200).json({ ok: false, error: e?.message || String(e) });
+    const msg = e?.message || String(e);
+    // Meta ads 帳戶限流(error 17 / 80004)— 有過期 cache 就照用,冇就叫老闆等陣
+    if (/too many calls|request limit|User request limit|80004/i.test(msg)) {
+      if (hit) return res.status(200).json({ ...hit.body, stale: true });
+      return res.status(200).json({
+        ok: false,
+        error: 'Meta 暫時限流(一個鐘內問得太密)— 唔係壞咗,等 5–10 分鐘再 refresh 就返嚟。',
+      });
+    }
+    return res.status(200).json({ ok: false, error: msg });
   }
 }
