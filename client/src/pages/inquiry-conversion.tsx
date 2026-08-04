@@ -86,6 +86,8 @@ export default function InquiryConversionPage() {
   });
   const [campaignById, setCampaignById] = useState<Record<string, any>>({});
   const [detailCampaign, setDetailCampaign] = useState<any | null>(null);
+  // 案例/明細行 drill-down(睇購買紀錄+對話)
+  const [caseRow, setCaseRow] = useState<ConvRow | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -161,42 +163,42 @@ export default function InquiryConversionPage() {
 
   // ── 有趣案例(規則自動生成)────────────────────────────────────────────
   const cases = useMemo(() => {
-    const out: { icon: string; title: string; body: string; tone: string }[] = [];
+    const out: { icon: string; title: string; body: string; tone: string; row: ConvRow }[] = [];
     for (const r of inRange) {
       const who = r.customer_name ? `${r.customer_name}(${tail(r.contact_phone)})` : tail(r.contact_phone);
       if (r.classification === 'converted' && r.bought_matched_brand) {
         out.push({
-          icon: '🎯', tone: 'border-emerald-700/40 bg-emerald-950/20',
+          icon: '🎯', tone: 'border-emerald-700/40 bg-emerald-950/20', row: r,
           title: '問完就買埋嗰件',
           body: `${who} ${r.first_inquiry} 查詢 ${r.inquired_brands || '商品'},${r.days_to_purchase} 日後購買,14 日內消費 ${formatCurrency(Number(r.after_spend_14d))}。`,
         });
       } else if (r.classification === 'converted' && r.days_to_purchase === 0 && Number(r.after_pos_orders_14d) > 0) {
         out.push({
-          icon: '🏃', tone: 'border-emerald-700/40 bg-emerald-950/20',
+          icon: '🏃', tone: 'border-emerald-700/40 bg-emerald-950/20', row: r,
           title: '查詢即日到店購買',
           body: `${who} ${r.first_inquiry} WhatsApp 查詢,同日喺門市消費 ${formatCurrency(Number(r.after_spend_14d))}。`,
         });
       } else if (r.classification === 'converted') {
         out.push({
-          icon: '✅', tone: 'border-emerald-700/40 bg-emerald-950/20',
+          icon: '✅', tone: 'border-emerald-700/40 bg-emerald-950/20', row: r,
           title: `查詢後 ${r.days_to_purchase} 日內購買`,
           body: `${who} ${r.first_inquiry} 查詢${r.inquired_brands ? ` ${r.inquired_brands}` : ''},之後消費 ${formatCurrency(Number(r.after_spend_14d))}${Number(r.after_pos_orders_14d) > 0 ? '(有到店)' : ''}。`,
         });
       } else if (r.classification === 'aftersales' && Number(r.lifetime_spent) >= 10000) {
         out.push({
-          icon: '👑', tone: 'border-sky-700/40 bg-sky-950/20',
+          icon: '👑', tone: 'border-sky-700/40 bg-sky-950/20', row: r,
           title: 'VIP 售後查詢',
           body: `${who} 累計消費 ${formatCurrency(Number(r.lifetime_spent))}(${r.lifetime_orders} 單),${r.first_inquiry} 有跟進查詢 — 服務質素直接影響回購。`,
         });
       } else if (r.via_ad && r.customer_id != null) {
         out.push({
-          icon: '📣', tone: 'border-purple-700/40 bg-purple-950/20',
+          icon: '📣', tone: 'border-purple-700/40 bg-purple-950/20', row: r,
           title: '廣告 re-touch 舊客',
           body: `${who} 係現有客人(累計 ${formatCurrency(Number(r.lifetime_spent || 0))}),${r.first_inquiry} 經 Meta 廣告撳入嚟查詢。`,
         });
       } else if (r.via_ad) {
         out.push({
-          icon: '📣', tone: 'border-purple-700/40 bg-purple-950/20',
+          icon: '📣', tone: 'border-purple-700/40 bg-purple-950/20', row: r,
           title: '經廣告新查詢',
           body: `${tail(r.contact_phone)} ${r.first_inquiry} 經 Meta 廣告(CTWA)入嚟查詢,暫未有購買紀錄。`,
         });
@@ -266,7 +268,13 @@ export default function InquiryConversionPage() {
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
             {cases.map((c, i) => (
-              <Card key={i} className={`border ${c.tone}`} data-testid={`case-card-${i}`}>
+              <Card
+                key={i}
+                className={`border ${c.tone} cursor-pointer hover:brightness-125 transition-all`}
+                onClick={() => setCaseRow(c.row)}
+                title="撳嚟睇詳情(購買紀錄+對話內容)"
+                data-testid={`case-card-${i}`}
+              >
                 <CardContent className="p-3">
                   <p className="text-xs font-semibold">{c.icon} {c.title}</p>
                   <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">{c.body}</p>
@@ -298,21 +306,23 @@ export default function InquiryConversionPage() {
                   title={camp ? '撳嚟睇活動深度數據(人數/查詢/每日趨勢/受眾)' : ''}
                   data-testid={`wall-ad-${a.adId}`}
                 >
-                  <CardContent className="p-3 flex gap-3 items-start">
+                  <CardContent className="p-4 flex gap-4 items-start flex-wrap md:flex-nowrap">
                     {a.image ? (
-                      <img src={a.image} alt="" className="w-24 h-24 rounded-md object-cover shrink-0 border border-border/40" loading="lazy" />
+                      <img src={a.image} alt="" className="w-28 h-28 rounded-md object-cover shrink-0 border border-border/40" loading="lazy" />
                     ) : (
-                      <div className="w-24 h-24 rounded-md bg-muted/40 border border-border/40 shrink-0 flex items-center justify-center text-muted-foreground text-[10px]">冇圖</div>
+                      <div className="w-28 h-28 rounded-md bg-muted/40 border border-border/40 shrink-0 flex items-center justify-center text-muted-foreground text-[10px]">冇圖</div>
                     )}
                     <div className="min-w-0 flex-1">
-                      <p className="text-xs font-medium truncate" title={camp?.campaign_name || a.name}>{camp?.campaign_name || a.name}</p>
-                      <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed line-clamp-3 whitespace-pre-wrap">{a.copy || '(冇文案 — 可能係 dark post 或動態素材)'}</p>
+                      <p className="text-sm font-semibold" title={camp?.campaign_name || a.name}>{camp?.campaign_name || a.name}</p>
+                      {/* 文案全文 — 唔截字 */}
+                      <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed whitespace-pre-wrap">{a.copy || '(冇文案 — 可能係 dark post 或動態素材)'}</p>
                     </div>
-                    <div className="shrink-0 grid grid-cols-2 gap-x-4 gap-y-1 text-right">
-                      <div><p className="text-[10px] text-muted-foreground">花費</p><p className="text-xs font-semibold tabular-nums">{formatCurrency(a.spend)}</p></div>
-                      <div><p className="text-[10px] text-muted-foreground">曝光</p><p className="text-xs font-semibold tabular-nums">{formatNumber(a.impressions)}</p></div>
-                      <div><p className="text-[10px] text-muted-foreground">點擊</p><p className="text-xs font-semibold tabular-nums">{formatNumber(a.clicks)}</p></div>
-                      <div><p className="text-[10px] text-muted-foreground">查詢</p><p className={`text-xs font-semibold tabular-nums ${a.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(a.inquiries)}</p></div>
+                    {/* 四格數據平排、大字 */}
+                    <div className="shrink-0 flex gap-6 text-right w-full md:w-auto justify-end border-t md:border-t-0 border-border/30 pt-3 md:pt-0">
+                      <div><p className="text-xs text-muted-foreground">花費</p><p className="text-xl font-bold tabular-nums">{formatCurrency(a.spend)}</p></div>
+                      <div><p className="text-xs text-muted-foreground">曝光</p><p className="text-xl font-bold tabular-nums">{formatNumber(a.impressions)}</p></div>
+                      <div><p className="text-xs text-muted-foreground">點擊</p><p className="text-xl font-bold tabular-nums">{formatNumber(a.clicks)}</p></div>
+                      <div><p className="text-xs text-muted-foreground">查詢</p><p className={`text-xl font-bold tabular-nums ${a.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(a.inquiries)}</p></div>
                     </div>
                   </CardContent>
                 </Card>
@@ -352,7 +362,12 @@ export default function InquiryConversionPage() {
                   sorted.map(r => {
                     const cl = CLASS_LABELS[r.classification] ?? CLASS_LABELS.unmatched;
                     return (
-                      <tr key={r.contact_phone} className="border-b border-border/20 hover:bg-muted/20">
+                      <tr
+                        key={r.contact_phone}
+                        className="border-b border-border/20 hover:bg-muted/20 cursor-pointer"
+                        onClick={() => setCaseRow(r)}
+                        title="撳嚟睇詳情(購買紀錄+對話內容)"
+                      >
                         <td className="px-3 py-2 tabular-nums">{tail(r.contact_phone)}</td>
                         <td className="px-3 py-2 tabular-nums">{r.first_inquiry}</td>
                         <td className="px-3 py-2"><span className={`px-1.5 py-0.5 rounded text-[10px] border whitespace-nowrap ${cl.cls}`}>{cl.label}</span></td>
@@ -375,6 +390,188 @@ export default function InquiryConversionPage() {
       {detailCampaign && (
         <CampaignDetailModal campaign={detailCampaign} onClose={() => setDetailCampaign(null)} />
       )}
+
+      {caseRow && <CaseDetailModal row={caseRow} onClose={() => setCaseRow(null)} />}
+    </div>
+  );
+}
+
+
+/* ── 案例 drill-down 彈窗:查詢 timeline + 購買紀錄 + 對話內容 ──────────────
+   對話係即時經 /api/sleekflow-messages 問 SleekFlow(唔入庫);
+   webhook 合成嘅 conversation id(contact:…)攞唔到,會提示等每晚同步。 */
+function CaseDetailModal({ row, onClose }: { row: ConvRow; onClose: () => void }) {
+  const [orders, setOrders] = useState<{ loading: boolean; rows: any[] }>({ loading: true, rows: [] });
+  const [chat, setChat] = useState<{ loading: boolean; error: string | null; msgs: { at: string; fromShop: boolean; text: string }[] }>({
+    loading: true, error: null, msgs: [],
+  });
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // 購買紀錄(查詢前 60 日 → 而家)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (row.customer_id == null) { setOrders({ loading: false, rows: [] }); return; }
+      try {
+        const since = new Date(new Date(row.first_inquiry).getTime() - 60 * 86400000).toISOString();
+        const { data: os } = await supabase
+          .from('shopify_orders')
+          .select('id,created_at,total_price,source_name,financial_status,cancelled_at')
+          .eq('customer_id', row.customer_id)
+          .gte('created_at', since)
+          .order('created_at', { ascending: false })
+          .limit(20);
+        const valid = (os || []).filter((o: any) => o.financial_status !== 'refunded' && !o.cancelled_at);
+        const ids = valid.map((o: any) => o.id);
+        let titlesByOrder: Record<string, string[]> = {};
+        if (ids.length) {
+          const { data: ls } = await supabase
+            .from('shopify_order_lines')
+            .select('order_id,title')
+            .in('order_id', ids)
+            .limit(200);
+          for (const l of ls || []) {
+            (titlesByOrder[String((l as any).order_id)] = titlesByOrder[String((l as any).order_id)] || []).push(String((l as any).title));
+          }
+        }
+        if (cancelled) return;
+        setOrders({ loading: false, rows: valid.map((o: any) => ({ ...o, titles: titlesByOrder[String(o.id)] || [] })) });
+      } catch { if (!cancelled) setOrders({ loading: false, rows: [] }); }
+    })();
+    return () => { cancelled = true; };
+  }, [row]);
+
+  // 對話內容(即時問 SleekFlow)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: evs } = await supabase
+          .from('inquiry_events')
+          .select('conversation_id')
+          .eq('contact_phone', row.contact_phone)
+          .limit(200);
+        const convIds = Array.from(new Set((evs || []).map((e: any) => String(e.conversation_id))))
+          .filter(id => /^[0-9a-fA-F-]{30,40}$/.test(id))
+          .slice(0, 3);
+        if (convIds.length === 0) {
+          if (!cancelled) setChat({ loading: false, error: '呢個客暫時只有 webhook 即時紀錄 — 對話內容要等每晚 API 同步之後先攞到', msgs: [] });
+          return;
+        }
+        const { data: sess } = await supabase.auth.getSession();
+        const token = sess.session?.access_token;
+        if (!token) throw new Error('未登入');
+        const all: { at: string; fromShop: boolean; text: string }[] = [];
+        for (const id of convIds) {
+          const resp = await fetch('/api/sleekflow-messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ conversationId: id }),
+          });
+          const j: any = await resp.json().catch(() => null);
+          if (resp.ok && j?.ok !== false && Array.isArray(j?.messages)) all.push(...j.messages);
+        }
+        if (cancelled) return;
+        all.sort((a, b) => a.at.localeCompare(b.at));
+        setChat({ loading: false, error: all.length === 0 ? '攞唔到對話內容(可能未 deploy 或 SleekFlow 冇呢個對話)' : null, msgs: all });
+      } catch (e) {
+        if (!cancelled) setChat({ loading: false, error: e instanceof Error ? e.message : String(e), msgs: [] });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [row]);
+
+  const fmtHK = (iso: string) => {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? '' : d.toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', day: 'numeric', month: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+  };
+  const cl = CLASS_LABELS[row.classification] ?? CLASS_LABELS.unmatched;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-card border border-border rounded-lg shadow-xl w-full max-w-4xl max-h-[92vh] flex flex-col"
+        onClick={e => e.stopPropagation()}
+        data-testid="case-detail-modal"
+      >
+        {/* header */}
+        <div className="flex items-center gap-3 p-4 border-b border-border/60">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-semibold truncate">
+              {row.customer_name || '未對到 Shopify 客'} <span className="text-muted-foreground font-normal">{tail(row.contact_phone)}</span>
+            </h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              首次查詢 {row.first_inquiry} · {row.conversations} 單對話
+              {row.inquired_brands ? ` · 查詢 ${row.inquired_brands}` : ''}
+              {row.via_ad ? ' · 📣 經廣告' : ''}
+              {row.lifetime_orders != null ? ` · 累計 ${row.lifetime_orders} 單 ${formatCurrency(Number(row.lifetime_spent || 0))}` : ''}
+            </p>
+          </div>
+          <span className={`px-2 py-1 rounded text-xs border whitespace-nowrap shrink-0 ${cl.cls}`}>{cl.label}</span>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-accent/60 text-muted-foreground shrink-0" title="關閉 (Esc)">✕</button>
+        </div>
+
+        <div className="overflow-y-auto p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* 左:購買紀錄 */}
+          <div>
+            <h3 className="text-xs font-semibold mb-2">🛒 購買紀錄 <span className="font-normal text-muted-foreground">查詢前 60 日起,新至舊</span></h3>
+            {orders.loading ? (
+              <p className="text-xs text-muted-foreground py-6 text-center animate-pulse">載入中…</p>
+            ) : orders.rows.length === 0 ? (
+              <p className="text-xs text-muted-foreground py-6 text-center">{row.customer_id == null ? '對唔到 Shopify 客 — 冇購買紀錄可睇' : '呢段時間冇訂單'}</p>
+            ) : (
+              <div className="space-y-2">
+                {orders.rows.map((o: any) => {
+                  const day = String(o.created_at).slice(0, 10);
+                  const afterInquiry = day >= row.first_inquiry;
+                  return (
+                    <div key={o.id} className={`rounded-md border p-2.5 ${afterInquiry ? 'border-emerald-700/40 bg-emerald-950/15' : 'border-border/40 bg-muted/20'}`}>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="tabular-nums">{day} · {String(o.source_name) === 'pos' ? '🏪 門市' : '🌐 線上'}</span>
+                        <span className="font-semibold tabular-nums">{formatCurrency(Number(o.total_price || 0))}</span>
+                      </div>
+                      {afterInquiry && <p className="text-[10px] text-emerald-300 mt-0.5">查詢後 {Math.round((new Date(day).getTime() - new Date(row.first_inquiry).getTime()) / 86400000)} 日</p>}
+                      {o.titles.length > 0 && (
+                        <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">{o.titles.slice(0, 4).join(' · ')}{o.titles.length > 4 ? ` …共 ${o.titles.length} 件` : ''}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* 右:對話內容(即時問 SleekFlow,唔入庫) */}
+          <div>
+            <h3 className="text-xs font-semibold mb-2">💬 對話內容 <span className="font-normal text-muted-foreground">即時由 SleekFlow 攞,唔會儲底</span></h3>
+            {chat.loading ? (
+              <p className="text-xs text-muted-foreground py-6 text-center animate-pulse">攞緊對話…</p>
+            ) : chat.error && chat.msgs.length === 0 ? (
+              <p className="text-xs text-muted-foreground py-6 text-center">{chat.error}</p>
+            ) : (
+              <div className="space-y-2 max-h-[52vh] overflow-y-auto pr-1">
+                {chat.msgs.map((m, i) => (
+                  <div key={i} className={m.fromShop ? 'flex justify-end' : ''}>
+                    <div className={`w-fit max-w-[88%] ${m.fromShop ? 'text-right' : ''}`}>
+                      <p className="text-[10px] text-muted-foreground mb-0.5 tabular-nums">{m.fromShop ? '店方 · ' : ''}{fmtHK(m.at)}</p>
+                      <div className={`rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words text-left ${
+                        m.fromShop ? 'bg-primary/15 border border-primary/25 rounded-tr-sm' : 'bg-muted/40 border border-border/30 rounded-tl-sm'
+                      }`}>
+                        {m.text}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
