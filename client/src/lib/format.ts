@@ -20,7 +20,7 @@ export function formatDecimal(value: number | null | undefined, digits = 2): str
   return value.toFixed(digits);
 }
 
-export type DateRange = 'today' | '7d' | '30d' | '90d' | 'this_week' | 'this_month' | 'custom';
+export type DateRange = 'today' | '7d' | '30d' | '90d' | 'this_week' | 'this_month' | 'last_month' | 'custom';
 
 export interface DateBounds {
   from: string; // ISO date string YYYY-MM-DD
@@ -52,6 +52,12 @@ export function getDateBounds(range: DateRange, customFrom?: string, customTo?: 
     case 'this_month': {
       const d = new Date(now.getFullYear(), now.getMonth(), 1);
       return { from: fmtDate(d), to: todayStr };
+    }
+    case 'last_month': {
+      // 上個月 1 號到月尾(day 0 = 上月最後一日)
+      const first = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const last = new Date(now.getFullYear(), now.getMonth(), 0);
+      return { from: fmtDate(first), to: fmtDate(last) };
     }
     case '7d': {
       const d = new Date(now);
@@ -107,6 +113,7 @@ export const DATE_RANGE_LABELS: Record<DateRange, { zh: string; en: string }> = 
   'today': { zh: '今天', en: 'Today' },
   'this_week': { zh: '本週', en: 'This Week' },
   'this_month': { zh: '本月', en: 'This Month' },
+  'last_month': { zh: '上月', en: 'Last Month' },
   '7d': { zh: '最近7天', en: 'Last 7d' },
   '30d': { zh: '最近30天', en: 'Last 30d' },
   '90d': { zh: '最近90天', en: 'Last 90d' },
