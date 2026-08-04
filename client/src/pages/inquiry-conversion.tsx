@@ -98,6 +98,12 @@ function goalLabel(p: { goal: string; name: string }): string {
   return '推廣';
 }
 
+/** 團隊改名嘅字頭(Engagement_/Traffic_…)— 老闆要保留嚟分返邊個 ad 打邊個 */
+function adTag(name: string): string {
+  const m = /^([A-Za-z]{2,})_/.exec(name.trim());
+  return m ? m[1].toUpperCase() : '';
+}
+
 /** '2026-07-03' → '7月3日'(唔係今年先加年份) */
 function fmtDay(iso: string): string {
   const [y, m, d] = iso.split('-').map(Number);
@@ -420,14 +426,14 @@ export default function InquiryConversionPage() {
                         ? a.parts
                         : [{ goal: '', name: a.name, status: a.status, start: a.start, end: a.end, spend: a.spend, impressions: a.impressions, clicks: a.clicks, inquiries: a.inquiries }];
                       const multi = parts.length > 1;
-                      // 單一 ad:大字;合併咗:細啲但全部同一大小,唔會一欄大一欄細
-                      const val = `${multi ? 'text-sm font-semibold' : 'text-lg font-bold'} tabular-nums whitespace-nowrap leading-7`;
-                      const tot = 'text-sm font-bold tabular-nums whitespace-nowrap leading-7 border-t border-border/40 mt-1 pt-1';
+                      // 成行同一個字碼(單一 ad 大字,合併行中字),對齊靠 grid baseline
+                      const val = `${multi ? 'text-base font-semibold' : 'text-xl font-bold'} tabular-nums whitespace-nowrap leading-8`;
+                      const tot = 'text-base font-bold tabular-nums whitespace-nowrap leading-8 border-t border-border/70 mt-1 pt-1';
                       const cell = 'pl-6'; // 欄距用 padding,合共行條線先會連埋一齊
                       const period = (s: string | null, e: string | null, st: string) =>
                         `${s ? fmtDay(s) : '—'}${e ? ` – ${fmtDay(e)}` : st === 'ACTIVE' ? ' 起' : ' 起(已停)'}`;
                       const chip = (p: WallAdPart) => (
-                        <span className="inline-block px-1.5 rounded border border-border/60 bg-muted/30 text-[11px] leading-5 align-baseline" title={p.name}>
+                        <span className="inline-block px-1.5 py-px rounded border border-border/60 bg-muted/30 text-xs leading-5 align-baseline" title={p.name}>
                           {goalLabel(p)}
                         </span>
                       );
@@ -442,7 +448,12 @@ export default function InquiryConversionPage() {
                             ))}
                             {parts.map((p, i) => (
                               <Fragment key={i}>
-                                <p className={val}>{chip(p)}</p>
+                                <p className={val}>
+                                  {chip(p)}
+                                  {adTag(p.name) && (
+                                    <span className="ml-1.5 text-[10px] font-normal tracking-wide text-muted-foreground align-baseline">{adTag(p.name)}</span>
+                                  )}
+                                </p>
                                 <p className={`${val} ${cell}`}>{period(p.start, p.end, p.status)}</p>
                                 <p className={`${val} ${cell}`}>{formatCurrency(p.spend)}</p>
                                 <p className={`${val} ${cell}`}>{formatNumber(p.impressions)}</p>
