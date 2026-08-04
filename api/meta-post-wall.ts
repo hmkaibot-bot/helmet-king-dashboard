@@ -84,7 +84,7 @@ export default async function handler(req: any, res: any) {
       ? `insights.time_range({"since":"${since}","until":"${until}"}){spend,impressions,reach,clicks,actions}`
       : `insights.date_preset(${preset}){spend,impressions,reach,clicks,actions}`;
     const fields =
-      'name,campaign_id,effective_status,created_time,adset{start_time,end_time},' +
+      'name,campaign_id,effective_status,created_time,adset{start_time,end_time,optimization_goal},' +
       'creative.thumbnail_width(512).thumbnail_height(512){thumbnail_url,body,title,object_story_spec,effective_object_story_id},' +
       insightsField;
     const ads: any[] = [];
@@ -117,6 +117,7 @@ export default async function handler(req: any, res: any) {
           campaignId: String(a.campaign_id ?? ''),
           status: String(a.effective_status ?? ''),
           storyId: String(a?.creative?.effective_object_story_id ?? ''),
+          goal: String(a?.adset?.optimization_goal ?? ''), // ad 類型(互動/對話/流量…)
           // 投放期:adset 排程優先,冇就用廣告建立日;end null = 冇設結束日
           start: String(a?.adset?.start_time || a?.created_time || '').slice(0, 10) || null,
           end: a?.adset?.end_time ? String(a.adset.end_time).slice(0, 10) : null,
@@ -169,6 +170,20 @@ export default async function handler(req: any, res: any) {
           clicks: g.reduce((s, x) => s + x.clicks, 0),
           inquiries: g.reduce((s, x) => s + x.inquiries, 0),
           adCount: g.length,
+          // 每個 ad 自己嘅一行(老闆要逐個類型分開睇)— 大花費行先
+          parts: [...g]
+            .sort((x, y) => y.spend - x.spend)
+            .map((x) => ({
+              goal: x.goal,
+              name: x.name,
+              status: x.status,
+              start: x.start,
+              end: x.end,
+              spend: x.spend,
+              impressions: x.impressions,
+              clicks: x.clicks,
+              inquiries: x.inquiries,
+            })),
         };
       })
       .sort((a, b) => b.spend - a.spend);
