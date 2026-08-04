@@ -62,6 +62,24 @@ const num = (v: any): number => {
 const WALL_CACHE_TTL = 10 * 60 * 1000;
 const _wallCache = new Map<string, { t: number; body: any }>();
 
+// page token map(page id → token)— 用嚟讀 post 原相;1 小時 cache
+let _pageTokCache: { t: number; map: Record<string, string> } | null = null;
+async function getPageTokens(metaToken: string): Promise<Record<string, string>> {
+  if (_pageTokCache && Date.now() - _pageTokCache.t < 60 * 60 * 1000) return _pageTokCache.map;
+  try {
+    const r = await fetch(
+      `${GRAPH}/me/accounts?fields=id,access_token&limit=100&access_token=${encodeURIComponent(metaToken)}`
+    );
+    const j: any = await r.json().catch(() => ({}));
+    const map: Record<string, string> = {};
+    for (const p of j?.data ?? []) if (p?.id && p?.access_token) map[String(p.id)] = String(p.access_token);
+    if (Object.keys(map).length) _pageTokCache = { t: Date.now(), map };
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -146,6 +164,47 @@ export default async function handler(req: any, res: any) {
         };
       })
       .filter((x): x is NonNullable<typeof x> => !!x && (x.spend > 0 || x.impressions > 0));
+
+    // post 原相(唔裁邊):creative thumbnail 一定係方形裁圖,所以用 page token
+    // 直接讀返個 post 嘅 attachment 圖(720+ 原比例)。冇相 post 會回 page 頭像
+    // (200×200 / t39.30808-1)— 濾走,維持 creative 嗰張。
+    try {
+      const pageToks = await getPageTokens(metaToken);
+      const byPage = new Map<string, string[]>();
+      for (const r of rows) {
+        const m = /^(\d+)_\d+$/.exec(r.storyId);
+        if (m && pageToks[m[1]]) {
+          if (!byPage.has(m[1])) byPage.set(m[1], []);
+          byPage.get(m[1])!.push(r.storyId);
+        }
+      }
+      const picByStory: Record<string, string> = {};
+      const PIC_FIELDS = encodeURIComponent('full_picture,attachments{media{image}}');
+      for (const [pageId, ids] of byPage) {
+        const tok = pageToks[pageId];
+        const uniq = [...new Set(ids)];
+        for (let i = 0; i < uniq.length; i += 50) {
+          const batch = uniq.slice(i, i + 50);
+          const r = await fetch(
+            `${GRAPH}/?ids=${batch.join(',')}&fields=${PIC_FIELDS}&access_token=${encodeURIComponent(tok)}`
+          );
+          const j: any = await r.json().catch(() => ({}));
+          for (const [sid, v] of Object.entries<any>(j ?? {})) {
+            if (!v || v.error) continue;
+            const img = v?.attachments?.data?.[0]?.media?.image;
+            const src = img && Number(img.width) >= 300 ? String(img.src) : '';
+            const pic = src || (v.full_picture ? String(v.full_picture) : '');
+            if (pic && !/t39\.30808-1\//.test(pic)) picByStory[sid] = pic;
+          }
+        }
+      }
+      for (const r of rows) {
+        const pic = picByStory[r.storyId];
+        if (pic) r.image = pic;
+      }
+    } catch {
+      /* 攞唔到原相就照用 creative 嗰張 */
+    }
 
     // 同一個 post 可能 boost 咗幾次(幾個 ad),甚至同 campaign 開兩個 ad 各出一個 post —
     // 老闆見到「重複」。合併條件:同一個 story id,或者 同 campaign + 同文案。數字加埋。

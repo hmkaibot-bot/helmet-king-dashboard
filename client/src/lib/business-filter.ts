@@ -99,7 +99,8 @@ const DEPT_PATTERNS: Array<[RegExp, Dept]> = [
   [/通告|公告|通知|營業時間|休息|放假|颱風|暴雨|搬遷|停業|NOTICE|ANNOUNCEMENT/i, 'notice'],
   [/尻片|遊車河|短片|新片|影片|拍片|VLOG|YOUTUBE|\bYT\b/i, 'video'],
   [/自駕團|自駕遊|旅行團|導賞團|白川鄉|昇龍道|西藏團|蒙古團/i, 'tour'],
-  [/車房|維修|保養|驗車|洗車(?!用品)|鏈條|EK\s*鏈|預約|MICHELIN|米芝蓮/i, 'garage'],
+  // 偈油/換呔呢啲係車房服務 promo(老闆 2026-08-04:「仲有車房POST係零售」)
+  [/車房|維修|保養|驗車|洗車(?!用品)|鏈條|EK\s*鏈|預約|MICHELIN|米芝蓮|偈油|機油|波箱油|換呔|補呔|輪呔|BEL-?RAY|愛車回復|回復最佳狀態/i, 'garage'],
   // 26Pack 套票係 26King 嗰邊嘅產品(老闆確認)→ 跟賣車部門
   [/26\s*KING|26\s*PACK/i, 'bikesale'],
   [/現貨車|新車|舊車|二手車|易手車|賣車|寄賣|回收|換車|銀行按揭|上會|電單車出售|車行/, 'bikesale'],
