@@ -9,7 +9,7 @@
  *  ③ 非代理品牌當月 net 總額 ≥ $200,000 → 全額 × 0.5%(唔夠 = $0)
  *  ④ 平均件數 = (net_items_sold 扣走 DRINK/beverages/膠袋) ÷ 該同事訂單數
  *     ≥2.6→$1,100 / ≥2.2→$900 / ≥1.8→$700
- *  ⑤ 只計全職:Kenny Chu / Dicky Leung / Zoe Lau / Bean Tang
+ *  ⑤ 只計全職:Kenny Chu / Dicky Leung / Zoe Lau / Bean Tang;VAVA Yeung 2026-08 起
  *  ⑥ Assisting staff:order 有 assisting 就將筆數計落 assisting(冇就計 primary)
  *
  * 全部以 NET SALES 計。門市 = pos_location_name = 'Helmet King Shop'。
@@ -46,13 +46,24 @@ const AGENT_VENDORS = new Set([
   'ROUGH AND ROAD', 'ELEVEIT', 'FURYGAN', 'HELSTONS',
 ]);
 
-// Shopify staff 全名 → dashboard 顯示 code。只呢 4 位納入 scheme。
-const FULLTIME: Record<string, string> = {
-  'Kenny Chu': 'KENNY',
-  'Dicky Leung': 'DICKY',
-  'Zoe Lau': 'ZOE',
-  'Bean Tang': 'BEAN',
+// Shopify staff 全名 → dashboard 顯示 code(+入職生效月,冇 from = 一直都計)。
+// 名要同 Shopify Analytics 嘅 staff_member_name 一字不差。
+const FULLTIME: Record<string, { code: string; from?: string }> = {
+  'Kenny Chu': { code: 'KENNY' },
+  'Dicky Leung': { code: 'DICKY' },
+  'Zoe Lau': { code: 'ZOE' },
+  'Bean Tang': { code: 'BEAN' },
+  'VAVA Yeung': { code: 'VAVA', from: '2026-08' }, // 2026-08 入職
 };
+
+/** 該月生效嘅全職名單(YYYY-MM) */
+function fulltimeForMonth(month: string): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const [name, v] of Object.entries(FULLTIME)) {
+    if (!v.from || v.from <= month) m.set(name, v.code);
+  }
+  return m;
+}
 
 function agentTierRate(total: number): number {
   if (total < 100_000) return 0.01;
@@ -71,9 +82,9 @@ function avgItemsBonus(avg: number): number {
  * 只保留 4 位全職;assisting 若係非全職(例如 HMK Admin)→ 返 null(剔出)。
  * 想改成「assisting 唔係全職時保留 primary」只需改呢一個 function。
  */
-function effectiveStaffCode(primary: string, assisting: string): string | null {
+function effectiveStaffCode(primary: string, assisting: string, roster: Map<string, string>): string | null {
   const eff = (assisting && assisting.trim()) ? assisting.trim() : (primary || '').trim();
-  return FULLTIME[eff] ?? null;
+  return roster.get(eff) ?? null;
 }
 
 // ── auth / shopify ───────────────────────────────────────────────────────────
@@ -200,9 +211,10 @@ export default async function handler(req: any, res: any) {
     const storeTotal = qStore.rows.reduce((s, r) => s + money(r[qStore.cols['net_sales']]), 0);
     const storeHit = storeTotal >= STORE_TARGET;
 
-    // 初始化 4 位全職
+    // 初始化該月生效嘅全職(VAVA 由 2026-08 起先出現)
+    const roster = fulltimeForMonth(monthRaw);
     const agg = new Map<string, StaffAgg>();
-    for (const code of Object.values(FULLTIME)) {
+    for (const code of roster.values()) {
       agg.set(code, { code, agentTotal: 0, nonAgentTotal: 0, orders: 0, items: 0, brands: new Map() });
     }
 
@@ -210,7 +222,7 @@ export default async function handler(req: any, res: any) {
     {
       const { cols, rows } = qBrand;
       for (const r of rows) {
-        const code = effectiveStaffCode(r[cols['staff_member_name']], r[cols['assisting_staff_member_name']]);
+        const code = effectiveStaffCode(r[cols['staff_member_name']], r[cols['assisting_staff_member_name']], roster);
         if (!code) continue;
         const vendor = String(r[cols['product_vendor']] ?? '').trim();
         const net = money(r[cols['net_sales']]);
@@ -226,7 +238,7 @@ export default async function handler(req: any, res: any) {
     {
       const { cols, rows } = qOrders;
       for (const r of rows) {
-        const code = effectiveStaffCode(r[cols['staff_member_name']], r[cols['assisting_staff_member_name']]);
+        const code = effectiveStaffCode(r[cols['staff_member_name']], r[cols['assisting_staff_member_name']], roster);
         if (!code) continue;
         agg.get(code)!.orders += int(r[cols['orders']]);
       }
@@ -235,7 +247,7 @@ export default async function handler(req: any, res: any) {
     {
       const { cols, rows } = qItems;
       for (const r of rows) {
-        const code = effectiveStaffCode(r[cols['staff_member_name']], r[cols['assisting_staff_member_name']]);
+        const code = effectiveStaffCode(r[cols['staff_member_name']], r[cols['assisting_staff_member_name']], roster);
         if (!code) continue;
         agg.get(code)!.items += int(r[cols['net_items_sold']]);
       }
