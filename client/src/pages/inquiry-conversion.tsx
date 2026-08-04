@@ -56,6 +56,7 @@ interface WallAd {
   inquiries: number;
   start: string | null; // 投放開始(adset 排程,冇就廣告建立日)
   end: string | null;   // 投放結束;null = 冇設結束日
+  adCount: number;      // 同一個 post 合併咗幾多個 ad(server 端 dedup)
   dept: Dept; // client 端按 campaign 名+廣告名分部門
 }
 
@@ -366,6 +367,11 @@ export default function InquiryConversionPage() {
                       <p className="text-sm font-semibold" title={camp?.campaign_name || a.name}>
                         <span className={`inline-block align-middle mr-2 px-1.5 py-0.5 rounded border text-[10px] font-medium ${DEPT_CLS[a.dept]}`}>{DEPT_LABELS[a.dept]}</span>
                         {camp?.campaign_name || a.name}
+                        {a.adCount > 1 && (
+                          <span className="ml-2 text-[10px] font-normal text-muted-foreground" title="同一個 post boost 咗幾次,數字已加埋一齊">
+                            ({a.adCount} 個廣告合併)
+                          </span>
+                        )}
                       </p>
                       {/* 文案全文 — 唔截字 */}
                       <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed whitespace-pre-wrap">{a.copy || '(冇文案 — 可能係 dark post 或動態素材)'}</p>
