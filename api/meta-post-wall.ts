@@ -124,6 +124,28 @@ export default async function handler(req: any, res: any) {
       url = j?.paging?.next ?? '';
     }
 
+    // dark post / link ad 嘅 creative 圖係裁過嘅(特賣場原圖其實 1080×1350)—
+    // 用 image_hash 去 adimages 攞返當初上載嘅原檔
+    const hashes = new Set<string>();
+    for (const a of ads) {
+      const s = a?.creative?.object_story_spec;
+      const h = s?.link_data?.image_hash || s?.photo_data?.image_hash;
+      if (h) hashes.add(String(h));
+    }
+    const urlByHash: Record<string, string> = {};
+    try {
+      const list = [...hashes];
+      for (let i = 0; i < list.length; i += 40) {
+        const r = await fetch(
+          `${GRAPH}/${AD_ACCOUNT}/adimages?fields=hash,url,width&hashes=${encodeURIComponent(JSON.stringify(list.slice(i, i + 40)))}&access_token=${encodeURIComponent(metaToken)}`
+        );
+        const j: any = await r.json().catch(() => ({}));
+        for (const img of j?.data ?? []) if (img?.hash && img?.url) urlByHash[String(img.hash)] = String(img.url);
+      }
+    } catch {
+      /* 攞唔到原檔就照用 creative 嗰張 */
+    }
+
     const rows = ads
       .map((a) => {
         const ins = a?.insights?.data?.[0];
@@ -148,13 +170,18 @@ export default async function handler(req: any, res: any) {
           // 投放期:adset 排程優先,冇就用廣告建立日;end null = 冇設結束日
           start: String(a?.adset?.start_time || a?.created_time || '').slice(0, 10) || null,
           end: a?.adset?.end_time ? String(a.adset.end_time).slice(0, 10) : null,
-          // 大圖優先:creative 原圖 / 片嘅封面 / link 圖,冇先退返 thumbnail(1080)
+          // 大圖優先次序:上載原檔(hash)→ creative 原圖 → 片封面 → link 圖 → thumbnail
           image:
+            (() => {
+              const h = story?.link_data?.image_hash || story?.photo_data?.image_hash;
+              return (h && urlByHash[String(h)]) || '';
+            })() ||
             a?.creative?.image_url ||
             story?.video_data?.image_url ||
             story?.link_data?.picture ||
             a?.creative?.thumbnail_url ||
             null,
+          origImg: !!((story?.link_data?.image_hash || story?.photo_data?.image_hash) && urlByHash[String(story?.link_data?.image_hash || story?.photo_data?.image_hash)]),
           copy: String(copy).slice(0, 400),
           spend: num(ins.spend),
           impressions: num(ins.impressions),
@@ -200,7 +227,7 @@ export default async function handler(req: any, res: any) {
       }
       for (const r of rows) {
         const pic = picByStory[r.storyId];
-        if (pic) r.image = pic;
+        if (pic && !r.origImg) r.image = pic; // 已有上載原檔嘅唔好覆蓋(原檔通常仲高清)
       }
     } catch {
       /* 攞唔到原相就照用 creative 嗰張 */
