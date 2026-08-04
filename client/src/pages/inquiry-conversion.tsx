@@ -54,7 +54,17 @@ interface WallAd {
   reach: number;
   clicks: number;
   inquiries: number;
+  start: string | null; // 投放開始(adset 排程,冇就廣告建立日)
+  end: string | null;   // 投放結束;null = 冇設結束日
   dept: Dept; // client 端按 campaign 名+廣告名分部門
+}
+
+/** '2026-07-03' → '7月3日'(唔係今年先加年份) */
+function fmtDay(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  const yy = y === new Date().getFullYear() ? '' : `${String(y).slice(2)}年`;
+  return `${yy}${m}月${d}日`;
 }
 
 // 部門 badge/chip 顏色
@@ -360,8 +370,22 @@ export default function InquiryConversionPage() {
                       {/* 文案全文 — 唔截字 */}
                       <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed whitespace-pre-wrap">{a.copy || '(冇文案 — 可能係 dark post 或動態素材)'}</p>
                     </div>
-                    {/* 四格數據平排、大字 */}
+                    {/* 投放期 + 四格數據平排、大字 */}
                     <div className="shrink-0 flex gap-6 text-right w-full md:w-auto justify-end border-t md:border-t-0 border-border/30 pt-3 md:pt-0">
+                      <div>
+                        <p className="text-xs text-muted-foreground">投放期</p>
+                        <p className="text-base font-bold tabular-nums whitespace-nowrap mt-1">
+                          {a.start ? fmtDay(a.start) : '—'}
+                          {a.end
+                            ? ` – ${fmtDay(a.end)}`
+                            : a.status === 'ACTIVE'
+                              ? ' 起'
+                              : ' 起(已停)'}
+                        </p>
+                        {!a.end && a.status === 'ACTIVE' && (
+                          <p className="text-[10px] text-emerald-300 leading-none">進行中</p>
+                        )}
+                      </div>
                       <div><p className="text-xs text-muted-foreground">花費</p><p className="text-xl font-bold tabular-nums">{formatCurrency(a.spend)}</p></div>
                       <div><p className="text-xs text-muted-foreground">曝光</p><p className="text-xl font-bold tabular-nums">{formatNumber(a.impressions)}</p></div>
                       <div><p className="text-xs text-muted-foreground">點擊</p><p className="text-xl font-bold tabular-nums">{formatNumber(a.clicks)}</p></div>
