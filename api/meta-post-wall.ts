@@ -85,7 +85,7 @@ export default async function handler(req: any, res: any) {
       : `insights.date_preset(${preset}){spend,impressions,reach,clicks,actions}`;
     const fields =
       'name,campaign_id,effective_status,created_time,adset{start_time,end_time},' +
-      'creative.thumbnail_width(512).thumbnail_height(512){thumbnail_url,body,title,object_story_spec},' +
+      'creative.thumbnail_width(512).thumbnail_height(512){thumbnail_url,body,title,object_story_spec,effective_object_story_id},' +
       insightsField;
     const ads: any[] = [];
     let url = `${GRAPH}/${AD_ACCOUNT}/ads?fields=${encodeURIComponent(fields)}&limit=100&access_token=${encodeURIComponent(metaToken)}`;
@@ -116,6 +116,7 @@ export default async function handler(req: any, res: any) {
           name: String(a.name ?? ''),
           campaignId: String(a.campaign_id ?? ''),
           status: String(a.effective_status ?? ''),
+          storyId: String(a?.creative?.effective_object_story_id ?? ''),
           // 投放期:adset 排程優先,冇就用廣告建立日;end null = 冇設結束日
           start: String(a?.adset?.start_time || a?.created_time || '').slice(0, 10) || null,
           end: a?.adset?.end_time ? String(a.adset.end_time).slice(0, 10) : null,
@@ -128,10 +129,51 @@ export default async function handler(req: any, res: any) {
           inquiries,
         };
       })
-      .filter((x): x is NonNullable<typeof x> => !!x && (x.spend > 0 || x.impressions > 0))
+      .filter((x): x is NonNullable<typeof x> => !!x && (x.spend > 0 || x.impressions > 0));
+
+    // 同一個 post 可能 boost 咗幾次(幾個 ad),甚至同 campaign 開兩個 ad 各出一個 post —
+    // 老闆見到「重複」。合併條件:同一個 story id,或者 同 campaign + 同文案。數字加埋。
+    const groups: (typeof rows)[] = [];
+    const byStory = new Map<string, number>();
+    const byCampCopy = new Map<string, number>();
+    for (const r of rows) {
+      const copyKey = r.copy.replace(/\s+/g, ' ').trim().slice(0, 120);
+      const ck = copyKey ? `${r.campaignId}|${copyKey}` : '';
+      let gi = -1;
+      if (r.storyId && byStory.has(r.storyId)) gi = byStory.get(r.storyId)!;
+      else if (ck && byCampCopy.has(ck)) gi = byCampCopy.get(ck)!;
+      if (gi < 0) { gi = groups.length; groups.push([]); }
+      groups[gi].push(r);
+      if (r.storyId) byStory.set(r.storyId, gi);
+      if (ck) byCampCopy.set(ck, gi);
+    }
+    const merged = groups
+      .map((g) => {
+        const rep = g.reduce((a, b) => (b.spend > a.spend ? b : a));
+        let start: string | null = null;
+        let end: string | null = null;
+        let openEnd = false;
+        for (const x of g) {
+          if (x.start && (!start || x.start < start)) start = x.start;
+          if (!x.end) openEnd = true;
+          else if (!end || x.end > end) end = x.end;
+        }
+        return {
+          ...rep,
+          status: g.some((x) => x.status === 'ACTIVE') ? 'ACTIVE' : rep.status,
+          start,
+          end: openEnd ? null : end,
+          spend: g.reduce((s, x) => s + x.spend, 0),
+          impressions: g.reduce((s, x) => s + x.impressions, 0),
+          reach: g.reduce((s, x) => s + x.reach, 0),
+          clicks: g.reduce((s, x) => s + x.clicks, 0),
+          inquiries: g.reduce((s, x) => s + x.inquiries, 0),
+          adCount: g.length,
+        };
+      })
       .sort((a, b) => b.spend - a.spend);
 
-    return res.status(200).json({ ok: true, preset: useRange ? null : preset, since: useRange ? since : null, until: useRange ? until : null, ads: rows });
+    return res.status(200).json({ ok: true, preset: useRange ? null : preset, since: useRange ? since : null, until: useRange ? until : null, ads: merged });
   } catch (e: any) {
     return res.status(200).json({ ok: false, error: e?.message || String(e) });
   }
