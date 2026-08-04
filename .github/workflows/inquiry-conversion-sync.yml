@@ -1,0 +1,36 @@
+name: Inquiry Conversion Sync
+
+# 每晚對數:零售 SleekFlow 查詢客 ↔ Shopify 購買紀錄 → inquiry_conversions。
+# 用 daily-shopify-backfill 同一套 SHOPIFY secrets。
+
+on:
+  schedule:
+    # HKT 02:35 = UTC 18:35(前一天)— 排喺 shopify backfill 之後
+    - cron: "35 18 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet requests
+
+      - name: Sync inquiry conversions
+        env:
+          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/inquiry_conversion_sync.py
