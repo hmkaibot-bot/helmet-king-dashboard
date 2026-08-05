@@ -272,6 +272,13 @@ export default async function handler(req: any, res: any) {
           clicks: g.reduce((s, x) => s + x.clicks, 0),
           inquiries: g.reduce((s, x) => s + x.inquiries, 0),
           adCount: g.length,
+          // 連結推廣活動用嘅穩定 key(story id 排序取最細,合併點變都認得返)
+          postKey: (() => {
+            const sids = g.map((x) => x.storyId).filter(Boolean).sort();
+            return sids[0]
+              ? `sid:${sids[0]}`
+              : `cc:${rep.campaignId}|${rep.copy.replace(/\s+/g, ' ').trim().slice(0, 60)}`;
+          })(),
           // 每個 ad 自己嘅一行(老闆要逐個類型分開睇)— 大花費行先
           parts: [...g]
             .sort((x, y) => y.spend - x.spend)

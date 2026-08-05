@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useDateRange } from '@/lib/date-context';
-import { queryAll } from '@/lib/query-helpers';
+import { queryAll, queryAllPages } from '@/lib/query-helpers';
+import { todayISO } from '@/lib/promotions-shared';
 import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { Card, CardContent } from '@/components/ui/card';
@@ -58,7 +59,54 @@ interface WallAd {
   end: string | null;   // 投放結束;null = 冇設結束日
   adCount: number;      // 同一個 post 合併咗幾多個 ad(server 端 dedup)
   parts: WallAdPart[];  // 每個 ad 自己嘅一行(類型/投放期/數字分開睇)
+  postKey: string;      // 連結推廣活動用嘅穩定 key(server 生成)
   dept: Dept; // client 端按 campaign 名+廣告名分部門
+}
+
+// 推廣活動(連結 post 用嘅精簡版)
+interface PromoLite {
+  id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  status: string;
+}
+
+interface PromoSalesRow {
+  qty: number;
+  rev: number;
+  liftPct: number | null; // 對比投放前同長度時段 ±%;prevZero 時為 null
+  prevZero: boolean;
+}
+
+/**
+ * post ↔ 推廣活動 自動建議:活動名切做兩字一格,睇 post 名+文案命中幾多格,
+ * 而且投放期要同活動期有重疊。命中 ≥2 格先算似。
+ */
+function suggestPromo(ad: WallAd, promos: PromoLite[]): PromoLite | null {
+  const text = `${ad.name} ${ad.copy}`;
+  const adStart = ad.start ?? '';
+  const adEnd = ad.end ?? '9999-12-31';
+  let best: PromoLite | null = null;
+  let bestScore = 0;
+  for (const p of promos) {
+    if (p.status === 'cancelled') continue;
+    if (adStart && (p.end_date < adStart || p.start_date > adEnd)) continue;
+    const clean = p.name.replace(/推廣|活動|\s+/g, '');
+    let hits = 0;
+    const seen = new Set<string>();
+    for (let i = 0; i + 2 <= clean.length; i++) {
+      const bg = clean.slice(i, i + 2);
+      if (seen.has(bg)) continue;
+      seen.add(bg);
+      if (text.includes(bg)) hits++;
+    }
+    if (hits > bestScore) {
+      bestScore = hits;
+      best = p;
+    }
+  }
+  return bestScore >= 2 ? best : null;
 }
 
 interface WallAdPart {
@@ -152,6 +200,126 @@ export default function InquiryConversionPage() {
   const [caseRow, setCaseRow] = useState<ConvRow | null>(null);
   // post 圖 lightbox(頁內彈大圖,唔開新分頁)
   const [lightbox, setLightbox] = useState<string | null>(null);
+
+  // post ↔ 推廣活動 連結 + 關聯銷售(右下角)
+  const [promos, setPromos] = useState<PromoLite[]>([]);
+  const [promoItems, setPromoItems] = useState<Array<{ promotion_id: string; product_id: number | string; is_archived: boolean }>>([]);
+  const [links, setLinks] = useState<Record<string, string>>({}); // postKey → promotion id
+  const [dismissedSug, setDismissedSug] = useState<Set<string>>(new Set());
+  const [promoSales, setPromoSales] = useState<Record<string, PromoSalesRow>>({});
+  const [salesLoading, setSalesLoading] = useState(false);
+  const bigTablesRef = useRef<{ inv: any[]; orders: any[]; lines: any[] } | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const [{ data: ps }, { data: ls }] = await Promise.all([
+        supabase.from('promotions').select('id,name,start_date,end_date,status'),
+        supabase.from('post_promotion_links').select('post_key,promotion_id'),
+      ]);
+      setPromos(((ps as any[]) ?? []).map(p => ({ ...p, id: String(p.id) })));
+      const m: Record<string, string> = {};
+      for (const l of (ls as any[]) ?? []) m[String(l.post_key)] = String(l.promotion_id);
+      setLinks(m);
+      const items = await queryAllPages('promotion_items', 'promotion_id,product_id,is_archived');
+      setPromoItems(items as any[]);
+    })().catch(e => console.error('promo link load error:', e));
+  }, []);
+
+  const suggestions = useMemo(() => {
+    const out: Record<string, PromoLite> = {};
+    for (const a of wall.ads) {
+      if (!a.postKey || links[a.postKey] || dismissedSug.has(a.postKey)) continue;
+      const s = suggestPromo(a, promos);
+      if (s) out[a.postKey] = s;
+    }
+    return out;
+  }, [wall.ads, promos, links, dismissedSug]);
+
+  const linkPromo = async (postKey: string, promotionId: string) => {
+    setLinks(m => ({ ...m, [postKey]: promotionId }));
+    const { error } = await supabase
+      .from('post_promotion_links')
+      .upsert({ post_key: postKey, promotion_id: promotionId }, { onConflict: 'post_key' });
+    if (error) {
+      alert(`連結失敗:${error.message}`);
+      setLinks(m => { const n = { ...m }; delete n[postKey]; return n; });
+    }
+  };
+  const unlinkPromo = async (postKey: string) => {
+    setLinks(m => { const n = { ...m }; delete n[postKey]; return n; });
+    await supabase.from('post_promotion_links').delete().eq('post_key', postKey);
+  };
+
+  // 關聯銷售:活動貨品(SKU 對應)喺投放期內嘅件數+金額,對比投放前同長度時段。
+  // 計法同 promo-snapshot 一致:cancelled 單唔計,營收 = qty × line.price,POS+網店都計。
+  useEffect(() => {
+    const linked = wall.ads.filter(a => a.postKey && links[a.postKey]);
+    if (linked.length === 0 || promoItems.length === 0) { setPromoSales({}); return; }
+    let cancelled = false;
+    (async () => {
+      setSalesLoading(true);
+      try {
+        if (!bigTablesRef.current) {
+          const [inv, orders, lines] = await Promise.all([
+            queryAllPages('shopify_inventory', 'sku,product_id'),
+            queryAllPages('shopify_orders', 'id,created_at,cancelled_at'),
+            queryAllPages('shopify_order_lines', 'sku,quantity,price,order_id'),
+          ]);
+          bigTablesRef.current = { inv: inv as any[], orders: orders as any[], lines: lines as any[] };
+        }
+        if (cancelled) return;
+        const { inv, orders, lines } = bigTablesRef.current;
+        const okOrder = new Map<string, number>(); // order id → created_at ms(cancelled 剔走)
+        for (const o of orders) if (!o.cancelled_at) okOrder.set(String(o.id), new Date(o.created_at).getTime());
+        const skusByProduct = new Map<string, string[]>();
+        for (const r of inv) {
+          if (r.product_id == null || !r.sku) continue;
+          const k = String(r.product_id);
+          const arr = skusByProduct.get(k) ?? [];
+          arr.push(String(r.sku));
+          skusByProduct.set(k, arr);
+        }
+
+        const out: Record<string, PromoSalesRow> = {};
+        for (const a of linked) {
+          const pid = links[a.postKey];
+          // 唔剔 is_archived:活動完結/還原價後 items 會俾 archive,但歷史銷售照計佢哋
+          const prodIds = new Set(
+            promoItems.filter(it => String(it.promotion_id) === pid).map(it => String(it.product_id))
+          );
+          const skuSet = new Set<string>();
+          for (const pd of prodIds) for (const s of skusByProduct.get(pd) ?? []) skuSet.add(s);
+
+          const startISO = a.start ?? todayISO();
+          const endISO = a.end && a.end <= todayISO() ? a.end : todayISO();
+          const start = new Date(startISO + 'T00:00:00').getTime();
+          const end = new Date(endISO + 'T23:59:59').getTime();
+          const winMs = Math.max(86_400_000, end - start + 1000);
+          const preEnd = start - 1;
+          const preStart = start - winMs;
+
+          let qty = 0, rev = 0, preQty = 0;
+          for (const line of lines) {
+            if (!line.sku || !skuSet.has(String(line.sku))) continue;
+            const t = okOrder.get(String(line.order_id));
+            if (t == null) continue;
+            const q = Number(line.quantity ?? 0);
+            if (t >= start && t <= end) { qty += q; rev += q * Number(line.price ?? 0); }
+            else if (t >= preStart && t <= preEnd) preQty += q;
+          }
+          out[a.postKey] = preQty === 0
+            ? { qty, rev, liftPct: null, prevZero: true }
+            : { qty, rev, liftPct: Math.round(((qty - preQty) / preQty) * 100), prevZero: false };
+        }
+        if (!cancelled) setPromoSales(out);
+      } catch (e) {
+        console.error('promo sales calc error:', e);
+      } finally {
+        if (!cancelled) setSalesLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [wall.ads, links, promoItems]);
 
   useEffect(() => {
     if (!lightbox) return;
@@ -498,6 +666,82 @@ export default function InquiryConversionPage() {
                         </div>
                       );
                     })()}
+
+                    {/* 右下角:推廣活動連結 + 關聯銷售(自動建議 → 老闆確認 → 永久記住) */}
+                    {a.postKey && (
+                      <div
+                        className="w-full flex justify-end pt-2 mt-1 border-t border-border/20"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {(() => {
+                          const pid = links[a.postKey];
+                          const linkedPromo = pid ? promos.find(p => p.id === pid) : null;
+                          if (linkedPromo) {
+                            const s = promoSales[a.postKey];
+                            return (
+                              <div className="text-right" data-testid={`promo-sales-${a.adId}`}>
+                                <p className="text-sm">
+                                  📈 推廣「{linkedPromo.name}」投放期賣咗
+                                  {s ? (
+                                    <>
+                                      {' '}
+                                      <span className="font-bold tabular-nums">{formatNumber(s.qty)} 件 · {formatCurrency(s.rev)}</span>{' '}
+                                      {s.prevZero ? (
+                                        <span className="text-xs text-muted-foreground">(投放前同長度時段冇銷售)</span>
+                                      ) : (
+                                        <span className={`text-xs font-semibold ${(s.liftPct ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                                          (對比前段 {(s.liftPct ?? 0) >= 0 ? '+' : ''}{s.liftPct}%)
+                                        </span>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground">{salesLoading ? ' 計緊…' : ' —'}</span>
+                                  )}
+                                </p>
+                                <p className="text-[10px] text-muted-foreground">
+                                  關聯數:活動貨品喺投放期嘅 POS+網店銷售,唔係廣告直接歸因 ·{' '}
+                                  <button className="underline hover:text-foreground" onClick={() => unlinkPromo(a.postKey)}>解除連結</button>
+                                </p>
+                              </div>
+                            );
+                          }
+                          const sug = suggestions[a.postKey];
+                          if (sug) {
+                            return (
+                              <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                似係推廣「<span className="text-foreground font-medium">{sug.name}</span>」?
+                                <button
+                                  className="px-2 py-0.5 rounded border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10"
+                                  onClick={() => linkPromo(a.postKey, sug.id)}
+                                  data-testid={`promo-confirm-${a.adId}`}
+                                >
+                                  ✓ 連結
+                                </button>
+                                <button
+                                  className="px-2 py-0.5 rounded border border-border hover:text-foreground"
+                                  onClick={() => setDismissedSug(prev => new Set(prev).add(a.postKey))}
+                                >
+                                  ✗ 唔係
+                                </button>
+                              </p>
+                            );
+                          }
+                          return (
+                            <select
+                              className="text-xs bg-background border border-border rounded px-1.5 py-0.5 text-muted-foreground"
+                              value=""
+                              onChange={(e) => e.target.value && linkPromo(a.postKey, e.target.value)}
+                              data-testid={`promo-select-${a.adId}`}
+                            >
+                              <option value="">連結推廣活動…</option>
+                              {promos.filter(p => p.status !== 'cancelled').map(p => (
+                                <option key={p.id} value={p.id}>{p.name}</option>
+                              ))}
+                            </select>
+                          );
+                        })()}
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               );
