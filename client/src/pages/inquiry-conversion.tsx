@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useDateRange } from '@/lib/date-context';
 import { queryAll, queryAllPages } from '@/lib/query-helpers';
 import { todayISO } from '@/lib/promotions-shared';
@@ -609,9 +609,9 @@ export default function InquiryConversionPage() {
                     </div>
                     </div>
 
-                    {/* 右邊 40%:數據(每個 ad 兩行,大字)+ 推廣關聯銷售 */}
-                    <div className="w-full lg:w-[40%] shrink-0 border-t lg:border-t-0 lg:border-l border-border/30 pt-3 lg:pt-0 lg:pl-5 flex flex-col items-end gap-3">
-                    {/* 每個 ad 兩行:①類型+投放期 ②四格大字數據;合併加「合共」 */}
+                    {/* 右邊 40%:數據面板(對齊 grid、表頭一次、大字)+ 推廣關聯銷售 */}
+                    <div className="w-full lg:w-[40%] shrink-0">
+                    <div className="rounded-lg bg-muted/20 border border-border/40 p-4 flex flex-col items-end gap-3">
                     {(() => {
                       const parts: WallAdPart[] = a.parts?.length
                         ? a.parts
@@ -620,49 +620,52 @@ export default function InquiryConversionPage() {
                       const period = (s: string | null, e: string | null, st: string) =>
                         `${s ? fmtDay(s) : '—'}${e ? ` – ${fmtDay(e)}` : st === 'ACTIVE' ? ' 起' : ' 起(已停)'}`;
                       const chip = (p: WallAdPart) => (
-                        <span className="inline-block px-1.5 py-px rounded border border-border/60 bg-muted/30 text-xs leading-5 align-middle" title={p.name}>
+                        <span className="inline-block px-1.5 py-px rounded border border-border/60 bg-muted/40 text-xs leading-5 align-baseline" title={p.name}>
                           {goalLabel(p)}
                         </span>
                       );
-                      const statBox = (label: string, value: string, extra = '') => (
-                        <div className="text-right">
-                          <p className="text-xs text-muted-foreground">{label}</p>
-                          <p className={`text-xl font-bold tabular-nums whitespace-nowrap ${extra}`}>{value}</p>
-                        </div>
+                      const val = 'text-lg font-bold tabular-nums whitespace-nowrap leading-9';
+                      const tot = `${val} border-t border-border/70 mt-1 pt-1`;
+                      const cell = 'pl-4';
+                      const tag = (name: string, cls: string) => (
+                        <p className={`${cls} text-left`}>
+                          <span className="pl-1 text-[10px] font-normal tracking-wide text-muted-foreground align-baseline">{adTag(name) || '\u00A0'}</span>
+                        </p>
                       );
                       return (
-                        <div className="w-full flex flex-col items-end gap-3">
-                          {parts.map((p, i) => (
-                            <div key={i} className="text-right">
-                              <p className="text-sm">
-                                {chip(p)}
-                                {adTag(p.name) && (
-                                  <span className="ml-1.5 text-[10px] tracking-wide text-muted-foreground align-middle">{adTag(p.name)}</span>
-                                )}
-                                <span className="ml-3 text-lg font-bold tabular-nums whitespace-nowrap align-middle">{period(p.start, p.end, p.status)}</span>
-                              </p>
-                              <div className="flex gap-6 justify-end mt-1">
-                                {statBox('花費', formatCurrency(p.spend))}
-                                {statBox('曝光', formatNumber(p.impressions))}
-                                {statBox('點擊', formatNumber(p.clicks))}
-                                {statBox('查詢', formatNumber(p.inquiries), p.inquiries > 0 ? 'text-emerald-300' : '')}
-                              </div>
-                            </div>
-                          ))}
-                          {multi && (
-                            <div className="text-right border-t border-border/70 pt-2 w-full">
-                              <p className="text-sm">
-                                <span className="text-muted-foreground font-semibold align-middle">合共</span>
-                                <span className="ml-3 text-lg font-bold tabular-nums whitespace-nowrap align-middle">{period(a.start, a.end, a.status)}</span>
-                              </p>
-                              <div className="flex gap-6 justify-end mt-1">
-                                {statBox('花費', formatCurrency(a.spend))}
-                                {statBox('曝光', formatNumber(a.impressions))}
-                                {statBox('點擊', formatNumber(a.clicks))}
-                                {statBox('查詢', formatNumber(a.inquiries), a.inquiries > 0 ? 'text-emerald-300' : '')}
-                              </div>
-                            </div>
-                          )}
+                        <div className="w-full overflow-x-auto">
+                          <div
+                            className="grid items-baseline justify-end text-right"
+                            style={{ gridTemplateColumns: 'max-content minmax(3.5rem,max-content) minmax(10rem,max-content) minmax(5.5rem,max-content) minmax(4.5rem,max-content) minmax(3.5rem,max-content) minmax(3rem,max-content)' }}
+                          >
+                            <p className="text-xs text-muted-foreground pb-1">類型</p>
+                            <p className="text-xs text-muted-foreground pb-1">{'\u00A0'}</p>
+                            {['投放期', '花費', '曝光', '點擊', '查詢'].map((h) => (
+                              <p key={h} className={`text-xs text-muted-foreground pb-1 ${cell}`}>{h}</p>
+                            ))}
+                            {parts.map((p, i) => (
+                              <Fragment key={i}>
+                                <p className={val}>{chip(p)}</p>
+                                {tag(p.name, val)}
+                                <p className={`${val} ${cell}`}>{period(p.start, p.end, p.status)}</p>
+                                <p className={`${val} ${cell}`}>{formatCurrency(p.spend)}</p>
+                                <p className={`${val} ${cell}`}>{formatNumber(p.impressions)}</p>
+                                <p className={`${val} ${cell}`}>{formatNumber(p.clicks)}</p>
+                                <p className={`${val} ${cell} ${p.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(p.inquiries)}</p>
+                              </Fragment>
+                            ))}
+                            {multi && (
+                              <Fragment>
+                                <p className={`${tot} text-base text-muted-foreground`}>合共</p>
+                                <p className={tot}>{'\u00A0'}</p>
+                                <p className={`${tot} ${cell}`}>{period(a.start, a.end, a.status)}</p>
+                                <p className={`${tot} ${cell}`}>{formatCurrency(a.spend)}</p>
+                                <p className={`${tot} ${cell}`}>{formatNumber(a.impressions)}</p>
+                                <p className={`${tot} ${cell}`}>{formatNumber(a.clicks)}</p>
+                                <p className={`${tot} ${cell} ${a.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(a.inquiries)}</p>
+                              </Fragment>
+                            )}
+                          </div>
                         </div>
                       );
                     })()}
@@ -670,7 +673,7 @@ export default function InquiryConversionPage() {
                     {/* 右下角:推廣活動連結 + 關聯銷售(自動建議 → 老闆確認 → 永久記住) */}
                     {a.postKey && (
                       <div
-                        className="w-full flex justify-end pt-2 border-t border-border/20"
+                        className="w-full flex justify-end"
                         onClick={(e) => e.stopPropagation()}
                       >
                         {(() => {
@@ -679,7 +682,7 @@ export default function InquiryConversionPage() {
                           if (linkedPromo) {
                             const s = promoSales[a.postKey];
                             return (
-                              <div className="text-right" data-testid={`promo-sales-${a.adId}`}>
+                              <div className="text-right rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2" data-testid={`promo-sales-${a.adId}`}>
                                 <p className="text-sm">
                                   📈 推廣「{linkedPromo.name}」投放期賣咗
                                   {s ? (
@@ -742,6 +745,7 @@ export default function InquiryConversionPage() {
                         })()}
                       </div>
                     )}
+                    </div>
                     </div>
                   </CardContent>
                 </Card>
