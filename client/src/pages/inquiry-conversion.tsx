@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDateRange } from '@/lib/date-context';
 import { queryAll, queryAllPages } from '@/lib/query-helpers';
 import { todayISO } from '@/lib/promotions-shared';
@@ -579,7 +579,9 @@ export default function InquiryConversionPage() {
                   title={camp ? '撳嚟睇活動深度數據(人數/查詢/每日趨勢/受眾)' : ''}
                   data-testid={`wall-ad-${a.adId}`}
                 >
-                  <CardContent className="p-4 flex gap-4 items-start flex-wrap md:flex-nowrap">
+                  <CardContent className="p-4 flex flex-col lg:flex-row gap-5 items-start">
+                    {/* 左邊 60%:圖 + 文案 */}
+                    <div className="w-full lg:w-[60%] flex gap-4 items-start flex-wrap md:flex-nowrap">
                     {a.image ? (
                       <img
                         src={a.image}
@@ -605,64 +607,62 @@ export default function InquiryConversionPage() {
                       {/* 文案全文 — 唔截字 */}
                       <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed whitespace-pre-wrap">{a.copy || '(冇文案 — 可能係 dark post 或動態素材)'}</p>
                     </div>
-                    {/* 類型 + 投放期 + 四格數據:真 grid,每行同一 baseline,合併 post 每個 ad 一行 + 合共 */}
+                    </div>
+
+                    {/* 右邊 40%:數據(每個 ad 兩行,大字)+ 推廣關聯銷售 */}
+                    <div className="w-full lg:w-[40%] shrink-0 border-t lg:border-t-0 lg:border-l border-border/30 pt-3 lg:pt-0 lg:pl-5 flex flex-col items-end gap-3">
+                    {/* 每個 ad 兩行:①類型+投放期 ②四格大字數據;合併加「合共」 */}
                     {(() => {
                       const parts: WallAdPart[] = a.parts?.length
                         ? a.parts
                         : [{ goal: '', name: a.name, status: a.status, start: a.start, end: a.end, spend: a.spend, impressions: a.impressions, clicks: a.clicks, inquiries: a.inquiries }];
                       const multi = parts.length > 1;
-                      // 全部卡同一字碼 + 下面 grid 欄有固定最少闊度 → 上下唔同卡啲欄都對齊
-                      const val = 'text-base font-semibold tabular-nums whitespace-nowrap leading-8';
-                      const tot = 'text-base font-bold tabular-nums whitespace-nowrap leading-8 border-t border-border/70 mt-1 pt-1';
-                      const cell = 'pl-6'; // 欄距用 padding,合共行條線先會連埋一齊
                       const period = (s: string | null, e: string | null, st: string) =>
                         `${s ? fmtDay(s) : '—'}${e ? ` – ${fmtDay(e)}` : st === 'ACTIVE' ? ' 起' : ' 起(已停)'}`;
                       const chip = (p: WallAdPart) => (
-                        <span className="inline-block px-1.5 py-px rounded border border-border/60 bg-muted/30 text-xs leading-5 align-baseline" title={p.name}>
+                        <span className="inline-block px-1.5 py-px rounded border border-border/60 bg-muted/30 text-xs leading-5 align-middle" title={p.name}>
                           {goalLabel(p)}
                         </span>
                       );
-                      // 類型仔一欄(右齊,個個互動企同一位)+ 字頭(ENGAGEMENT/TRAFFIC)自己一欄
-                      // 靠左;冇字頭就留空。兩欄都有固定最少闊度,唔同卡之間都對得齊。
-                      const tag = (name: string, cls: string) => (
-                        <p className={`${cls} text-left`}>
-                          <span className="pl-1.5 text-[10px] font-normal tracking-wide text-muted-foreground align-baseline">{adTag(name) || ' '}</span>
-                        </p>
+                      const statBox = (label: string, value: string, extra = '') => (
+                        <div className="text-right">
+                          <p className="text-xs text-muted-foreground">{label}</p>
+                          <p className={`text-xl font-bold tabular-nums whitespace-nowrap ${extra}`}>{value}</p>
+                        </div>
                       );
                       return (
-                        <div className="shrink-0 w-full md:w-auto border-t md:border-t-0 border-border/30 pt-3 md:pt-0 overflow-x-auto">
-                          <div
-                            className="grid items-baseline justify-end text-right"
-                            style={{ gridTemplateColumns: 'minmax(2.5rem,max-content) minmax(4.5rem,max-content) minmax(11rem,max-content) minmax(6.5rem,max-content) minmax(5rem,max-content) minmax(4rem,max-content) minmax(3rem,max-content)' }}
-                          >
-                            <p className="text-xs text-muted-foreground pb-1">類型</p>
-                            <p className="text-xs text-muted-foreground pb-1">{' '}</p>
-                            {['投放期', '花費', '曝光', '點擊', '查詢'].map((h) => (
-                              <p key={h} className={`text-xs text-muted-foreground pb-1 ${cell}`}>{h}</p>
-                            ))}
-                            {parts.map((p, i) => (
-                              <Fragment key={i}>
-                                <p className={val}>{chip(p)}</p>
-                                {tag(p.name, val)}
-                                <p className={`${val} ${cell}`}>{period(p.start, p.end, p.status)}</p>
-                                <p className={`${val} ${cell}`}>{formatCurrency(p.spend)}</p>
-                                <p className={`${val} ${cell}`}>{formatNumber(p.impressions)}</p>
-                                <p className={`${val} ${cell}`}>{formatNumber(p.clicks)}</p>
-                                <p className={`${val} ${cell} ${p.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(p.inquiries)}</p>
-                              </Fragment>
-                            ))}
-                            {multi && (
-                              <Fragment>
-                                <p className={`${tot} text-muted-foreground`}>合共</p>
-                                <p className={tot}>{' '}</p>
-                                <p className={`${tot} ${cell}`}>{period(a.start, a.end, a.status)}</p>
-                                <p className={`${tot} ${cell}`}>{formatCurrency(a.spend)}</p>
-                                <p className={`${tot} ${cell}`}>{formatNumber(a.impressions)}</p>
-                                <p className={`${tot} ${cell}`}>{formatNumber(a.clicks)}</p>
-                                <p className={`${tot} ${cell} ${a.inquiries > 0 ? 'text-emerald-300' : ''}`}>{formatNumber(a.inquiries)}</p>
-                              </Fragment>
-                            )}
-                          </div>
+                        <div className="w-full flex flex-col items-end gap-3">
+                          {parts.map((p, i) => (
+                            <div key={i} className="text-right">
+                              <p className="text-sm">
+                                {chip(p)}
+                                {adTag(p.name) && (
+                                  <span className="ml-1.5 text-[10px] tracking-wide text-muted-foreground align-middle">{adTag(p.name)}</span>
+                                )}
+                                <span className="ml-3 text-lg font-bold tabular-nums whitespace-nowrap align-middle">{period(p.start, p.end, p.status)}</span>
+                              </p>
+                              <div className="flex gap-6 justify-end mt-1">
+                                {statBox('花費', formatCurrency(p.spend))}
+                                {statBox('曝光', formatNumber(p.impressions))}
+                                {statBox('點擊', formatNumber(p.clicks))}
+                                {statBox('查詢', formatNumber(p.inquiries), p.inquiries > 0 ? 'text-emerald-300' : '')}
+                              </div>
+                            </div>
+                          ))}
+                          {multi && (
+                            <div className="text-right border-t border-border/70 pt-2 w-full">
+                              <p className="text-sm">
+                                <span className="text-muted-foreground font-semibold align-middle">合共</span>
+                                <span className="ml-3 text-lg font-bold tabular-nums whitespace-nowrap align-middle">{period(a.start, a.end, a.status)}</span>
+                              </p>
+                              <div className="flex gap-6 justify-end mt-1">
+                                {statBox('花費', formatCurrency(a.spend))}
+                                {statBox('曝光', formatNumber(a.impressions))}
+                                {statBox('點擊', formatNumber(a.clicks))}
+                                {statBox('查詢', formatNumber(a.inquiries), a.inquiries > 0 ? 'text-emerald-300' : '')}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })()}
@@ -670,7 +670,7 @@ export default function InquiryConversionPage() {
                     {/* 右下角:推廣活動連結 + 關聯銷售(自動建議 → 老闆確認 → 永久記住) */}
                     {a.postKey && (
                       <div
-                        className="w-full flex justify-end pt-2 mt-1 border-t border-border/20"
+                        className="w-full flex justify-end pt-2 border-t border-border/20"
                         onClick={(e) => e.stopPropagation()}
                       >
                         {(() => {
@@ -742,6 +742,7 @@ export default function InquiryConversionPage() {
                         })()}
                       </div>
                     )}
+                    </div>
                   </CardContent>
                 </Card>
               );
