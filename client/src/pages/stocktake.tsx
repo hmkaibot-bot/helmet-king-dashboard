@@ -697,51 +697,82 @@ function EntryModal({ item, entries, total, readOnly, onClose, onAdd, onDelete }
   );
 }
 
-// ── 相機掃碼(BarcodeDetector — Android Chrome 支援;iPhone Safari 用搜尋/掃碼槍)──
+// ── 相機掃碼:Android Chrome 用內置 BarcodeDetector(快);iPhone Safari 冇,
+//    用 ZXing JS 解碼做後備(dynamic import,唔掃碼唔會載)──
 
 function ScanModal({ onCode, onClose }: { onCode: (code: string) => void; onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    const Det = (window as any).BarcodeDetector;
-    if (!Det) {
-      setErr('呢部機唔支援相機掃碼(iPhone Safari 未有)— 用搜尋欄或者掃碼槍啦');
-      return;
-    }
     let stream: MediaStream | null = null;
     let raf = 0;
     let stopped = false;
+    let zxingControls: { stop: () => void } | null = null;
+
+    const startNative = async (Det: any) => {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      if (stopped) { stream.getTracks().forEach(t => t.stop()); return; }
+      const v = videoRef.current!;
+      v.srcObject = stream;
+      await v.play();
+      const det = new Det({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code'] });
+      const tick = async () => {
+        if (stopped) return;
+        try {
+          const codes = await det.detect(v);
+          if (codes.length > 0 && codes[0].rawValue) {
+            stopped = true;
+            stream?.getTracks().forEach(t => t.stop());
+            onCode(String(codes[0].rawValue));
+            return;
+          }
+        } catch { /* 個別 frame 認唔到,照 loop */ }
+        raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+    };
+
+    const startZxing = async () => {
+      const [{ BrowserMultiFormatReader }, { DecodeHintType, BarcodeFormat }] = await Promise.all([
+        import('@zxing/browser'),
+        import('@zxing/library'),
+      ]);
+      const hints = new Map();
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+        BarcodeFormat.EAN_13, BarcodeFormat.EAN_8, BarcodeFormat.UPC_A, BarcodeFormat.UPC_E,
+        BarcodeFormat.CODE_128, BarcodeFormat.CODE_39, BarcodeFormat.QR_CODE,
+      ]);
+      const reader = new BrowserMultiFormatReader(hints);
+      zxingControls = await reader.decodeFromConstraints(
+        { video: { facingMode: 'environment' } },
+        videoRef.current!,
+        (result) => {
+          if (result && !stopped) {
+            stopped = true;
+            zxingControls?.stop();
+            onCode(result.getText());
+          }
+        }
+      );
+      if (stopped) zxingControls.stop();
+    };
+
     (async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-        if (stopped) { stream.getTracks().forEach(t => t.stop()); return; }
-        const v = videoRef.current!;
-        v.srcObject = stream;
-        await v.play();
-        const det = new Det({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code'] });
-        const tick = async () => {
-          if (stopped) return;
-          try {
-            const codes = await det.detect(v);
-            if (codes.length > 0 && codes[0].rawValue) {
-              stopped = true;
-              stream?.getTracks().forEach(t => t.stop());
-              onCode(String(codes[0].rawValue));
-              return;
-            }
-          } catch { /* 個別 frame 認唔到,照 loop */ }
-          raf = requestAnimationFrame(tick);
-        };
-        raf = requestAnimationFrame(tick);
+        const Det = (window as any).BarcodeDetector;
+        if (Det) await startNative(Det);
+        else await startZxing();
       } catch (e) {
-        setErr(`開唔到相機:${e instanceof Error ? e.message : String(e)}`);
+        setErr(`開唔到相機:${e instanceof Error ? e.message : String(e)} — 檢查下瀏覽器有冇俾相機權限`);
       }
     })();
+
     return () => {
       stopped = true;
       cancelAnimationFrame(raf);
       stream?.getTracks().forEach(t => t.stop());
+      zxingControls?.stop();
     };
   }, [onCode]);
 
