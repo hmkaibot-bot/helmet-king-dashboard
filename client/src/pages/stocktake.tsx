@@ -99,11 +99,47 @@ function SessionList({ sessions, progress, onOpen, onCreated }: {
   const [keyword, setKeyword] = useState('');
   const [previewCount, setPreviewCount] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
+  // 品牌×類別組合(連件數)— 俾 dropdown 揀,唔使盲打
+  const [facets, setFacets] = useState<Array<{ vendor: string; product_type: string; items: number }>>([]);
+
+  useEffect(() => {
+    if (!showNew || facets.length > 0) return;
+    (async () => {
+      const all: any[] = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase.from('inventory_facets').select('*').range(from, from + 999);
+        if (error) { console.error(error); break; }
+        all.push(...(data ?? []));
+        if (!data || data.length < 1000) break;
+      }
+      setFacets(all);
+    })();
+  }, [showNew, facets.length]);
+
+  const vendorOptions = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const fc of facets) {
+      if (!fc.vendor) continue;
+      if (ptype && fc.product_type !== ptype) continue; // 揀咗類別就淨顯示有呢類貨嘅品牌
+      m.set(fc.vendor, (m.get(fc.vendor) ?? 0) + Number(fc.items));
+    }
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [facets, ptype]);
+
+  const typeOptions = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const fc of facets) {
+      if (!fc.product_type) continue;
+      if (vendor && fc.vendor !== vendor) continue; // 揀咗品牌就淨顯示佢有嘅類別
+      m.set(fc.product_type, (m.get(fc.product_type) ?? 0) + Number(fc.items));
+    }
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [facets, vendor]);
 
   const buildQuery = () => {
     let q = supabase.from('shopify_inventory').select('sku', { count: 'exact', head: true });
-    if (vendor.trim()) q = q.ilike('vendor', `%${vendor.trim()}%`);
-    if (ptype.trim()) q = q.ilike('product_type', `%${ptype.trim()}%`);
+    if (vendor) q = q.eq('vendor', vendor);
+    if (ptype) q = q.eq('product_type', ptype);
     if (keyword.trim()) q = q.or(`product_title.ilike.%${keyword.trim()}%,sku.ilike.%${keyword.trim()}%`);
     return q;
   };
@@ -111,7 +147,7 @@ function SessionList({ sessions, progress, onOpen, onCreated }: {
   // 預覽:個範圍框住幾多行(未去重)
   useEffect(() => {
     if (!showNew) return;
-    if (!vendor.trim() && !ptype.trim() && !keyword.trim()) { setPreviewCount(null); return; }
+    if (!vendor && !ptype && !keyword.trim()) { setPreviewCount(null); return; }
     const t = setTimeout(async () => {
       const { count } = await buildQuery();
       setPreviewCount(count ?? 0);
@@ -121,7 +157,7 @@ function SessionList({ sessions, progress, onOpen, onCreated }: {
 
   const create = async () => {
     if (!name.trim()) { alert('俾個名(例:8月手套盤點)'); return; }
-    if (!vendor.trim() && !ptype.trim() && !keyword.trim()) { alert('至少設一個範圍(品牌/類別/關鍵字)— 全店 28,000 SKU 一次過盤會癲'); return; }
+    if (!vendor && !ptype && !keyword.trim()) { alert('至少設一個範圍(品牌/類別/關鍵字)— 全店 28,000 SKU 一次過盤會癲'); return; }
     setCreating(true);
     try {
       // 分頁攞晒範圍內貨行,同 SKU 多個 variant 行合併(系統數加埋)
@@ -130,8 +166,8 @@ function SessionList({ sessions, progress, onOpen, onCreated }: {
         let q = supabase.from('shopify_inventory')
           .select('sku,product_id,variant_id,product_title,variant_title,vendor,product_type,price,inventory_quantity')
           .range(from, from + 999);
-        if (vendor.trim()) q = q.ilike('vendor', `%${vendor.trim()}%`);
-        if (ptype.trim()) q = q.ilike('product_type', `%${ptype.trim()}%`);
+        if (vendor) q = q.eq('vendor', vendor);
+        if (ptype) q = q.eq('product_type', ptype);
         if (keyword.trim()) q = q.or(`product_title.ilike.%${keyword.trim()}%,sku.ilike.%${keyword.trim()}%`);
         const { data, error } = await q;
         if (error) throw error;
@@ -151,8 +187,8 @@ function SessionList({ sessions, progress, onOpen, onCreated }: {
 
       const { data: sess, error: se } = await supabase.from('stocktake_sessions').insert({
         name: name.trim(),
-        filter_vendor: vendor.trim() || null,
-        filter_product_type: ptype.trim() || null,
+        filter_vendor: vendor || null,
+        filter_product_type: ptype || null,
         filter_keyword: keyword.trim() || null,
       }).select().single();
       if (se) throw se;
@@ -201,8 +237,14 @@ function SessionList({ sessions, progress, onOpen, onCreated }: {
             <p className="text-xs text-muted-foreground">分批盤:設範圍生成該批 SKU 清單,開場一刻 snapshot 系統數做對數基準。可以幾個同事同時入數,分幾日慢慢點。</p>
             <div className="grid gap-2 sm:grid-cols-2">
               <input className="h-9 px-3 rounded-md border border-border bg-background text-sm" placeholder="盤點名(例:8月手套盤點)" value={name} onChange={e => setName(e.target.value)} data-testid="input-session-name" />
-              <input className="h-9 px-3 rounded-md border border-border bg-background text-sm" placeholder="品牌(例:FIVE GLOVES,可留空)" value={vendor} onChange={e => setVendor(e.target.value)} />
-              <input className="h-9 px-3 rounded-md border border-border bg-background text-sm" placeholder="類別(例:HELMET,可留空)" value={ptype} onChange={e => setPtype(e.target.value)} />
+              <select className="h-9 px-2 rounded-md border border-border bg-background text-sm" value={vendor} onChange={e => setVendor(e.target.value)} data-testid="select-vendor">
+                <option value="">全部品牌{facets.length === 0 ? '(載入緊…)' : `(${vendorOptions.length} 個)`}</option>
+                {vendorOptions.map(([v, n]) => <option key={v} value={v}>{v}({n} 件)</option>)}
+              </select>
+              <select className="h-9 px-2 rounded-md border border-border bg-background text-sm" value={ptype} onChange={e => setPtype(e.target.value)} data-testid="select-ptype">
+                <option value="">全部類別{facets.length === 0 ? '(載入緊…)' : `(${typeOptions.length} 個)`}</option>
+                {typeOptions.map(([v, n]) => <option key={v} value={v}>{v}({n} 件)</option>)}
+              </select>
               <input className="h-9 px-3 rounded-md border border-border bg-background text-sm" placeholder="關鍵字(貨名/SKU,可留空)" value={keyword} onChange={e => setKeyword(e.target.value)} />
             </div>
             <div className="flex items-center gap-3">
