@@ -28,6 +28,7 @@ const RetailCommissionPage = lazy(() => import("@/pages/retail-commission"));
 const FinancePage = lazy(() => import("@/pages/finance"));
 const RestockPage = lazy(() => import("@/pages/restock"));
 const DeadStockPage = lazy(() => import("@/pages/dead-stock"));
+const StocktakePage = lazy(() => import("@/pages/stocktake"));
 const PromotionsPage = lazy(() => import("@/pages/promotions"));
 const PromotionsItemsPage = lazy(() => import("@/pages/promotions-items"));
 const PromotionsHistoryPage = lazy(() => import("@/pages/promotions-history"));
@@ -76,6 +77,7 @@ function AppRouter() {
         <Route path="/finance/retail-commission" component={RetailCommissionPage} />
         <Route path="/retail/restock" component={RestockPage} />
         <Route path="/retail/dead-stock" component={DeadStockPage} />
+        <Route path="/retail/stocktake" component={StocktakePage} />
         <Route path="/retail/promotions" component={PromotionsPage} />
         <Route path="/retail/promotions/items" component={PromotionsItemsPage} />
         <Route path="/retail/promotions/history" component={PromotionsHistoryPage} />
