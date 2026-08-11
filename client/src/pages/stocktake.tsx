@@ -1,0 +1,613 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { supabase } from '@/lib/supabase';
+import { Card, CardContent } from '@/components/ui/card';
+import { formatCurrency, formatNumber } from '@/lib/format';
+import { ClipboardList, Camera, X, CheckCircle2, ChevronLeft } from 'lucide-react';
+
+/**
+ * 盤點 — 分批開場,同事手機入數,完場出差異報告。
+ *
+ * 流程(老闆 2026-08-11 拍板):
+ *   1. 分批:開場時按 品牌/類別/關鍵字 由 shopify_inventory 生成該批 SKU 清單,
+ *      同時 snapshot 系統數(盤點期間賣貨都唔會影響對數基準)。
+ *   2. 入數:相機掃碼(barcode 絕大部分 = SKU)/ 掃碼槍(鍵盤模式,Enter 提交)/
+ *      手動搜尋。同一個碼掃多次自動 +1。點完先見到同系統差幾多(盲點原則)。
+ *   3. 完場:差異報告(款/件/金額)+ CSV,倉務同事攞去 Shopify 調整,唔自動寫入。
+ */
+
+interface Session {
+  id: string;
+  name: string;
+  filter_vendor: string | null;
+  filter_product_type: string | null;
+  filter_keyword: string | null;
+  status: string;
+  created_at: string;
+  finished_at: string | null;
+}
+
+interface Item {
+  session_id: string;
+  sku: string;
+  product_title: string | null;
+  variant_title: string | null;
+  vendor: string | null;
+  product_type: string | null;
+  price: number | null;
+  system_qty: number;
+  counted_qty: number | null;
+  counted_by: string | null;
+  counted_at: string | null;
+}
+
+const itemName = (i: Item) =>
+  `${i.product_title ?? ''}${i.variant_title && i.variant_title !== 'Default Title' ? ` — ${i.variant_title}` : ''}`;
+
+export default function StocktakePage() {
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [progress, setProgress] = useState<Record<string, { total: number; counted: number }>>({});
+  const [active, setActive] = useState<Session | null>(null);
+
+  const loadSessions = async () => {
+    const { data } = await supabase.from('stocktake_sessions').select('*').order('created_at', { ascending: false });
+    const ss = (data as Session[]) ?? [];
+    setSessions(ss);
+    // 進度:逐場攞 total / counted(場次唔多,逐場 count 夠快)
+    const prog: Record<string, { total: number; counted: number }> = {};
+    await Promise.all(
+      ss.map(async (s) => {
+        const [{ count: total }, { count: counted }] = await Promise.all([
+          supabase.from('stocktake_items').select('sku', { count: 'exact', head: true }).eq('session_id', s.id),
+          supabase.from('stocktake_items').select('sku', { count: 'exact', head: true }).eq('session_id', s.id).not('counted_qty', 'is', null),
+        ]);
+        prog[s.id] = { total: total ?? 0, counted: counted ?? 0 };
+      })
+    );
+    setProgress(prog);
+  };
+
+  useEffect(() => { loadSessions(); }, []);
+
+  return (
+    <div className="space-y-4 max-w-5xl mx-auto">
+      {active ? (
+        <SessionDetail
+          session={active}
+          onBack={() => { setActive(null); loadSessions(); }}
+          onSessionChange={(s) => setActive(s)}
+        />
+      ) : (
+        <SessionList sessions={sessions} progress={progress} onOpen={setActive} onCreated={loadSessions} />
+      )}
+    </div>
+  );
+}
+
+// ── 場次列表 + 開新盤點 ─────────────────────────────────────────────────────
+
+function SessionList({ sessions, progress, onOpen, onCreated }: {
+  sessions: Session[];
+  progress: Record<string, { total: number; counted: number }>;
+  onOpen: (s: Session) => void;
+  onCreated: () => void;
+}) {
+  const [showNew, setShowNew] = useState(false);
+  const [name, setName] = useState('');
+  const [vendor, setVendor] = useState('');
+  const [ptype, setPtype] = useState('');
+  const [keyword, setKeyword] = useState('');
+  const [previewCount, setPreviewCount] = useState<number | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  const buildQuery = () => {
+    let q = supabase.from('shopify_inventory').select('sku', { count: 'exact', head: true });
+    if (vendor.trim()) q = q.ilike('vendor', `%${vendor.trim()}%`);
+    if (ptype.trim()) q = q.ilike('product_type', `%${ptype.trim()}%`);
+    if (keyword.trim()) q = q.or(`product_title.ilike.%${keyword.trim()}%,sku.ilike.%${keyword.trim()}%`);
+    return q;
+  };
+
+  // 預覽:個範圍框住幾多行(未去重)
+  useEffect(() => {
+    if (!showNew) return;
+    if (!vendor.trim() && !ptype.trim() && !keyword.trim()) { setPreviewCount(null); return; }
+    const t = setTimeout(async () => {
+      const { count } = await buildQuery();
+      setPreviewCount(count ?? 0);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [vendor, ptype, keyword, showNew]);
+
+  const create = async () => {
+    if (!name.trim()) { alert('俾個名(例:8月手套盤點)'); return; }
+    if (!vendor.trim() && !ptype.trim() && !keyword.trim()) { alert('至少設一個範圍(品牌/類別/關鍵字)— 全店 28,000 SKU 一次過盤會癲'); return; }
+    setCreating(true);
+    try {
+      // 分頁攞晒範圍內貨行,同 SKU 多個 variant 行合併(系統數加埋)
+      const rows: any[] = [];
+      for (let from = 0; ; from += 1000) {
+        let q = supabase.from('shopify_inventory')
+          .select('sku,product_id,variant_id,product_title,variant_title,vendor,product_type,price,inventory_quantity')
+          .range(from, from + 999);
+        if (vendor.trim()) q = q.ilike('vendor', `%${vendor.trim()}%`);
+        if (ptype.trim()) q = q.ilike('product_type', `%${ptype.trim()}%`);
+        if (keyword.trim()) q = q.or(`product_title.ilike.%${keyword.trim()}%,sku.ilike.%${keyword.trim()}%`);
+        const { data, error } = await q;
+        if (error) throw error;
+        rows.push(...(data ?? []));
+        if (!data || data.length < 1000) break;
+      }
+      const bySku = new Map<string, any>();
+      for (const r of rows) {
+        const sku = String(r.sku ?? '').trim();
+        if (!sku) continue;
+        const ex = bySku.get(sku);
+        if (ex) ex.system_qty += Number(r.inventory_quantity ?? 0);
+        else bySku.set(sku, { ...r, system_qty: Number(r.inventory_quantity ?? 0) });
+      }
+      if (bySku.size === 0) { alert('呢個範圍搵唔到貨'); return; }
+      if (bySku.size > 5000 && !confirm(`呢批有 ${bySku.size} 個 SKU,肯定一批盤咁多?`)) return;
+
+      const { data: sess, error: se } = await supabase.from('stocktake_sessions').insert({
+        name: name.trim(),
+        filter_vendor: vendor.trim() || null,
+        filter_product_type: ptype.trim() || null,
+        filter_keyword: keyword.trim() || null,
+      }).select().single();
+      if (se) throw se;
+
+      const items = [...bySku.values()].map((r) => ({
+        session_id: (sess as any).id,
+        sku: String(r.sku).trim(),
+        product_id: r.product_id ?? null,
+        variant_id: r.variant_id ?? null,
+        product_title: r.product_title ?? null,
+        variant_title: r.variant_title ?? null,
+        vendor: r.vendor ?? null,
+        product_type: r.product_type ?? null,
+        price: r.price ?? null,
+        system_qty: r.system_qty,
+      }));
+      for (let i = 0; i < items.length; i += 500) {
+        const { error } = await supabase.from('stocktake_items').insert(items.slice(i, i + 500));
+        if (error) throw error;
+      }
+      setShowNew(false); setName(''); setVendor(''); setPtype(''); setKeyword('');
+      onCreated();
+    } catch (e) {
+      alert(`開場失敗:${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-bold flex items-center gap-2"><ClipboardList className="h-5 w-5" /> 盤點 Stocktake</h2>
+        <button
+          onClick={() => setShowNew(v => !v)}
+          className="px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-semibold"
+          data-testid="button-new-session"
+        >
+          {showNew ? '收起' : '+ 開新盤點'}
+        </button>
+      </div>
+
+      {showNew && (
+        <Card className="border-primary/40">
+          <CardContent className="p-4 space-y-3">
+            <p className="text-xs text-muted-foreground">分批盤:設範圍生成該批 SKU 清單,開場一刻 snapshot 系統數做對數基準。</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <input className="h-9 px-3 rounded-md border border-border bg-background text-sm" placeholder="盤點名(例:8月手套盤點)" value={name} onChange={e => setName(e.target.value)} data-testid="input-session-name" />
+              <input className="h-9 px-3 rounded-md border border-border bg-background text-sm" placeholder="品牌(例:FIVE GLOVES,可留空)" value={vendor} onChange={e => setVendor(e.target.value)} />
+              <input className="h-9 px-3 rounded-md border border-border bg-background text-sm" placeholder="類別(例:HELMET,可留空)" value={ptype} onChange={e => setPtype(e.target.value)} />
+              <input className="h-9 px-3 rounded-md border border-border bg-background text-sm" placeholder="關鍵字(貨名/SKU,可留空)" value={keyword} onChange={e => setKeyword(e.target.value)} />
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={create} disabled={creating} className="px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-50" data-testid="button-create-session">
+                {creating ? '生成緊清單…' : '開場'}
+              </button>
+              {previewCount != null && <span className="text-xs text-muted-foreground">範圍內約 {formatNumber(previewCount)} 行貨</span>}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="space-y-2">
+        {sessions.length === 0 && <p className="text-sm text-muted-foreground py-8 text-center">未有盤點場次 — 撳「開新盤點」開始</p>}
+        {sessions.map(s => {
+          const p = progress[s.id] ?? { total: 0, counted: 0 };
+          const pct = p.total ? Math.round((p.counted / p.total) * 100) : 0;
+          return (
+            <Card key={s.id} className="border-border/40 hover:border-border cursor-pointer" onClick={() => onOpen(s)} data-testid={`session-${s.id}`}>
+              <CardContent className="p-4 flex items-center gap-4">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold">
+                    {s.name}
+                    <span className={`ml-2 px-1.5 py-0.5 rounded border text-[10px] ${s.status === 'done' ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' : 'text-amber-300 border-amber-500/40 bg-amber-500/10'}`}>
+                      {s.status === 'done' ? '已完成' : '進行中'}
+                    </span>
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {[s.filter_vendor && `品牌:${s.filter_vendor}`, s.filter_product_type && `類別:${s.filter_product_type}`, s.filter_keyword && `關鍵字:${s.filter_keyword}`].filter(Boolean).join(' · ') || '全部'}
+                    {' · '}{new Date(s.created_at).toLocaleDateString('zh-HK')}
+                  </p>
+                  <div className="mt-2 h-1.5 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full bg-primary" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-lg font-bold tabular-nums">{p.counted}<span className="text-muted-foreground text-sm">/{p.total}</span></p>
+                  <p className="text-[10px] text-muted-foreground">已點/總數</p>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ── 場次詳情:入數 / 清單 / 報告 ────────────────────────────────────────────
+
+function SessionDetail({ session, onBack, onSessionChange }: {
+  session: Session;
+  onBack: () => void;
+  onSessionChange: (s: Session) => void;
+}) {
+  const [items, setItems] = useState<Item[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<'pending' | 'counted' | 'all'>('pending');
+  const [q, setQ] = useState('');
+  const [who, setWho] = useState(() => localStorage.getItem('stocktake_who') ?? '');
+  const [editSku, setEditSku] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const codeRef = useRef<HTMLInputElement>(null);
+  const done = session.status === 'done';
+
+  const load = async () => {
+    setLoading(true);
+    const all: Item[] = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await supabase.from('stocktake_items').select('*')
+        .eq('session_id', session.id).order('sku').range(from, from + 999);
+      if (error) { alert(error.message); break; }
+      all.push(...((data as Item[]) ?? []));
+      if (!data || data.length < 1000) break;
+    }
+    setItems(all);
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, [session.id]);
+
+  useEffect(() => { localStorage.setItem('stocktake_who', who); }, [who]);
+
+  const counted = items.filter(i => i.counted_qty != null);
+  const pct = items.length ? Math.round((counted.length / items.length) * 100) : 0;
+
+  const setQty = async (sku: string, qty: number | null) => {
+    const patch = qty == null
+      ? { counted_qty: null, counted_by: null, counted_at: null }
+      : { counted_qty: qty, counted_by: who.trim() || null, counted_at: new Date().toISOString() };
+    setItems(prev => prev.map(i => (i.sku === sku ? { ...i, ...patch } as Item : i)));
+    const { error } = await supabase.from('stocktake_items').update(patch)
+      .eq('session_id', session.id).eq('sku', sku);
+    if (error) alert(`寫入失敗(${sku}):${error.message}`);
+  };
+
+  // 掃碼/掃碼槍/手動輸入提交:全中 SKU → 自動 +1;唔中就當搜尋字
+  const submitCode = async (raw: string) => {
+    const code = raw.trim();
+    if (!code) return;
+    const hit = items.find(i => i.sku.toLowerCase() === code.toLowerCase());
+    if (hit) {
+      const next = (hit.counted_qty ?? 0) + 1;
+      await setQty(hit.sku, next);
+      setFlash(`✓ ${itemName(hit)} — 累計 ${next} 件`);
+      setTimeout(() => setFlash(null), 2500);
+      setQ('');
+    } else {
+      setQ(code); // 當搜尋,俾佢喺清單度揀
+      setTab('all');
+      setFlash(`搵唔到 SKU「${code}」— 已幫你當關鍵字搜尋`);
+      setTimeout(() => setFlash(null), 3000);
+    }
+    codeRef.current?.focus();
+  };
+
+  const filtered = useMemo(() => {
+    const kw = q.trim().toLowerCase();
+    return items.filter(i => {
+      if (tab === 'pending' && i.counted_qty != null) return false;
+      if (tab === 'counted' && i.counted_qty == null) return false;
+      if (kw && !(`${i.sku} ${i.product_title ?? ''} ${i.variant_title ?? ''}`.toLowerCase().includes(kw))) return false;
+      return true;
+    });
+  }, [items, tab, q]);
+
+  const finish = async () => {
+    const missing = items.length - counted.length;
+    if (!confirm(`完成盤點?${missing > 0 ? `仲有 ${missing} 款未點(會當「未點」列入報告)。` : '全部點齊。'}`)) return;
+    const { data, error } = await supabase.from('stocktake_sessions')
+      .update({ status: 'done', finished_at: new Date().toISOString() })
+      .eq('id', session.id).select().single();
+    if (error) { alert(error.message); return; }
+    onSessionChange(data as Session);
+  };
+
+  // 差異報告數據
+  const report = useMemo(() => {
+    const diffs = counted
+      .map(i => ({ ...i, diff: (i.counted_qty ?? 0) - i.system_qty, diffValue: ((i.counted_qty ?? 0) - i.system_qty) * Number(i.price ?? 0) }))
+      .filter(i => i.diff !== 0)
+      .sort((a, b) => Math.abs(b.diffValue) - Math.abs(a.diffValue));
+    const short = diffs.filter(d => d.diff < 0);
+    const over = diffs.filter(d => d.diff > 0);
+    return {
+      diffs,
+      shortQty: short.reduce((s, d) => s - d.diff, 0),
+      shortValue: short.reduce((s, d) => s - d.diffValue, 0),
+      overQty: over.reduce((s, d) => s + d.diff, 0),
+      overValue: over.reduce((s, d) => s + d.diffValue, 0),
+      matched: counted.length - diffs.length,
+      uncounted: items.length - counted.length,
+    };
+  }, [items, counted]);
+
+  const exportCsv = () => {
+    const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = [
+      ['SKU', '貨名', '款式', '品牌', '類別', '系統數', '實點數', '差異', '單價', '差異金額', '點數人', '點數時間'].map(esc).join(','),
+      ...items.map(i => {
+        const diff = i.counted_qty == null ? '' : (i.counted_qty - i.system_qty);
+        const dv = i.counted_qty == null ? '' : ((i.counted_qty - i.system_qty) * Number(i.price ?? 0)).toFixed(2);
+        return [i.sku, i.product_title, i.variant_title, i.vendor, i.product_type, i.system_qty, i.counted_qty ?? '未點', diff, i.price ?? '', dv, i.counted_by ?? '', i.counted_at ?? ''].map(esc).join(',');
+      }),
+    ];
+    const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `盤點_${session.name}_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  return (
+    <>
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={onBack} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-accent" data-testid="button-back"><ChevronLeft className="h-5 w-5" /></button>
+        <h2 className="text-lg font-bold">{session.name}</h2>
+        <span className={`px-1.5 py-0.5 rounded border text-[10px] ${done ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' : 'text-amber-300 border-amber-500/40 bg-amber-500/10'}`}>{done ? '已完成' : '進行中'}</span>
+        <span className="text-xs text-muted-foreground">已點 {counted.length}/{items.length}({pct}%)</span>
+        {!done && (
+          <button onClick={finish} className="ml-auto px-3 py-1.5 rounded-md border border-emerald-500/50 text-emerald-300 text-sm font-semibold hover:bg-emerald-500/10 flex items-center gap-1.5" data-testid="button-finish">
+            <CheckCircle2 className="h-4 w-4" /> 完成盤點
+          </button>
+        )}
+        {done && (
+          <button onClick={exportCsv} className="ml-auto px-3 py-1.5 rounded-md border border-border text-sm font-semibold hover:bg-accent" data-testid="button-csv">出 CSV</button>
+        )}
+      </div>
+
+      {/* 完場報告 */}
+      {done && (
+        <Card className="border-border/40">
+          <CardContent className="p-4">
+            <h3 className="text-sm font-semibold mb-3">差異報告 <span className="text-xs font-normal text-muted-foreground">俾倉務同事去 Shopify 調整用(唔會自動改)</span></h3>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+              <div className="rounded-md border border-border/40 p-3"><p className="text-xs text-muted-foreground">對得上</p><p className="text-xl font-bold tabular-nums">{formatNumber(report.matched)} 款</p></div>
+              <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3"><p className="text-xs text-red-300">蝕(少過系統)</p><p className="text-xl font-bold tabular-nums text-red-300">{formatNumber(report.shortQty)} 件 · {formatCurrency(report.shortValue)}</p></div>
+              <div className="rounded-md border border-sky-500/40 bg-sky-500/10 p-3"><p className="text-xs text-sky-300">多(多過系統)</p><p className="text-xl font-bold tabular-nums text-sky-300">{formatNumber(report.overQty)} 件 · {formatCurrency(report.overValue)}</p></div>
+              <div className="rounded-md border border-border/40 p-3"><p className="text-xs text-muted-foreground">未點</p><p className="text-xl font-bold tabular-nums">{formatNumber(report.uncounted)} 款</p></div>
+            </div>
+            {report.diffs.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="border-b border-border/40 text-muted-foreground">
+                    <th className="text-left py-1.5 pr-3">SKU</th><th className="text-left py-1.5 pr-3">貨品</th>
+                    <th className="text-right py-1.5 pr-3">系統</th><th className="text-right py-1.5 pr-3">實點</th>
+                    <th className="text-right py-1.5 pr-3">差異</th><th className="text-right py-1.5">差異金額</th>
+                  </tr></thead>
+                  <tbody>
+                    {report.diffs.map(d => (
+                      <tr key={d.sku} className="border-b border-border/20">
+                        <td className="py-1.5 pr-3 font-mono">{d.sku}</td>
+                        <td className="py-1.5 pr-3">{itemName(d)}</td>
+                        <td className="py-1.5 pr-3 text-right tabular-nums">{d.system_qty}</td>
+                        <td className="py-1.5 pr-3 text-right tabular-nums">{d.counted_qty}</td>
+                        <td className={`py-1.5 pr-3 text-right tabular-nums font-bold ${d.diff < 0 ? 'text-red-300' : 'text-sky-300'}`}>{d.diff > 0 ? '+' : ''}{d.diff}</td>
+                        <td className={`py-1.5 text-right tabular-nums font-bold ${d.diff < 0 ? 'text-red-300' : 'text-sky-300'}`}>{formatCurrency(d.diffValue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 入數工具列(進行中先顯示) */}
+      {!done && (
+        <Card className="border-primary/30">
+          <CardContent className="p-3 space-y-2">
+            <div className="flex gap-2">
+              <input
+                ref={codeRef}
+                className="h-11 flex-1 px-3 rounded-md border border-border bg-background text-base"
+                placeholder="掃碼槍/輸入 SKU 撳 Enter → 自動 +1;打字亦可搜尋"
+                onKeyDown={(e) => { if (e.key === 'Enter') { submitCode((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ''; } }}
+                data-testid="input-code"
+              />
+              <button onClick={() => setScanning(true)} className="h-11 px-3 rounded-md bg-primary text-primary-foreground flex items-center gap-1.5 text-sm font-semibold" data-testid="button-scan">
+                <Camera className="h-4 w-4" /> 掃碼
+              </button>
+            </div>
+            <div className="flex gap-2 items-center">
+              <input className="h-8 w-40 px-2 rounded-md border border-border bg-background text-xs" placeholder="你個名(記入邊個點)" value={who} onChange={e => setWho(e.target.value)} data-testid="input-who" />
+              {flash && <span className="text-xs text-emerald-300 font-medium">{flash}</span>}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 清單 */}
+      <Card className="border-border/40">
+        <CardContent className="p-3">
+          <div className="flex gap-2 items-center flex-wrap mb-2">
+            {(['pending', 'counted', 'all'] as const).map(t => (
+              <button key={t} onClick={() => setTab(t)} className={`px-2.5 py-1 rounded-full border text-xs ${tab === t ? 'border-primary bg-primary/15 text-primary font-semibold' : 'border-border text-muted-foreground'}`}>
+                {t === 'pending' ? `未點 ${items.length - counted.length}` : t === 'counted' ? `已點 ${counted.length}` : `全部 ${items.length}`}
+              </button>
+            ))}
+            <input className="h-8 flex-1 min-w-[10rem] px-2 rounded-md border border-border bg-background text-xs" placeholder="搜尋 SKU / 貨名" value={q} onChange={e => setQ(e.target.value)} data-testid="input-filter" />
+          </div>
+          {loading ? (
+            <p className="text-sm text-muted-foreground py-8 text-center animate-pulse">載入清單…</p>
+          ) : (
+            <div className="divide-y divide-border/20 max-h-[60vh] overflow-y-auto">
+              {filtered.slice(0, 300).map(i => (
+                <div key={i.sku} className="py-2 flex items-center gap-3 cursor-pointer hover:bg-muted/20 px-1 rounded" onClick={() => !done && setEditSku(i.sku)} data-testid={`item-${i.sku}`}>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm truncate">{itemName(i)}</p>
+                    <p className="text-[11px] text-muted-foreground font-mono">{i.sku}{i.vendor ? ` · ${i.vendor}` : ''}</p>
+                  </div>
+                  {i.counted_qty == null ? (
+                    <span className="text-xs text-muted-foreground shrink-0">未點</span>
+                  ) : (
+                    <span className={`text-sm font-bold tabular-nums shrink-0 ${i.counted_qty === i.system_qty ? 'text-emerald-300' : 'text-red-300'}`}>
+                      {i.counted_qty} 件{i.counted_qty !== i.system_qty && `(系統 ${i.system_qty})`}
+                    </span>
+                  )}
+                </div>
+              ))}
+              {filtered.length > 300 && <p className="text-xs text-muted-foreground py-2 text-center">仲有 {filtered.length - 300} 款 — 用搜尋收窄</p>}
+              {filtered.length === 0 && <p className="text-sm text-muted-foreground py-6 text-center">冇符合嘅貨</p>}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {editSku && (() => {
+        const it = items.find(i => i.sku === editSku);
+        if (!it) return null;
+        return <QtyModal item={it} onClose={() => setEditSku(null)} onSave={async (qty) => { await setQty(it.sku, qty); setEditSku(null); }} />;
+      })()}
+
+      {scanning && <ScanModal onCode={(c) => { setScanning(false); submitCode(c); }} onClose={() => setScanning(false)} />}
+    </>
+  );
+}
+
+// ── 入數彈窗 ────────────────────────────────────────────────────────────────
+
+function QtyModal({ item, onClose, onSave }: { item: Item; onClose: () => void; onSave: (qty: number | null) => void }) {
+  const [val, setVal] = useState(item.counted_qty != null ? String(item.counted_qty) : '');
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+  const save = () => {
+    const n = parseInt(val, 10);
+    if (Number.isNaN(n) || n < 0) { alert('入返個有效數量'); return; }
+    onSave(n);
+  };
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-card border border-border rounded-lg p-4 w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <p className="text-sm font-semibold">{itemName(item)}</p>
+        <p className="text-xs text-muted-foreground font-mono mt-0.5">{item.sku}</p>
+        <input
+          ref={ref}
+          type="number" inputMode="numeric" min={0}
+          className="mt-3 h-12 w-full px-3 rounded-md border border-border bg-background text-xl font-bold tabular-nums text-center"
+          value={val} onChange={e => setVal(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') save(); }}
+          placeholder="實點數量"
+          data-testid="input-qty"
+        />
+        {item.counted_qty != null && (
+          <p className="text-[11px] text-muted-foreground mt-1.5 text-center">而家記錄:{item.counted_qty} 件 · 系統:{item.system_qty} 件</p>
+        )}
+        <div className="mt-3 flex gap-2">
+          <button onClick={save} className="flex-1 h-10 rounded-md bg-primary text-primary-foreground font-semibold" data-testid="button-save-qty">儲存</button>
+          {item.counted_qty != null && (
+            <button onClick={() => onSave(null)} className="h-10 px-3 rounded-md border border-border text-sm text-muted-foreground">清除</button>
+          )}
+          <button onClick={onClose} className="h-10 px-3 rounded-md border border-border text-sm">取消</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 相機掃碼(BarcodeDetector — Android Chrome 支援;iPhone Safari 用搜尋/掃碼槍)──
+
+function ScanModal({ onCode, onClose }: { onCode: (code: string) => void; onClose: () => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    const Det = (window as any).BarcodeDetector;
+    if (!Det) {
+      setErr('呢部機唔支援相機掃碼(iPhone Safari 未有)— 用搜尋欄或者掃碼槍啦');
+      return;
+    }
+    let stream: MediaStream | null = null;
+    let raf = 0;
+    let stopped = false;
+    (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        if (stopped) { stream.getTracks().forEach(t => t.stop()); return; }
+        const v = videoRef.current!;
+        v.srcObject = stream;
+        await v.play();
+        const det = new Det({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'qr_code'] });
+        const tick = async () => {
+          if (stopped) return;
+          try {
+            const codes = await det.detect(v);
+            if (codes.length > 0 && codes[0].rawValue) {
+              stopped = true;
+              stream?.getTracks().forEach(t => t.stop());
+              onCode(String(codes[0].rawValue));
+              return;
+            }
+          } catch { /* 個別 frame 認唔到,照 loop */ }
+          raf = requestAnimationFrame(tick);
+        };
+        raf = requestAnimationFrame(tick);
+      } catch (e) {
+        setErr(`開唔到相機:${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+      stream?.getTracks().forEach(t => t.stop());
+    };
+  }, [onCode]);
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/85 flex flex-col items-center justify-center p-4">
+      <div className="w-full max-w-md">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm text-white font-semibold">對準貨品條碼</p>
+          <button onClick={onClose} className="h-8 w-8 flex items-center justify-center rounded-md bg-white/10 text-white" data-testid="button-scan-close"><X className="h-5 w-5" /></button>
+        </div>
+        {err ? (
+          <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/40 rounded-md p-3">{err}</p>
+        ) : (
+          <video ref={videoRef} className="w-full rounded-lg border border-white/20" muted playsInline />
+        )}
+      </div>
+    </div>
+  );
+}
