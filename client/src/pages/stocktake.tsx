@@ -531,7 +531,7 @@ function SessionDetail({ session, onBack, onSessionChange }: {
               <input
                 ref={codeRef}
                 className="h-11 flex-1 px-3 rounded-md border border-border bg-background text-base"
-                placeholder="掃碼槍/輸入 SKU 撳 Enter → 加一筆 +1;打字亦可搜尋"
+                placeholder="掃碼槍/輸入 SKU 撳 Enter = 幫呢款記低 1 件;打貨名可以搜尋"
                 onKeyDown={(e) => { if (e.key === 'Enter') { submitCode((e.target as HTMLInputElement).value); (e.target as HTMLInputElement).value = ''; } }}
                 data-testid="input-code"
               />
@@ -541,7 +541,7 @@ function SessionDetail({ session, onBack, onSessionChange }: {
             </div>
             <div className="flex gap-2 items-center">
               <input className="h-8 w-40 px-2 rounded-md border border-border bg-background text-xs" placeholder="你個名(記入邊個點)" value={who} onChange={e => setWho(e.target.value)} data-testid="input-who" />
-              <span className="text-[10px] text-muted-foreground">每人每筆分開記,唔會冚走人哋;30 秒自動同步</span>
+              <span className="text-[10px] text-muted-foreground">每次入數記一筆(似寫紙仔),同款自動加埋總數;30 秒自動同步</span>
               {flash && <span className="text-xs text-emerald-300 font-medium">{flash}</span>}
             </div>
           </CardContent>
@@ -633,7 +633,7 @@ function EntryModal({ item, entries, total, readOnly, onClose, onAdd, onDelete }
 
   const add = async () => {
     const n = parseInt(val, 10);
-    if (Number.isNaN(n) || n <= 0) { alert('入返個大過 0 嘅數量(呢筆會加落合計度)'); return; }
+    if (Number.isNaN(n) || n <= 0) { alert('入返個大過 0 嘅數量 — 呢筆會自動加落呢款貨嘅合計度'); return; }
     await onAdd(n, note);
     setVal(''); setNote('');
     ref.current?.focus();
@@ -646,7 +646,8 @@ function EntryModal({ item, entries, total, readOnly, onClose, onAdd, onDelete }
         <p className="text-xs text-muted-foreground font-mono mt-0.5">{item.sku}</p>
 
         {/* 逐筆明細 */}
-        <div className="mt-3 rounded-md border border-border/40 divide-y divide-border/20 max-h-48 overflow-y-auto">
+        <p className="mt-3 text-[10px] text-muted-foreground">點數紀錄 — 每次入數記一筆,唔同人/唔同位置分開記,自動加埋:</p>
+        <div className="mt-1 rounded-md border border-border/40 divide-y divide-border/20 max-h-48 overflow-y-auto">
           {entries.length === 0 && <p className="text-xs text-muted-foreground p-3 text-center">未有紀錄</p>}
           {entries.map(e => (
             <div key={e.id} className="px-3 py-1.5 flex items-center gap-2 text-xs">
@@ -680,7 +681,7 @@ function EntryModal({ item, entries, total, readOnly, onClose, onAdd, onDelete }
                 placeholder="今次點到幾多件"
                 data-testid="input-entry-qty"
               />
-              <button onClick={add} className="h-11 px-4 rounded-md bg-primary text-primary-foreground font-semibold" data-testid="button-add-entry">加一筆</button>
+              <button onClick={add} className="h-11 px-4 rounded-md bg-primary text-primary-foreground font-semibold" data-testid="button-add-entry">記低</button>
             </div>
             <input
               className="h-8 w-full px-2 rounded-md border border-border bg-background text-xs"
