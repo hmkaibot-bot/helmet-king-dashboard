@@ -140,9 +140,9 @@ export default function RetailCommissionPage() {
         <div className="rounded-md border border-sky-500/40 bg-sky-500/10 p-2.5 text-xs text-sky-200 flex items-start gap-2">
           <span>📸</span>
           <span>
-            <b>快照數據</b> —— ShopifyQL <code>read_reports</code> 未開通,暫時顯示由後台預先計好嘅數
-            {data.computedAt ? `(計算於 ${new Date(data.computedAt).toLocaleString('zh-HK', { dateStyle: 'medium', timeStyle: 'short' })})` : ''}。
-            開通 <code>read_reports</code> 之後會自動轉返即時計算。當月數只計到快照嗰刻為止。
+            <b>快照數據</b> —— 每晚 02:50 自動更新(GitHub Actions 用 ShopifyQL 計,規則同即時模式一致)
+            {data.computedAt ? `,上次計算:${new Date(data.computedAt).toLocaleString('zh-HK', { dateStyle: 'medium', timeStyle: 'short' })}` : ''}。
+            當月數計到上次計算嗰刻;月頭 5 日內會自動執埋上個月嘅數。
           </span>
         </div>
       )}

@@ -1,0 +1,37 @@
+name: Commission Snapshot Sync
+
+# 每晚自動計零售佣金快照(ShopifyQL,規則同 api/retail-commission.ts 一致)。
+# GH Actions 個 SHOPIFY_TOKEN 有 read_reports(2026-08-12 驗證),Vercel 嗰個冇,
+# 所以喺呢度計好寫入 Supabase,俾佣金頁 fallback 讀。
+
+on:
+  schedule:
+    # HKT 02:50 = UTC 18:50(前一天)— 排喺 shopify backfill / inquiry sync 之後
+    - cron: "50 18 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet requests
+
+      - name: Compute commission snapshot
+        env:
+          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/commission_snapshot_sync.py
