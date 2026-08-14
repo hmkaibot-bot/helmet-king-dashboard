@@ -123,7 +123,7 @@ function StocktakeOnlyApp() {
       <main className="p-4">
         <ErrorBoundary>
           <Suspense fallback={<PageLoading />}>
-            <StocktakePage />
+            <StocktakePage staffMode />
           </Suspense>
         </ErrorBoundary>
       </main>
