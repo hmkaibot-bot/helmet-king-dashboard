@@ -104,6 +104,29 @@ def sync_shopify_inventory():
             variants.append((p, v))
     print(f"[Shopify] {len(variants)} variants", flush=True)
 
+    # 2b. 批量攞 inventory item 成本(盤點結算報告用;REST variants 冇 cost,要另叫 inventory_items,100 個一批)
+    #     失敗唔累事:cost_map=None 時 upsert 唔帶 cost 欄,DB 舊值保留
+    cost_map = {}
+    try:
+        item_ids = [v.get("inventory_item_id") for _, v in variants if v.get("inventory_item_id")]
+        for i in range(0, len(item_ids), 100):
+            chunk = item_ids[i : i + 100]
+            r = requests.get(
+                f"https://{store}/admin/api/2026-01/inventory_items.json",
+                params={"ids": ",".join(str(x) for x in chunk), "limit": 100},
+                headers=h, timeout=60,
+            )
+            r.raise_for_status()
+            for it in r.json().get("inventory_items", []):
+                c = it.get("cost")
+                cost_map[it["id"]] = float(c) if c not in (None, "") else None
+            time.sleep(0.4)
+        with_cost = sum(1 for c in cost_map.values() if c is not None)
+        print(f"[Shopify] cost fetched: {with_cost}/{len(item_ids)} items have cost", flush=True)
+    except Exception as e:
+        cost_map = None
+        print(f"[Shopify] cost fetch failed, keeping previous costs: {e}", flush=True)
+
     # 3. Upsert shopify_products and shopify_inventory
     print("[Shopify] upserting shopify_products...", flush=True)
     prod_rows = [{
@@ -127,7 +150,7 @@ def sync_shopify_inventory():
     inv_rows = []
     for p, v in variants:
         qty = v.get("inventory_quantity") or 0
-        inv_rows.append({
+        row = {
             "id": v["id"],  # variant_id as primary key
             "product_id": p["id"],
             "variant_id": v["id"],
@@ -141,7 +164,11 @@ def sync_shopify_inventory():
             "product_type": s(p.get("product_type"), 255),
             "snapshot_date": today_iso,
             "synced_at": datetime.now(timezone.utc).isoformat(),
-        })
+        }
+        # PostgREST 批量 upsert 要求成批 rows 欄位一致:cost_map 有效就全部帶 cost(冇成本嘅係 null)
+        if cost_map is not None:
+            row["cost"] = cost_map.get(v.get("inventory_item_id"))
+        inv_rows.append(row)
     ok, err = upsert_batch("shopify_inventory", "variant_id", inv_rows)
     print(f"[Shopify] inventory: {ok} ok, {err} err", flush=True)
 

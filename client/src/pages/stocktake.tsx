@@ -35,6 +35,7 @@ interface Item {
   vendor: string | null;
   product_type: string | null;
   price: number | null;
+  unit_cost: number | null;
   system_qty: number;
 }
 
@@ -164,7 +165,7 @@ function SessionList({ sessions, progress, onOpen, onCreated }: {
       const rows: any[] = [];
       for (let from = 0; ; from += 1000) {
         let q = supabase.from('shopify_inventory')
-          .select('sku,product_id,variant_id,product_title,variant_title,vendor,product_type,price,inventory_quantity')
+          .select('sku,product_id,variant_id,product_title,variant_title,vendor,product_type,price,cost,inventory_quantity')
           .range(from, from + 999);
         if (vendor) q = q.eq('vendor', vendor);
         if (ptype) q = q.eq('product_type', ptype);
@@ -203,6 +204,7 @@ function SessionList({ sessions, progress, onOpen, onCreated }: {
         vendor: r.vendor ?? null,
         product_type: r.product_type ?? null,
         price: r.price ?? null,
+        unit_cost: r.cost ?? null, // 開場 snapshot 成本價(同 price 一樣影低,之後改價唔影響報告)
         system_qty: r.system_qty,
       }));
       for (let i = 0; i < items.length; i += 500) {
@@ -329,7 +331,7 @@ function SessionDetail({ session, onBack, onSessionChange }: {
     const all: Item[] = [];
     for (let from = 0; ; from += 1000) {
       const { data, error } = await supabase.from('stocktake_items')
-        .select('session_id,sku,product_title,variant_title,vendor,product_type,price,system_qty')
+        .select('session_id,sku,product_title,variant_title,vendor,product_type,price,unit_cost,system_qty')
         .eq('session_id', session.id).order('sku').range(from, from + 999);
       if (error) { alert(error.message); break; }
       all.push(...((data as Item[]) ?? []));
