@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase';
 import { Card, CardContent } from '@/components/ui/card';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import { ClipboardList, Camera, X, CheckCircle2, ChevronLeft } from 'lucide-react';
+import { StocktakeRoundReport } from '@/components/stocktake-report';
 
 /**
  * 盤點 — 分批開場,多人逐筆入數(ledger 制),完場一次過對數。
@@ -16,7 +17,7 @@ import { ClipboardList, Camera, X, CheckCircle2, ChevronLeft } from 'lucide-reac
  *   → 完成盤點先出差異報告(對數留喺最後一步),CSV 俾倉務同事去 Shopify 調整。
  */
 
-interface Session {
+export interface Session {
   id: string;
   name: string;
   filter_vendor: string | null;
@@ -27,7 +28,7 @@ interface Session {
   finished_at: string | null;
 }
 
-interface Item {
+export interface Item {
   session_id: string;
   sku: string;
   product_title: string | null;
@@ -39,7 +40,7 @@ interface Item {
   system_qty: number;
 }
 
-interface Entry {
+export interface Entry {
   id: string;
   session_id: string;
   sku: string;
@@ -52,10 +53,13 @@ interface Entry {
 const itemName = (i: Item) =>
   `${i.product_title ?? ''}${i.variant_title && i.variant_title !== 'Default Title' ? ` — ${i.variant_title}` : ''}`;
 
-export default function StocktakePage() {
+// params 係 wouter Route 塞入嚟嘅,唔使用;staffMode = 同事專用殼(App.tsx)先會傳 true
+export default function StocktakePage({ staffMode = false }: { staffMode?: boolean; params?: unknown }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [progress, setProgress] = useState<Record<string, { total: number; counted: number }>>({});
   const [active, setActive] = useState<Session | null>(null);
+  // 結算報告淨係管理層見(staffMode = 同事專用帳號,冇呢個 tab)
+  const [view, setView] = useState<'sessions' | 'report'>('sessions');
 
   const loadSessions = async () => {
     const [{ data }, { data: prog }] = await Promise.all([
@@ -79,7 +83,27 @@ export default function StocktakePage() {
           onSessionChange={(s) => setActive(s)}
         />
       ) : (
-        <SessionList sessions={sessions} progress={progress} onOpen={setActive} onCreated={loadSessions} />
+        <>
+          {!staffMode && (
+            <div className="flex gap-1.5">
+              {([['sessions', '盤點場次'], ['report', '結算報告']] as const).map(([v, label]) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  className={`px-3 py-1.5 rounded-full border text-xs font-semibold ${view === v ? 'border-primary bg-primary/15 text-primary' : 'border-border text-muted-foreground hover:bg-accent/40'}`}
+                  data-testid={`tab-${v}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {!staffMode && view === 'report' ? (
+            <StocktakeRoundReport sessions={sessions} progress={progress} />
+          ) : (
+            <SessionList sessions={sessions} progress={progress} onOpen={setActive} onCreated={loadSessions} />
+          )}
+        </>
       )}
     </div>
   );
