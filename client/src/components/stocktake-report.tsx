@@ -18,8 +18,9 @@ const itemName = (i: Item) =>
 interface DiffRow extends Item {
   counted: number;
   diff: number;
-  val: number; // 差異 × (成本價 ?? 售價)
-  estimated: boolean; // true = 冇成本價,用咗售價
+  val: number; // 差異 × 單價(成本價;冇嘅用售價)
+  unit: number; // 實際用咗嘅單價
+  estimated: boolean; // true = 冇成本價(null 或 $0 都當冇 — $390 貨成本 $0 明顯係漏入),用咗售價
   sid: string;
 }
 
@@ -113,12 +114,12 @@ export function StocktakeRoundReport({ sessions, progress }: {
       if (counted == null) { uncounted++; continue; }
       const diff = counted - it.system_qty;
       if (diff === 0) { matched++; continue; }
-      const estimated = it.unit_cost == null;
-      const unit = Number(it.unit_cost ?? it.price ?? 0);
+      const estimated = it.unit_cost == null || Number(it.unit_cost) === 0;
+      const unit = estimated ? Number(it.price ?? 0) : Number(it.unit_cost);
       const val = diff * unit;
       if (diff < 0) { shortQty -= diff; shortVal -= val; } else { overQty += diff; overVal += val; }
       if (estimated) { estVal += Math.abs(val); estSkus++; }
-      diffs.push({ ...it, counted, diff, val, estimated, sid });
+      diffs.push({ ...it, counted, diff, val, unit, estimated, sid });
     }
     diffs.sort((a, b) => Math.abs(b.val) - Math.abs(a.val));
     const countedSkus = matched + diffs.length;
@@ -155,7 +156,7 @@ export function StocktakeRoundReport({ sessions, progress }: {
       ...rpt.diffs.map(d => [
         d.sku, d.product_title, d.variant_title, d.vendor, d.product_type, sname.get(d.sid),
         d.system_qty, d.counted, d.diff,
-        (d.unit_cost ?? d.price ?? 0), d.val.toFixed(2), d.estimated ? '是' : '',
+        d.unit, d.val.toFixed(2), d.estimated ? '是' : '',
       ].map(esc).join(',')),
     ];
     const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
@@ -238,7 +239,7 @@ export function StocktakeRoundReport({ sessions, progress }: {
               </p>
               {rpt.estVal > 0 && (
                 <p className="mt-1 text-[11px] text-amber-300">
-                  ⚠️ 其中 {formatCurrency(rpt.estVal)}({rpt.estPct}%)嚟自 {formatNumber(rpt.estSkus)} 個未入成本價嘅 SKU,用咗售價估算 — 想準啲就去 Shopify 補返 cost。
+                  ⚠️ 其中 {formatCurrency(rpt.estVal)}({rpt.estPct}%)嚟自 {formatNumber(rpt.estSkus)} 個未入成本價(或成本 $0)嘅 SKU,用咗售價估算 — 想準啲就去 Shopify 補返 cost。
                 </p>
               )}
               {rpt.countedSkus === 0 && <p className="mt-2 text-xs text-muted-foreground">揀咗嘅場次未有點數紀錄 — 盤咗先有report。</p>}
