@@ -1,0 +1,43 @@
+name: Foorir Keepalive
+
+# 保住 Foorir 客流 token:cache 仲生就乜都唔做;死咗就自動過驗證碼
+# (Claude Haiku 讀字)重新登入,token 回存 foorir-proxy edge function。
+# 前端 mount 時會自動由 server cache 攞 token → 老闆/店長開頁即連,唔使再打驗證碼。
+#
+# 需要 3 個 GitHub Secrets(冇設定嘅話 job 會靜靜 skip,唔會紅):
+#   FOORIR_USERNAME / FOORIR_PASSWORD — 同 Vercel VITE_FOORIR_* 同值
+#   ANTHROPIC_API_KEY                 — 讀驗證碼用
+
+on:
+  schedule:
+    # 朝早 06:50 HKT 起,每 2 小時一次,做到晚上 20:50 HKT
+    # (UTC 22:50 前一日 → 12:50)
+    - cron: "50 22 * * *"
+    - cron: "50 0,2,4,6,8,10,12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet requests cryptography
+
+      - name: Keep Foorir session alive
+        env:
+          FOORIR_USERNAME: ${{ secrets.FOORIR_USERNAME }}
+          FOORIR_PASSWORD: ${{ secrets.FOORIR_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: python scripts/foorir_auto_login.py
