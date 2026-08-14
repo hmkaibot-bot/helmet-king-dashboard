@@ -13,6 +13,19 @@ const DEFAULT_BRANDS = [
   'FURYGAN', 'ROUGH AND ROAD', 'KUSHITANI', 'GAERNE', 'ELEVEIT',
 ];
 
+const BRANDS_LS_KEY = 'dw-brands';
+
+function loadSelectedBrands(): string[] {
+  try {
+    const raw = localStorage.getItem(BRANDS_LS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.every(x => typeof x === 'string')) return arr;
+    }
+  } catch {}
+  return DEFAULT_BRANDS;
+}
+
 // ── Normalize vendor name to match selected brands ──────────
 function matchBrand(vendor: string, brands: string[]): string | null {
   const v = (vendor || '').toUpperCase().trim();
@@ -46,22 +59,39 @@ function toHKDateStr(isoStr: string): string {
 type SortField = 'revenue' | 'qty';
 type SortDir = 'desc' | 'asc';
 
-interface BrandMTD {
+interface BrandRow {
   brand: string;
+  // 當月 MTD
   revenue: number;
   qty: number;
-  items: { title: string; qty: number; revenue: number }[];
+  profit: number;      // 毛利(淨計有成本價嘅貨)
+  coveredRev: number;  // 有成本價嘅營收(毛利率分母)
+  // 昨日 / 本週
+  yQty: number;
+  yRevenue: number;
+  wkRevenue: number;
+  items: { title: string; qty: number; revenue: number; yQty: number }[];
 }
 
 interface Props {
   allOrders: any[];
   allOrderLines: any[];
   loading: boolean;
+  yOrderIds: Set<string>;    // 昨日 order ids
+  weekOrderIds: Set<string>; // 本週 order ids
+  costMap: Record<string, number>; // sku → 成本價(>0 先有)
 }
 
-export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) {
+export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds, weekOrderIds, costMap }: Props) {
   // ── State ──────────────────────────────────────────────────
-  const [selectedBrands, setSelectedBrands] = useState<string[]>(DEFAULT_BRANDS);
+  const [selectedBrands, setSelectedBrandsRaw] = useState<string[]>(loadSelectedBrands);
+  const setSelectedBrands = useCallback((updater: string[] | ((prev: string[]) => string[])) => {
+    setSelectedBrandsRaw(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      try { localStorage.setItem(BRANDS_LS_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
   const [sortField, setSortField] = useState<SortField>('revenue');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [expandedBrands, setExpandedBrands] = useState<Set<string>>(new Set());
@@ -77,10 +107,10 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
 
   // ── Compute MTD orders ─────────────────────────────────────
   const mtdOrderIds = useMemo(() => {
-    const ids = new Set<string | number>();
+    const ids = new Set<string>();
     allOrders.forEach((o: any) => {
       const d = toHKDateStr(o.created_at);
-      if (d >= mtdRange.from && d <= mtdRange.to) ids.add(o.id);
+      if (d >= mtdRange.from && d <= mtdRange.to) ids.add(String(o.id));
     });
     return ids;
   }, [allOrders, mtdRange]);
@@ -89,43 +119,67 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
   const allVendorsInData = useMemo(() => {
     const vSet = new Set<string>();
     allOrderLines.forEach((l: any) => {
-      if (mtdOrderIds.has(l.order_id) && l.vendor) {
+      if (mtdOrderIds.has(String(l.order_id)) && l.vendor) {
         vSet.add(l.vendor.toUpperCase().trim());
       }
     });
     return [...vSet].sort();
   }, [allOrderLines, mtdOrderIds]);
 
-  // ── Compute brand data ─────────────────────────────────────
-  const brandData = useMemo((): BrandMTD[] => {
-    const map: Record<string, { revenue: number; qty: number; items: Record<string, { title: string; qty: number; revenue: number }> }> = {};
+  // ── Compute brand data (昨日 / 本週 / 當月MTD + 毛利) ──────
+  const brandData = useMemo((): BrandRow[] => {
+    const map: Record<string, {
+      revenue: number; qty: number; profit: number; coveredRev: number;
+      yQty: number; yRevenue: number; wkRevenue: number;
+      items: Record<string, { title: string; qty: number; revenue: number; yQty: number }>;
+    }> = {};
     selectedBrands.forEach(b => {
-      map[b] = { revenue: 0, qty: 0, items: {} };
+      map[b] = { revenue: 0, qty: 0, profit: 0, coveredRev: 0, yQty: 0, yRevenue: 0, wkRevenue: 0, items: {} };
     });
 
     allOrderLines.forEach((l: any) => {
-      if (!mtdOrderIds.has(l.order_id)) return;
+      const oid = String(l.order_id);
+      const inMtd = mtdOrderIds.has(oid);
+      const inY   = yOrderIds.has(oid);
+      const inWk  = weekOrderIds.has(oid);
+      if (!inMtd && !inY && !inWk) return;
+
       const brand = matchBrand(l.vendor || '', selectedBrands);
       if (!brand || !map[brand]) return;
 
       const qty = l.quantity || 0;
       const rev = (parseFloat(l.price) || 0) * qty;
-      map[brand].revenue += rev;
-      map[brand].qty += qty;
 
-      const title = l.title || 'unknown';
-      if (!map[brand].items[title]) map[brand].items[title] = { title, qty: 0, revenue: 0 };
-      map[brand].items[title].qty += qty;
-      map[brand].items[title].revenue += rev;
+      if (inMtd) {
+        map[brand].revenue += rev;
+        map[brand].qty += qty;
+        const c = l.sku ? costMap[l.sku] : undefined;
+        if (c !== undefined) {
+          map[brand].profit += rev - c * qty;
+          map[brand].coveredRev += rev;
+        }
+        const title = l.title || 'unknown';
+        if (!map[brand].items[title]) map[brand].items[title] = { title, qty: 0, revenue: 0, yQty: 0 };
+        map[brand].items[title].qty += qty;
+        map[brand].items[title].revenue += rev;
+        if (inY) map[brand].items[title].yQty += qty;
+      }
+      if (inY)  { map[brand].yQty += qty; map[brand].yRevenue += rev; }
+      if (inWk) { map[brand].wkRevenue += rev; }
     });
 
     return Object.entries(map).map(([brand, d]) => ({
       brand,
       revenue: d.revenue,
       qty: d.qty,
+      profit: d.profit,
+      coveredRev: d.coveredRev,
+      yQty: d.yQty,
+      yRevenue: d.yRevenue,
+      wkRevenue: d.wkRevenue,
       items: Object.values(d.items).sort((a, b) => b.revenue - a.revenue),
     }));
-  }, [allOrderLines, mtdOrderIds, selectedBrands]);
+  }, [allOrderLines, mtdOrderIds, yOrderIds, weekOrderIds, costMap, selectedBrands]);
 
   // ── Sort ───────────────────────────────────────────────────
   const sorted = useMemo(() => {
@@ -137,8 +191,15 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
   }, [brandData, sortField, sortDir]);
 
   // ── Totals ─────────────────────────────────────────────────
-  const totalRevenue = useMemo(() => sorted.reduce((s, b) => s + b.revenue, 0), [sorted]);
-  const totalQty = useMemo(() => sorted.reduce((s, b) => s + b.qty, 0), [sorted]);
+  const totals = useMemo(() => sorted.reduce((t, b) => ({
+    revenue: t.revenue + b.revenue,
+    qty: t.qty + b.qty,
+    profit: t.profit + b.profit,
+    coveredRev: t.coveredRev + b.coveredRev,
+    yQty: t.yQty + b.yQty,
+    yRevenue: t.yRevenue + b.yRevenue,
+    wkRevenue: t.wkRevenue + b.wkRevenue,
+  }), { revenue: 0, qty: 0, profit: 0, coveredRev: 0, yQty: 0, yRevenue: 0, wkRevenue: 0 }), [sorted]);
 
   // ── Toggle sort ────────────────────────────────────────────
   const toggleSort = useCallback((field: SortField) => {
@@ -159,16 +220,15 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
     });
   }, []);
 
-  // ── Remove brand ───────────────────────────────────────────
+  // ── Remove / Add brand ─────────────────────────────────────
   const removeBrand = useCallback((brand: string) => {
     setSelectedBrands(prev => prev.filter(b => b !== brand));
     setExpandedBrands(prev => { const n = new Set(prev); n.delete(brand); return n; });
-  }, []);
+  }, [setSelectedBrands]);
 
-  // ── Add brand ──────────────────────────────────────────────
   const addBrand = useCallback((brand: string) => {
     setSelectedBrands(prev => prev.includes(brand) ? prev : [...prev, brand]);
-  }, []);
+  }, [setSelectedBrands]);
 
   // ── Sort icon helper ───────────────────────────────────────
   const SortIcon = ({ field }: { field: SortField }) => {
@@ -192,15 +252,19 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
     return `${hkt.getFullYear()}年${hkt.getMonth() + 1}月`;
   }, []);
 
+  const marginOf = (profit: number, coveredRev: number) =>
+    coveredRev > 0 ? (profit / coveredRev) * 100 : null;
+  const totalCoverage = totals.revenue > 0 ? (totals.coveredRev / totals.revenue) * 100 : 0;
+
   return (
     <Card className="border-border/40">
       <CardHeader className="pb-2 pt-4 px-4">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <BarChart3 className="h-3.5 w-3.5 text-primary shrink-0" />
-            品牌當月累計銷售
+            品牌銷售
             <span className="text-xs font-normal text-muted-foreground">
-              Brand MTD Sales — {monthLabel} ({mtdRange.from} ~ {mtdRange.to})
+              昨日 / 本週 / 當月MTD — {monthLabel} ({mtdRange.from} ~ {mtdRange.to})
             </span>
           </CardTitle>
           <button
@@ -295,6 +359,8 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
               <thead>
                 <tr className="border-b border-border/50 text-muted-foreground">
                   <th className="py-2 text-left font-medium">品牌 Brand</th>
+                  <th className="py-2 text-right font-medium">昨日</th>
+                  <th className="py-2 text-right font-medium">本週營收</th>
                   <th className="py-2 text-right font-medium">
                     <button
                       onClick={() => toggleSort('qty')}
@@ -311,7 +377,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
                       當月營收 <SortIcon field="revenue" />
                     </button>
                   </th>
-                  <th className="py-2 text-right font-medium">均單價 Avg</th>
+                  <th className="py-2 text-right font-medium">當月毛利</th>
                   <th className="py-2 text-right font-medium">占比</th>
                   <th className="py-2 text-center font-medium w-8"></th>
                 </tr>
@@ -319,8 +385,8 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
               <tbody>
                 {sorted.map((b, i) => {
                   const isExpanded = expandedBrands.has(b.brand);
-                  const pct = totalRevenue > 0 ? (b.revenue / totalRevenue) * 100 : 0;
-                  const avg = b.qty > 0 ? b.revenue / b.qty : 0;
+                  const pct = totals.revenue > 0 ? (b.revenue / totals.revenue) * 100 : 0;
+                  const margin = marginOf(b.profit, b.coveredRev);
                   return (
                     <React.Fragment key={b.brand}>
                       <tr
@@ -340,14 +406,27 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
                             {b.brand}
                           </span>
                         </td>
+                        <td className="py-2 text-right tabular-nums">
+                          {b.yQty > 0
+                            ? <span className="font-semibold text-primary">{b.yQty}件 {formatCurrency(b.yRevenue)}</span>
+                            : <span className="text-muted-foreground/30">—</span>}
+                        </td>
+                        <td className="py-2 text-right tabular-nums">
+                          {b.wkRevenue > 0 ? formatCurrency(b.wkRevenue) : <span className="text-muted-foreground/30">—</span>}
+                        </td>
                         <td className="py-2 text-right tabular-nums font-bold">
                           {b.qty > 0 ? b.qty : <span className="text-muted-foreground/30">0</span>}
                         </td>
                         <td className="py-2 text-right tabular-nums font-semibold">
                           {b.revenue > 0 ? formatCurrency(b.revenue) : <span className="text-muted-foreground/30">—</span>}
                         </td>
-                        <td className="py-2 text-right tabular-nums text-muted-foreground">
-                          {avg > 0 ? formatCurrency(avg) : '—'}
+                        <td className="py-2 text-right tabular-nums">
+                          {margin !== null ? (
+                            <>
+                              <span className={b.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatCurrency(b.profit)}</span>
+                              <span className="text-[10px] text-muted-foreground ml-1">{margin.toFixed(0)}%</span>
+                            </>
+                          ) : <span className="text-muted-foreground/30">—</span>}
                         </td>
                         <td className="py-2 text-right">
                           {pct > 0 ? (
@@ -373,7 +452,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
                       {/* ── Expanded item details ──────────── */}
                       {isExpanded && (
                         <tr>
-                          <td colSpan={6} className="p-0">
+                          <td colSpan={8} className="p-0">
                             <div className="bg-accent/10 px-4 py-2 border-b border-border/20">
                               {b.items.length === 0 ? (
                                 <p className="text-[10px] text-muted-foreground/50 py-1">本月無銷售記錄</p>
@@ -384,6 +463,9 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
                                       <div className="flex items-center gap-2 min-w-0">
                                         <span className="text-muted-foreground/50 tabular-nums w-4 text-right shrink-0">{ii + 1}</span>
                                         <span className="truncate">{item.title}</span>
+                                        {item.yQty > 0 && (
+                                          <span className="text-[9px] bg-primary/15 text-primary px-1 py-0.5 rounded shrink-0">昨日×{item.yQty}</span>
+                                        )}
                                       </div>
                                       <span className="tabular-nums text-muted-foreground ml-2 shrink-0">
                                         ×{item.qty} {formatCurrency(item.revenue)}
@@ -405,10 +487,19 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
                   <td className="py-2 text-xs font-semibold text-muted-foreground">
                     小計 ({sorted.length} 品牌)
                   </td>
-                  <td className="py-2 text-right tabular-nums font-bold text-xs">{totalQty}</td>
-                  <td className="py-2 text-right tabular-nums font-bold text-xs">{formatCurrency(totalRevenue)}</td>
-                  <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">
-                    {totalQty > 0 ? formatCurrency(totalRevenue / totalQty) : '—'}
+                  <td className="py-2 text-right tabular-nums text-xs">
+                    {totals.yQty > 0 ? <>{totals.yQty}件 {formatCurrency(totals.yRevenue)}</> : '—'}
+                  </td>
+                  <td className="py-2 text-right tabular-nums text-xs">{totals.wkRevenue > 0 ? formatCurrency(totals.wkRevenue) : '—'}</td>
+                  <td className="py-2 text-right tabular-nums font-bold text-xs">{totals.qty}</td>
+                  <td className="py-2 text-right tabular-nums font-bold text-xs">{formatCurrency(totals.revenue)}</td>
+                  <td className="py-2 text-right tabular-nums text-xs">
+                    {totals.coveredRev > 0 ? (
+                      <>
+                        <span className={totals.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatCurrency(totals.profit)}</span>
+                        <span className="text-[10px] text-muted-foreground ml-1">{((totals.profit / totals.coveredRev) * 100).toFixed(0)}%</span>
+                      </>
+                    ) : '—'}
                   </td>
                   <td className="py-2 text-right text-[10px] text-muted-foreground/60">100%</td>
                   <td></td>
@@ -421,7 +512,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading }: Props) 
         {/* ── Hint ────────────────────────────────────────── */}
         <p className="text-[10px] text-muted-foreground/50 mt-2 flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0 inline-block" />
-          點擊品牌行展開明細　|　點擊「當月件數」或「當月營收」切換排序　|　點擊「管理品牌」增減品牌
+          點擊品牌行展開當月明細　|　毛利按有成本價之貨品計{totalCoverage > 0 && totalCoverage < 95 ? `(而家覆蓋 ${totalCoverage.toFixed(0)}% 營收,想準啲去 Shopify 補返 cost)` : ''}　|　「管理品牌」增減品牌
         </p>
       </CardContent>
     </Card>

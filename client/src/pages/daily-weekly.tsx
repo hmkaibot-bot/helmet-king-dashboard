@@ -6,9 +6,9 @@ import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber } from '@/lib/format';
 import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart-theme';
 import {
-  DollarSign, ShoppingCart, TrendingUp, Calendar, Trophy, Package,
-  ChevronDown, ChevronRight, AlertTriangle, Tag, Zap, Percent, Award,
-  Monitor, Store, Bike, Cloud, Thermometer, Droplets, Wind, Users, ArrowUp, ArrowDown,
+  DollarSign, ShoppingCart, TrendingUp, Trophy, Coins,
+  ChevronDown, ChevronRight, AlertTriangle, Tag, Zap, Percent,
+  Monitor, Store, Bike, Users, ExternalLink,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -129,6 +129,51 @@ function RiskBadge({ risk, days }: { risk: StockRisk; days: number | null }) {
   return <span className="text-[10px] text-muted-foreground/40">—</span>;
 }
 
+// ── Collapsible Section ───────────────────────────────────────
+// 摺埋嘅分組:一行標題帶住重點數,撳先展開;開合狀態記喺 localStorage
+function CollapsibleSection({ id, icon: Icon, iconColor, title, subtitle, summary, defaultOpen = false, children }: {
+  id: string;
+  icon: React.ComponentType<{ className?: string }>;
+  iconColor: string;
+  title: string;
+  subtitle?: string;
+  summary?: React.ReactNode;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem(`dw-sec:${id}`);
+      return v === null ? defaultOpen : v === '1';
+    } catch { return defaultOpen; }
+  });
+  const toggle = () => setOpen(o => {
+    const n = !o;
+    try { localStorage.setItem(`dw-sec:${id}`, n ? '1' : '0'); } catch {}
+    return n;
+  });
+  return (
+    <div className="space-y-3">
+      <Card className="border-border/40">
+        <button
+          onClick={toggle}
+          data-testid={`sec-${id}`}
+          className="w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-accent/20 transition-colors rounded-xl"
+        >
+          {open
+            ? <ChevronDown  className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+          <Icon className={`h-3.5 w-3.5 shrink-0 ${iconColor}`} />
+          <span className="text-sm font-medium shrink-0">{title}</span>
+          {subtitle && <span className="text-xs font-normal text-muted-foreground hidden md:inline shrink-0">{subtitle}</span>}
+          <span className="ml-auto text-xs text-muted-foreground tabular-nums truncate text-right">{summary}</span>
+        </button>
+      </Card>
+      {open && <div className="space-y-3">{children}</div>}
+    </div>
+  );
+}
+
 // ── Category Style ────────────────────────────────────────────
 const CAT_GROUPS: Array<[string, { color: string; border: string; bg: string }]> = [
   ['HELMET',          { color: 'text-amber-400',   border: 'border-amber-500/30',   bg: 'bg-amber-500/5'   }],
@@ -224,8 +269,8 @@ export default function DailyWeeklyPage() {
   const [allOrderLines, setAllOrderLines] = useState<any[]>([]);
   const [lastYearOrders, setLastYearOrders] = useState<any[]>([]);
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
+  const [costMap, setCostMap] = useState<Record<string, number>>({}); // sku → 成本價(淨係存 >0 嘅)
   const [productTypeMap, setProductTypeMap] = useState<Record<string, string>>({});
-  const [expandedCats, setExpandedCats] = useState<Set<string> | 'all'>('all');
   const [foorirData, setFoorirData] = useState<FoorirKPI | null>(null);
   const [foorirWeekly, setFoorirWeekly] = useState<FoorirKPI | null>(null);
   const [foorirConnected, setFoorirConnected] = useState(false);
@@ -363,17 +408,22 @@ export default function DailyWeeklyPage() {
         const BATCH = 100;
         const batches: string[][] = [];
         for (let i = 0; i < skuList.length; i += BATCH) batches.push(skuList.slice(i, i + BATCH));
+        const cMap: Record<string, number> = {};
         const invResults = await Promise.all(
           batches.map(b =>
-            supabase.from('shopify_inventory').select('sku,inventory_quantity').in('sku', b)
+            supabase.from('shopify_inventory').select('sku,inventory_quantity,cost').in('sku', b)
           )
         );
         for (const { data: invData } of invResults) {
           (invData || []).forEach((r: any) => {
-            if (r.sku) invMap[r.sku] = Math.max(0, r.inventory_quantity || 0);
+            if (!r.sku) return;
+            invMap[r.sku] = Math.max(0, r.inventory_quantity || 0);
+            // 成本 $0 當漏入,唔算有成本(同盤點結算報告一致)
+            const c = parseFloat(r.cost);
+            if (c > 0) cMap[r.sku] = c;
           });
         }
-        if (!cancelled) setInventoryMap(invMap);
+        if (!cancelled) { setInventoryMap(invMap); setCostMap(cMap); }
       } catch (e) {
         console.error('Daily/Weekly load error:', e);
       } finally {
@@ -424,6 +474,27 @@ export default function DailyWeeklyPage() {
   // ── This week orders (for foot traffic weekly comparison) ──
   const twOrders  = useMemo(() => filterOrders(allOrders, thisWeek.from, thisWeek.to), [allOrders, thisWeek, filterOrders]);
   const twRevenue = useMemo(() => twOrders.reduce((s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0), [twOrders]);
+
+  // ── 毛利 Gross profit (按 order lines × 成本價;冇成本嘅貨唔計入,另報覆蓋率) ──
+  const profitOf = useCallback((orders: any[]) => {
+    const ids = new Set(orders.map((o: any) => String(o.id)));
+    let profit = 0, coveredRev = 0, lineRev = 0;
+    allOrderLines.forEach((l: any) => {
+      if (!ids.has(String(l.order_id))) return;
+      const qty = l.quantity || 0;
+      const rev = (parseFloat(l.price) || 0) * qty;
+      lineRev += rev;
+      const c = l.sku ? costMap[l.sku] : undefined;
+      if (c !== undefined) { profit += rev - c * qty; coveredRev += rev; }
+    });
+    return {
+      profit,
+      margin: coveredRev > 0 ? (profit / coveredRev) * 100 : null,
+      coverage: lineRev > 0 ? (coveredRev / lineRev) * 100 : 0,
+    };
+  }, [allOrderLines, costMap]);
+  const yProfit  = useMemo(() => profitOf(yOrders),  [yOrders,  profitOf]);
+  const lwProfit = useMemo(() => profitOf(lwOrders), [lwOrders, profitOf]);
 
   // ── Channel breakdown (from shopify source_name) ───────────
   const channelBreakdown = useMemo(() => {
@@ -543,23 +614,19 @@ export default function DailyWeeklyPage() {
       .sort((a, b) => b.qty - a.qty);
   }, [yOrders, allOrderLines, productTypeMap, enrichProduct]);
 
-  // ── Category breakdown for yesterday ─────────────────────
-  const catBreakdown = useMemo((): CategorySummary[] => {
-    const catMap: Record<string, CategorySummary> = {};
-    yProducts.forEach(p => {
-      const type = p.productType || 'Other';
-      if (!catMap[type]) catMap[type] = { type, qty: 0, revenue: 0, brands: [], products: [], criticalCount: 0, warningCount: 0 };
-      catMap[type].qty     += p.qty;
-      catMap[type].revenue += p.revenue;
-      catMap[type].products.push(p);
-      if (p.vendor && !catMap[type].brands.includes(p.vendor)) catMap[type].brands.push(p.vendor);
-      if (p.risk === 'critical') catMap[type].criticalCount++;
-      else if (p.risk === 'warning') catMap[type].warningCount++;
+  // ── 庫存警號:昨日有售而且缺貨/低庫存 Top 10 ─────────────
+  const stockAlerts = useMemo(() => {
+    const risky = yProducts.filter(p => p.risk === 'critical' || p.risk === 'warning');
+    risky.sort((a, b) => {
+      if (a.risk !== b.risk) return a.risk === 'critical' ? -1 : 1;
+      return (a.daysToStockout ?? 999) - (b.daysToStockout ?? 999);
     });
-    return Object.values(catMap).sort((a, b) => b.revenue - a.revenue);
+    return {
+      critical: risky.filter(p => p.risk === 'critical').length,
+      warning:  risky.filter(p => p.risk === 'warning').length,
+      top: risky.slice(0, 10),
+    };
   }, [yProducts]);
-
-
 
   // ── Week data ─────────────────────────────────────────────
   const isWeekView = viewMode !== 'yesterday';
@@ -577,6 +644,8 @@ export default function DailyWeeklyPage() {
   const prevWkOrders  = useMemo(() => filterOrders(allOrders, prevWkBounds.from, prevWkBounds.to),[allOrders, prevWkBounds, filterOrders]);
   const wRevenue  = useMemo(() => weekOrders.reduce(   (s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0), [weekOrders]);
   const pwRevenue = useMemo(() => prevWkOrders.reduce( (s: number, o: any) => s + (parseFloat(o.total_price) || 0), 0), [prevWkOrders]);
+  const wProfit  = useMemo(() => profitOf(weekOrders),   [weekOrders,   profitOf]);
+  const pwProfit = useMemo(() => profitOf(prevWkOrders), [prevWkOrders, profitOf]);
 
   const bestDay = useMemo(() => {
     const dm: Record<string, number> = {};
@@ -680,22 +749,6 @@ export default function DailyWeeklyPage() {
   }, [weekOrders, allOrderLines, productTypeMap]);
   const [expandedWeekCats, setExpandedWeekCats] = useState<Set<string>>(new Set());
 
-  const toggleCat = useCallback((type: string) => {
-    setExpandedCats(prev => {
-      if (prev === 'all') {
-        // First click from 'all' state: collapse this one category
-        const allTypes = catBreakdown.map(c => c.type);
-        const next = new Set(allTypes);
-        next.delete(type);
-        return next;
-      }
-      const next = new Set(prev);
-      if (next.has(type)) next.delete(type);
-      else next.add(type);
-      return next;
-    });
-  }, [catBreakdown]);
-
   // ── Active Promotions (discount codes with ongoing usage) ──
   const activePromotions = useMemo(() => {
     // Look at last 30 days of orders with discount codes
@@ -735,54 +788,9 @@ export default function DailyWeeklyPage() {
       .sort((a, b) => b.uses - a.uses);
   }, [allOrders, yesterday]);
 
-  // ── Brand Sales: Yesterday vs Day Before ──────────────────
-  const [expandedBrands, setExpandedBrands] = useState<Set<string>>(new Set());
-  const brandComparison = useMemo(() => {
-    const dayBefore = (() => { const d = new Date(yesterday + 'T00:00:00'); d.setDate(d.getDate() - 1); return toDateStr(d); })();
-    const yOrderIds = new Set(yOrders.map((o: any) => String(o.id)));
-    const dbOrders = filterOrders(allOrders, dayBefore, dayBefore);
-    const dbOrderIds = new Set(dbOrders.map((o: any) => String(o.id)));
-
-    type ItemDetail = { title: string; qty: number; revenue: number };
-    const yBrands: Record<string, { qty: number; revenue: number; items: Record<string, ItemDetail> }> = {};
-    const dbBrands: Record<string, { qty: number; revenue: number; items: Record<string, ItemDetail> }> = {};
-
-    allOrderLines.forEach((l: any) => {
-      const vendor = l.vendor || 'Other';
-      const qty = l.quantity || 0;
-      const rev = (parseFloat(l.price) || 0) * qty;
-      const title = l.title || 'unknown';
-      if (yOrderIds.has(String(l.order_id))) {
-        if (!yBrands[vendor]) yBrands[vendor] = { qty: 0, revenue: 0, items: {} };
-        yBrands[vendor].qty += qty;
-        yBrands[vendor].revenue += rev;
-        if (!yBrands[vendor].items[title]) yBrands[vendor].items[title] = { title, qty: 0, revenue: 0 };
-        yBrands[vendor].items[title].qty += qty;
-        yBrands[vendor].items[title].revenue += rev;
-      }
-      if (dbOrderIds.has(String(l.order_id))) {
-        if (!dbBrands[vendor]) dbBrands[vendor] = { qty: 0, revenue: 0, items: {} };
-        dbBrands[vendor].qty += qty;
-        dbBrands[vendor].revenue += rev;
-        if (!dbBrands[vendor].items[title]) dbBrands[vendor].items[title] = { title, qty: 0, revenue: 0 };
-        dbBrands[vendor].items[title].qty += qty;
-        dbBrands[vendor].items[title].revenue += rev;
-      }
-    });
-
-    const allVendors = [...new Set([...Object.keys(yBrands), ...Object.keys(dbBrands)])];
-    return allVendors.map(v => ({
-      vendor: v,
-      yQty: yBrands[v]?.qty || 0,
-      yRevenue: yBrands[v]?.revenue || 0,
-      dbQty: dbBrands[v]?.qty || 0,
-      dbRevenue: dbBrands[v]?.revenue || 0,
-      qtyDelta: (yBrands[v]?.qty || 0) - (dbBrands[v]?.qty || 0),
-      revDelta: (yBrands[v]?.revenue || 0) - (dbBrands[v]?.revenue || 0),
-      yItems: Object.values(yBrands[v]?.items || {}).sort((a, b) => b.revenue - a.revenue),
-      dbItems: Object.values(dbBrands[v]?.items || {}).sort((a, b) => b.revenue - a.revenue),
-    })).sort((a, b) => b.yRevenue - a.yRevenue);
-  }, [yOrders, allOrders, allOrderLines, yesterday, filterOrders]);
+  // ── 品牌合併表要用嘅 order id sets ─────────────────────────
+  const yOrderIdSet  = useMemo(() => new Set(yOrders.map((o: any) => String(o.id))),  [yOrders]);
+  const twOrderIdSet = useMemo(() => new Set(twOrders.map((o: any) => String(o.id))), [twOrders]);
 
   // ── Render ────────────────────────────────────────────────
   return (
@@ -811,86 +819,28 @@ export default function DailyWeeklyPage() {
       {/* ═══════════════════════════ YESTERDAY VIEW ════════════════════════════ */}
       {viewMode === 'yesterday' && (
         <>
-          {/* ── Weather + Holiday Card ──────────────────────────── */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {/* Weather */}
-            <Card className="border-border/40">
-              <CardHeader className="pb-1 pt-3 px-4">
-                <CardTitle className="text-sm font-medium flex items-center gap-2">
-                  <Cloud className="h-3.5 w-3.5 text-blue-400" />
-                  昨日天氣 <span className="text-xs font-normal text-muted-foreground">HK Weather (Observatory)</span>
-                  {weather.warning && (
-                    <span className="ml-auto text-[10px] font-semibold text-red-400 px-1.5 py-0.5 rounded bg-red-500/15 border border-red-500/30">
-                      ⚠️ {weather.warning}
-                    </span>
-                  )}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 pb-3">
-                {weather.temp === null ? (
-                  <p className="text-xs text-muted-foreground">載入中...</p>
-                ) : (
-                  <>
-                    {/* Current conditions */}
-                    <div className="flex items-center gap-4 mb-3">
-                      <span className="text-4xl">{weatherLabel(weather.icon).emoji}</span>
-                      <div>
-                        <p className="text-2xl font-bold tabular-nums">{weather.temp}°C</p>
-                        <p className="text-xs text-muted-foreground">{weatherLabel(weather.icon).label}</p>
-                        <div className="flex items-center gap-3 mt-0.5 text-[11px] text-muted-foreground">
-                          <span className="flex items-center gap-1"><Droplets className="h-3 w-3" />{weather.humidity}%</span>
-                          <span className="text-muted-foreground/40">天文台 {weather.updateTime?.slice(11,16)} HKT</span>
-                        </div>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </CardContent>
-            </Card>
+          {/* ── 背景一行:天氣 + 假期(解讀生意用,唔霸位)─────── */}
+          <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px] text-muted-foreground px-1">
+            {weather.temp !== null && (
+              <span>{weatherLabel(weather.icon).emoji} {weather.temp}°C {weatherLabel(weather.icon).label} · 濕度{weather.humidity}%</span>
+            )}
+            {weather.warning && (
+              <span className="text-red-400 font-semibold px-1.5 py-0.5 rounded bg-red-500/15 border border-red-500/30">⚠️ {weather.warning}</span>
+            )}
+            <span>{yesterdayHoliday ? <span className="text-red-300">🔴 昨日假期:{yesterdayHoliday}</span> : '🟢 昨日非假期'}</span>
+            {upcomingHolidays.length > 0 ? (() => {
+              const [date, name] = upcomingHolidays[0];
+              const days = Math.round((new Date(date).getTime() - new Date(toDateStr(getHKNow())).getTime()) / 86400000);
+              return <span className="text-amber-400/80">下個假期:{date} {name}({days === 0 ? '今日' : days === 1 ? '明日' : `${days}日後`})</span>;
+            })() : <span>未來 14 日無公眾假期</span>}
+          </div>
 
-            {/* Holidays + Context */}
-            <Card className="border-border/40">
-              <CardHeader className="pb-1 pt-3 px-4">
-                <CardTitle className="text-sm font-medium flex items-center gap-2">
-                  <Calendar className="h-3.5 w-3.5 text-red-400" />
-                  假期 / 人流影響 <span className="text-xs font-normal text-muted-foreground">HK Holidays & Foot Traffic</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-4 pb-3">
-                {/* Yesterday holiday status */}
-                <div className={`rounded-lg p-3 mb-3 ${ yesterdayHoliday ? 'bg-red-500/10 border border-red-500/20' : 'bg-green-500/5 border border-green-500/15' }`}>
-                  <p className="text-xs font-semibold mb-0.5">
-                    {yesterdayHoliday ? '🔴 昨日為公眾假期' : '🟢 昨日非假期'}
-                  </p>
-                  {yesterdayHoliday ? (
-                    <p className="text-[11px] text-red-300">{yesterdayHoliday}</p>
-                  ) : (
-                    <p className="text-[11px] text-muted-foreground">普通工作日 / 周末，人流屬正常水平</p>
-                  )}
-                </div>
-                {/* Upcoming holidays */}
-                {upcomingHolidays.length > 0 && (
-                  <div>
-                    <p className="text-[11px] text-muted-foreground font-medium mb-1.5">未來 14 日假期 Upcoming:</p>
-                    <div className="space-y-1">
-                      {upcomingHolidays.map(([date, name]) => {
-                        const days = Math.round((new Date(date).getTime() - new Date(toDateStr(getHKNow())).getTime()) / 86400000);
-                        return (
-                          <div key={date} className="flex items-center justify-between text-[11px] bg-amber-500/5 border border-amber-500/15 rounded px-2 py-1">
-                            <span className="text-amber-300 font-medium">{date}</span>
-                            <span className="text-muted-foreground truncate mx-2 flex-1">{name}</span>
-                            <span className="text-amber-400 shrink-0">{days === 0 ? '今日' : days === 1 ? '明日' : `${days}日後`}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-                {upcomingHolidays.length === 0 && (
-                  <p className="text-[11px] text-muted-foreground">未來 14 日無公眾假期</p>
-                )}
-              </CardContent>
-            </Card>
+          {/* ── KPI Cards(核心:賣咗幾多 + 賺咗幾多)──────────── */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <KpiCard title="昨日營收" subtitle={`vs 上週同日 ${formatCurrency(lwRevenue)}`} value={formatCurrency(yRevenue)} icon={DollarSign} loading={loading} delta={calcDelta(yRevenue, lwRevenue)} testId="kpi-y-rev" />
+            <KpiCard title="昨日毛利" subtitle={yProfit.margin !== null ? `毛利率 ${yProfit.margin.toFixed(0)}%${yProfit.coverage < 90 ? ` · 覆蓋${yProfit.coverage.toFixed(0)}%` : ''}` : '未有成本數據'} value={formatCurrency(yProfit.profit)} icon={Coins} loading={loading} delta={calcDelta(yProfit.profit, lwProfit.profit)} testId="kpi-y-profit" />
+            <KpiCard title="昨日訂單" subtitle="Orders" value={formatNumber(yOrders.length)} icon={ShoppingCart} loading={loading} delta={calcDelta(yOrders.length, lwOrders.length)} testId="kpi-y-orders" />
+            <KpiCard title="昨日均價" subtitle="AOV" value={formatCurrency(yAov)} icon={TrendingUp} loading={loading} delta={calcDelta(yAov, lwAov)} testId="kpi-y-aov" />
           </div>
 
           {/* ── Sales Channel Breakdown ───────────────────────────── */}
@@ -942,15 +892,91 @@ export default function DailyWeeklyPage() {
             </CardContent>
           </Card>
 
-          {/* KPI Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <KpiCard title="昨日營收" subtitle="Revenue"       value={formatCurrency(yRevenue)}       icon={DollarSign}  loading={loading} delta={calcDelta(yRevenue,      lwRevenue)}      testId="kpi-y-rev" />
-            <KpiCard title="昨日訂單" subtitle="Orders"        value={formatNumber(yOrders.length)}   icon={ShoppingCart} loading={loading} delta={calcDelta(yOrders.length, lwOrders.length)} testId="kpi-y-orders" />
-            <KpiCard title="昨日均價" subtitle="AOV"           value={formatCurrency(yAov)}           icon={TrendingUp}  loading={loading} delta={calcDelta(yAov,          lwAov)}           testId="kpi-y-aov" />
-            <KpiCard title="上週同日" subtitle="Same Day LW"   value={formatCurrency(lwRevenue)}      icon={Calendar}    loading={loading}                                                    testId="kpi-y-lw" />
-          </div>
+          {/* ── 品牌合併表:昨日 / 本週 / 當月MTD + 毛利 ─────────── */}
+          <BrandMonthlySales
+            allOrders={allOrders}
+            allOrderLines={allOrderLines}
+            loading={loading}
+            yOrderIds={yOrderIdSet}
+            weekOrderIds={twOrderIdSet}
+            costMap={costMap}
+          />
 
-          {/* ── Foot Traffic (Foorir) ────────────────────────── */}
+          {/* ── 庫存警號(摺):昨日有售而且缺貨/低庫存 ──────────── */}
+          <CollapsibleSection
+            id="stock-alerts"
+            icon={AlertTriangle}
+            iconColor={stockAlerts.critical > 0 ? 'text-red-400' : stockAlerts.warning > 0 ? 'text-yellow-400' : 'text-green-400'}
+            title="庫存警號"
+            subtitle="昨日有售而且缺貨/低庫存"
+            summary={
+              stockAlerts.critical + stockAlerts.warning > 0
+                ? <>{stockAlerts.critical > 0 && <span className="text-red-400 font-semibold">🔴 {stockAlerts.critical} 款缺貨/≤7日</span>}{stockAlerts.critical > 0 && stockAlerts.warning > 0 && ' · '}{stockAlerts.warning > 0 && <span className="text-yellow-400">🟡 {stockAlerts.warning} 款 ≤21日</span>}</>
+                : '昨日售出貨品庫存全部充足'
+            }
+          >
+            <Card className="border-border/40">
+              <CardContent className="px-4 py-3">
+                {stockAlerts.top.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-4 text-center">昨日售出貨品冇庫存警號 👍</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs" data-testid="table-stock-alerts">
+                      <thead>
+                        <tr className="border-b border-border/50 text-muted-foreground">
+                          <th className="py-2 text-left font-medium">產品 Product</th>
+                          <th className="py-2 text-left font-medium hidden md:table-cell">品牌</th>
+                          <th className="py-2 text-right font-medium">昨日售出</th>
+                          <th className="py-2 text-right font-medium">剩餘庫存</th>
+                          <th className="py-2 text-right font-medium hidden lg:table-cell">速率/日</th>
+                          <th className="py-2 text-right font-medium">預計缺貨</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {stockAlerts.top.map(p => (
+                          <tr key={p.key} className={`border-b border-border/20 ${p.risk === 'critical' ? 'bg-red-500/5' : 'bg-yellow-500/5'}`}>
+                            <td className="py-2 max-w-[220px]">
+                              <div className="truncate font-medium">{p.title}</div>
+                              {p.sku && <div className="text-[10px] font-mono text-muted-foreground/50">{p.sku}</div>}
+                            </td>
+                            <td className="py-2 text-muted-foreground text-[11px] hidden md:table-cell">{p.vendor || '—'}</td>
+                            <td className="py-2 text-right tabular-nums font-bold">{p.qty}</td>
+                            <td className={`py-2 text-right tabular-nums font-semibold ${p.stock === 0 ? 'text-red-400' : 'text-yellow-400'}`}>
+                              {p.stock !== null ? p.stock : '—'}
+                            </td>
+                            <td className="py-2 text-right tabular-nums text-muted-foreground hidden lg:table-cell">
+                              {p.velocity >= 0.01 ? p.velocity.toFixed(2) : p.velocity > 0 ? '<0.01' : '—'}
+                            </td>
+                            <td className="py-2 text-right"><RiskBadge risk={p.risk} days={p.daysToStockout} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <a
+                  href="/retail/restock"
+                  className="mt-2 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                >
+                  <ExternalLink className="h-3 w-3" /> 去補貨頁睇全部庫存風險
+                </a>
+              </CardContent>
+            </Card>
+          </CollapsibleSection>
+
+          {/* ── 客流 Foorir(摺)────────────────────────────────── */}
+          <CollapsibleSection
+            id="foorir"
+            icon={Users}
+            iconColor="text-cyan-400"
+            title="客流分析"
+            subtitle="Foorir Foot Traffic"
+            summary={
+              foorirConnected && foorirData
+                ? <>進店 {formatNumber(foorirData.flowIn)} · 轉化 {foorirData.flowIn > 0 ? ((yOrders.length / foorirData.flowIn) * 100).toFixed(1) : '—'}%</>
+                : <span className="text-amber-400">未連線 — 撳開輸入驗證碼</span>
+            }
+          >
           <FoorirLogin
             compact
             onSuccess={async () => {
@@ -1409,14 +1435,23 @@ export default function DailyWeeklyPage() {
               </div>
             );
           })()}
+          </CollapsibleSection>
 
-          {/* ── Brand Monthly Sales (MTD) ─────────────────────── */}
-          <BrandMonthlySales
-            allOrders={allOrders}
-            allOrderLines={allOrderLines}
-            loading={loading}
-          />
-
+          {/* ── Promotions(摺)─────────────────────────────────── */}
+          <CollapsibleSection
+            id="promos"
+            icon={Percent}
+            iconColor="text-primary"
+            title="Promo 效果"
+            subtitle="折扣碼使用同帶動銷售"
+            summary={(() => {
+              const usedY = activePromotions.filter(p => p.yesterdayUses > 0);
+              const ySales = usedY.reduce((s, p) => s + p.yesterdaySales, 0);
+              return usedY.length > 0
+                ? <>昨日 {usedY.length} 個碼 · 帶動 {formatCurrency(ySales)}</>
+                : <>昨日無使用 · 30日內 {activePromotions.length} 個活躍碼</>;
+            })()}
+          >
           {/* ── Active Promotions ─────────────────────────────── */}
           <Card className="border-border/40">
             <CardHeader className="pb-2 pt-4 px-4">
@@ -1486,227 +1521,24 @@ export default function DailyWeeklyPage() {
             dateLabel="昨日"
             loading={loading}
           />
+          </CollapsibleSection>
 
-          {/* ── Brand Sales vs Previous Day ────────────────────────── */}
-          <Card className="border-border/40">
-            <CardHeader className="pb-2 pt-4 px-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Award className="h-3.5 w-3.5 text-primary shrink-0" />
-                品牌銷售對比
-                <span className="text-xs font-normal text-muted-foreground">Brand Sales — Yesterday vs Day Before　點擊展開明細</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              {loading ? (
-                <Skeleton className="h-48 w-full" />
-              ) : brandComparison.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-4 text-center">無品牌銷售數據</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs" data-testid="table-brand-comparison">
-                    <thead>
-                      <tr className="border-b border-border/50 text-muted-foreground">
-                        <th className="py-2 text-left font-medium">品牌 Brand</th>
-                        <th className="py-2 text-right font-medium">昨日件數</th>
-                        <th className="py-2 text-right font-medium">昨日營收</th>
-                        <th className="py-2 text-right font-medium">前日件數</th>
-                        <th className="py-2 text-right font-medium">前日營收</th>
-                        <th className="py-2 text-right font-medium">件數變化</th>
-                        <th className="py-2 text-right font-medium">營收變化</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {brandComparison.filter(b => b.yQty > 0 || b.dbQty > 0).map(b => {
-                        const bExp = expandedBrands.has(b.vendor);
-                        return (
-                          <React.Fragment key={b.vendor}>
-                            <tr
-                              className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer"
-                              onClick={() => setExpandedBrands(prev => { const n = new Set(prev); n.has(b.vendor) ? n.delete(b.vendor) : n.add(b.vendor); return n; })}
-                            >
-                              <td className="py-2 font-medium">
-                                <span className="inline-flex items-center gap-1">
-                                  {bExp ? <ChevronDown className="h-3 w-3 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 text-muted-foreground" />}
-                                  {b.vendor}
-                                </span>
-                              </td>
-                              <td className="py-2 text-right tabular-nums font-bold">{b.yQty}</td>
-                              <td className="py-2 text-right tabular-nums font-semibold">{formatCurrency(b.yRevenue)}</td>
-                              <td className="py-2 text-right tabular-nums text-muted-foreground">{b.dbQty}</td>
-                              <td className="py-2 text-right tabular-nums text-muted-foreground">{formatCurrency(b.dbRevenue)}</td>
-                              <td className={`py-2 text-right tabular-nums font-semibold ${
-                                b.qtyDelta > 0 ? 'text-green-400' : b.qtyDelta < 0 ? 'text-red-400' : 'text-muted-foreground/40'
-                              }`}>
-                                {b.qtyDelta > 0 ? <span className="inline-flex items-center gap-0.5"><ArrowUp className="h-3 w-3" />{b.qtyDelta}</span>
-                                 : b.qtyDelta < 0 ? <span className="inline-flex items-center gap-0.5"><ArrowDown className="h-3 w-3" />{Math.abs(b.qtyDelta)}</span>
-                                 : '—'}
-                              </td>
-                              <td className={`py-2 text-right tabular-nums font-semibold ${
-                                b.revDelta > 0 ? 'text-green-400' : b.revDelta < 0 ? 'text-red-400' : 'text-muted-foreground/40'
-                              }`}>
-                                {b.revDelta > 0 ? <span className="inline-flex items-center gap-0.5"><ArrowUp className="h-3 w-3" />{formatCurrency(b.revDelta)}</span>
-                                 : b.revDelta < 0 ? <span className="inline-flex items-center gap-0.5"><ArrowDown className="h-3 w-3" />{formatCurrency(Math.abs(b.revDelta))}</span>
-                                 : '—'}
-                              </td>
-                            </tr>
-                            {bExp && (
-                              <tr>
-                                <td colSpan={7} className="p-0">
-                                  <div className="grid grid-cols-2 gap-3 bg-accent/10 px-4 py-3 border-b border-border/20">
-                                    <div>
-                                      <p className="text-[10px] font-semibold text-muted-foreground mb-1.5">昨日售出 Yesterday</p>
-                                      {b.yItems.length === 0 ? (
-                                        <p className="text-[10px] text-muted-foreground/50">無銷售</p>
-                                      ) : b.yItems.map((item, ii) => (
-                                        <div key={ii} className="flex items-center justify-between text-[11px] py-0.5 border-b border-border/10 last:border-0">
-                                          <span className="truncate max-w-[220px]">{item.title}</span>
-                                          <span className="tabular-nums text-muted-foreground ml-2 shrink-0">×{item.qty} {formatCurrency(item.revenue)}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                    <div>
-                                      <p className="text-[10px] font-semibold text-muted-foreground mb-1.5">前日售出 Day Before</p>
-                                      {b.dbItems.length === 0 ? (
-                                        <p className="text-[10px] text-muted-foreground/50">無銷售</p>
-                                      ) : b.dbItems.map((item, ii) => (
-                                        <div key={ii} className="flex items-center justify-between text-[11px] py-0.5 border-b border-border/10 last:border-0">
-                                          <span className="truncate max-w-[220px]">{item.title}</span>
-                                          <span className="tabular-nums text-muted-foreground ml-2 shrink-0">×{item.qty} {formatCurrency(item.revenue)}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                </td>
-                              </tr>
-                            )}
-                          </React.Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* ── Category Breakdown ───────────────────────────────── */}
-          <Card className="border-border/40">
-            <CardHeader className="pb-2 pt-4 px-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2 flex-wrap">
-                <Tag className="h-3.5 w-3.5 text-primary shrink-0" />
-                按類別分析
-                <span className="text-xs font-normal text-muted-foreground">Category Breakdown — {yesterday}</span>
-                {catBreakdown.some(c => c.criticalCount > 0) && (
-                  <span className="ml-auto flex items-center gap-1 text-[10px] text-red-400 shrink-0">
-                    <AlertTriangle className="h-3 w-3" /> 有庫存緊張貨品
-                  </span>
-                )}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              {loading ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {[1, 2, 3].map(i => <Skeleton key={i} className="h-28" />)}
-                </div>
-              ) : catBreakdown.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-6 text-center">昨日無銷售數據</p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {catBreakdown.map(cat => {
-                    const style    = getCatStyle(cat.type);
-                    const expanded = expandedCats === 'all' || expandedCats.has(cat.type);
-                    return (
-                      <div key={cat.type} className={`rounded-lg border ${style.border} overflow-hidden`}>
-                        {/* Card Header (always visible, clickable) */}
-                        <button
-                          className={`w-full px-3 py-2.5 text-left ${style.bg} hover:brightness-110 transition-all`}
-                          onClick={() => toggleCat(cat.type)}
-                        >
-                          <div className="flex items-center justify-between gap-1">
-                            <span className={`text-[11px] font-semibold ${style.color} truncate flex-1 text-left`}>
-                              {cat.type}
-                            </span>
-                            <div className="flex items-center gap-1 shrink-0">
-                              {cat.criticalCount > 0 && (
-                                <span className="text-[10px] bg-red-500/20 text-red-400 px-1 py-0.5 rounded">🔴{cat.criticalCount}</span>
-                              )}
-                              {cat.warningCount > 0 && (
-                                <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-1 py-0.5 rounded">🟡{cat.warningCount}</span>
-                              )}
-                              {expanded
-                                ? <ChevronDown  className="h-3.5 w-3.5 text-muted-foreground" />
-                                : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-                              }
-                            </div>
-                          </div>
-                          {/* Revenue + Qty */}
-                          <div className="flex items-baseline gap-2 mt-1">
-                            <span className="text-sm font-bold tabular-nums">{formatCurrency(cat.revenue)}</span>
-                            <span className="text-xs text-muted-foreground">{cat.qty}件</span>
-                          </div>
-                          {/* Brand tags */}
-                          <div className="flex flex-wrap gap-1 mt-1.5">
-                            {cat.brands.slice(0, 5).map(b => (
-                              <span key={b} className="text-[10px] bg-background/60 border border-border/30 text-muted-foreground px-1.5 py-0.5 rounded">
-                                {b}
-                              </span>
-                            ))}
-                            {cat.brands.length > 5 && (
-                              <span className="text-[10px] text-muted-foreground/50">+{cat.brands.length - 5}品牌</span>
-                            )}
-                          </div>
-                        </button>
-
-                        {/* Expanded: Product breakdown with stock + velocity */}
-                        {expanded && (
-                          <div className="border-t border-border/30 bg-background/40">
-                            {/* Column headers */}
-                            <div className="px-3 py-1.5 grid grid-cols-[1fr_28px_36px_48px_60px] gap-x-2 text-[10px] text-muted-foreground/60 border-b border-border/20">
-                              <span>產品</span>
-                              <span className="text-right">售</span>
-                              <span className="text-right">庫存</span>
-                              <span className="text-right">速率/日</span>
-                              <span className="text-right">預測</span>
-                            </div>
-                            {cat.products.map((p, idx) => (
-                              <div
-                                key={idx}
-                                className={`px-3 py-1.5 grid grid-cols-[1fr_28px_36px_48px_60px] gap-x-2 items-center text-[11px] border-b border-border/10 last:border-0 ${
-                                  p.risk === 'critical' ? 'bg-red-500/5' :
-                                  p.risk === 'warning'  ? 'bg-yellow-500/5' : ''
-                                }`}
-                              >
-                                <div className="min-w-0">
-                                  <div className="truncate font-medium leading-tight">{p.title}</div>
-                                  <div className="text-[10px] text-muted-foreground/50 truncate">{p.vendor}</div>
-                                </div>
-                                <span className="text-right tabular-nums font-semibold">{p.qty}</span>
-                                <span className={`text-right tabular-nums font-semibold ${
-                                  p.stock === 0          ? 'text-red-400' :
-                                  p.stock !== null && p.stock <= 5 ? 'text-yellow-400' : ''
-                                }`}>
-                                  {p.stock !== null ? p.stock : '—'}
-                                </span>
-                                <span className="text-right tabular-nums text-muted-foreground">
-                                  {p.velocity >= 0.01 ? p.velocity.toFixed(2) : p.velocity > 0 ? '<0.01' : '—'}
-                                </span>
-                                <span className="text-right">
-                                  <RiskBadge risk={p.risk} days={p.daysToStockout} />
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* ── Staff Performance Table ─────────────────────────── */}
-          {staffPerformance.length > 0 && (() => {
+          {/* ── 員工表現(摺)───────────────────────────────────── */}
+          {staffPerformance.length > 0 && (
+          <CollapsibleSection
+            id="staff"
+            icon={Users}
+            iconColor="text-primary"
+            title="員工表現"
+            subtitle="POS Staff Performance"
+            summary={(() => {
+              const top = [...staffPerformance].sort((a, b) => b.dayRev - a.dayRev)[0];
+              return top && top.dayRev > 0
+                ? <>🥇 {getStaffName(top.uid)} 昨日 {formatCurrency(top.dayRev)}</>
+                : '昨日無 POS 員工銷售記錄';
+            })()}
+          >
+          {(() => {
             const tabRev  = (r: typeof staffPerformance[0]) => staffTab === 'yesterday' ? r.dayRev : staffTab === 'this_week' ? r.wkRev : r.mtdRev;
             const tabCnt  = (r: typeof staffPerformance[0]) => staffTab === 'yesterday' ? r.dayCnt : staffTab === 'this_week' ? r.wkCnt : r.mtdCnt;
             const tabLabel = staffTab === 'yesterday' ? '昨日' : staffTab === 'this_week' ? '本週' : '本月MTD';
@@ -1754,8 +1586,8 @@ export default function DailyWeeklyPage() {
                           <tr className="border-b border-border/50 text-muted-foreground">
                             <th className="py-2 text-left font-medium">姓名 Staff</th>
                             <th className="py-2 text-right font-medium">{tabLabel}訂單</th>
-                            <th className="py-2 text-right font-medium">{tabLabel}物餅</th>
-                            <th className="py-2 text-right font-medium">{tabLabel}均偕</th>
+                            <th className="py-2 text-right font-medium">{tabLabel}營收</th>
+                            <th className="py-2 text-right font-medium">均價</th>
                             <th className="py-2 text-right font-medium">占比</th>
                           </tr>
                         </thead>
@@ -1843,91 +1675,8 @@ export default function DailyWeeklyPage() {
               </Card>
             );
           })()}
-
-          {/* ── Products Table (enhanced with stock + velocity) ── */}
-          <Card className="border-border/40">
-            <CardHeader className="pb-2 pt-4 px-4">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <CardTitle className="text-sm font-medium">
-                  昨日產品明細
-                  <span className="text-xs font-normal text-muted-foreground ml-1">Yesterday's Products</span>
-                </CardTitle>
-                <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
-                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> 缺貨/≤7天</span>
-                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-500 inline-block" /> 注意 ≤21天</span>
-                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500 inline-block" /> 充足</span>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              {loading ? (
-                <Skeleton className="h-[300px] w-full" />
-              ) : yProducts.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-8 text-center">昨日無銷售數據</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs" data-testid="table-yesterday-products">
-                    <thead>
-                      <tr className="border-b border-border/50 text-muted-foreground">
-                        <th className="py-2 text-left font-medium w-6">#</th>
-                        <th className="py-2 text-left font-medium">產品 Product</th>
-                        <th className="py-2 text-left font-medium hidden md:table-cell">類別 Category</th>
-                        <th className="py-2 text-left font-medium">品牌</th>
-                        <th className="py-2 text-right font-medium">售出</th>
-                        <th className="py-2 text-right font-medium">營收</th>
-                        <th className="py-2 text-right font-medium">剩餘庫存</th>
-                        <th className="py-2 text-right font-medium hidden lg:table-cell">銷售速率</th>
-                        <th className="py-2 text-right font-medium">預計缺貨</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {yProducts.map((p, i) => (
-                        <tr
-                          key={p.key}
-                          className={`border-b border-border/20 transition-colors ${
-                            p.risk === 'critical' ? 'bg-red-500/5 hover:bg-red-500/10' :
-                            p.risk === 'warning'  ? 'bg-yellow-500/5 hover:bg-yellow-500/10' :
-                            'hover:bg-accent/30'
-                          }`}
-                        >
-                          <td className="py-2 text-muted-foreground tabular-nums">{i + 1}</td>
-                          <td className="py-2 max-w-[160px]">
-                            <div className="truncate font-medium">{p.title}</div>
-                            {p.sku && <div className="text-[10px] font-mono text-muted-foreground/50">{p.sku}</div>}
-                          </td>
-                          <td className="py-2 hidden md:table-cell">
-                            <span className={`text-[10px] ${getCatStyle(p.productType).color}`}>{p.productType}</span>
-                          </td>
-                          <td className="py-2 text-muted-foreground text-[11px]">{p.vendor || '—'}</td>
-                          <td className="py-2 text-right tabular-nums font-bold">{p.qty}</td>
-                          <td className="py-2 text-right tabular-nums">{formatCurrency(p.revenue)}</td>
-                          <td className={`py-2 text-right tabular-nums font-semibold ${
-                            p.stock === null         ? 'text-muted-foreground/40' :
-                            p.stock === 0            ? 'text-red-400 font-bold'  :
-                            p.stock <= 3             ? 'text-yellow-400'          :
-                            p.stock <= 10            ? 'text-amber-400'           : ''
-                          }`}>
-                            {p.stock !== null ? p.stock : '—'}
-                          </td>
-                          <td className="py-2 text-right tabular-nums text-muted-foreground hidden lg:table-cell">
-                            {p.velocity >= 0.01
-                              ? `${p.velocity.toFixed(2)}/日`
-                              : p.velocity > 0 ? '<0.01/日'
-                              : '—'
-                            }
-                          </td>
-                          <td className="py-2 text-right">
-                            <RiskBadge risk={p.risk} days={p.daysToStockout} />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
+          </CollapsibleSection>
+          )}
 
         </>
       )}
@@ -1938,9 +1687,9 @@ export default function DailyWeeklyPage() {
           {/* KPI Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <KpiCard title="週營收"   subtitle="Week Revenue"  value={formatCurrency(wRevenue)}       icon={DollarSign}   loading={loading} delta={calcDelta(wRevenue, pwRevenue)}                          testId="kpi-w-rev" />
+            <KpiCard title="週毛利"   subtitle={wProfit.margin !== null ? `毛利率 ${wProfit.margin.toFixed(0)}%${wProfit.coverage < 90 ? ` · 覆蓋${wProfit.coverage.toFixed(0)}%` : ''}` : '未有成本數據'} value={formatCurrency(wProfit.profit)} icon={Coins} loading={loading} delta={calcDelta(wProfit.profit, pwProfit.profit)} testId="kpi-w-profit" />
             <KpiCard title="週訂單"   subtitle="Week Orders"   value={formatNumber(weekOrders.length)} icon={ShoppingCart} loading={loading} delta={calcDelta(weekOrders.length, prevWkOrders.length)}       testId="kpi-w-orders" />
             <KpiCard title="最佳日"   subtitle="Best Day"      value={bestDay.date ? `${bestDay.date.slice(5)} ${formatCurrency(bestDay.revenue)}` : '—'} icon={Trophy} loading={loading}                  testId="kpi-w-bestday" />
-            <KpiCard title="最暢銷"   subtitle="Best Product"  value={bestProduct.title.length > 20 ? bestProduct.title.slice(0, 20) + '…' : bestProduct.title} icon={Package} loading={loading}           testId="kpi-w-bestprod" />
           </div>
 
           {/* Daily Revenue Chart */}
@@ -2016,15 +1765,18 @@ export default function DailyWeeklyPage() {
             </ResponsiveContainer>
           </ChartCard>
 
-          {/* ── Week Category Breakdown ──────────────────────────── */}
+          {/* ── 類別表現(摺)──────────────────────────────────── */}
+          <CollapsibleSection
+            id="wk-cats"
+            icon={Tag}
+            iconColor="text-primary"
+            title="類別表現"
+            subtitle="Weekly Category Breakdown"
+            summary={weekCatBreakdown.length > 0
+              ? <>{weekCatBreakdown[0].type} {formatCurrency(weekCatBreakdown[0].revenue)} 領先 · {weekCatBreakdown.length} 個類別</>
+              : '本週無數據'}
+          >
           <Card className="border-border/40">
-            <CardHeader className="pb-2 pt-4 px-4">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Tag className="h-3.5 w-3.5 text-primary" />
-                本週類別表現
-                <span className="text-xs font-normal text-muted-foreground">Weekly Category Breakdown　點擊展開明細</span>
-              </CardTitle>
-            </CardHeader>
             <CardContent className="px-4 pb-4">
               {loading ? (
                 <Skeleton className="h-48 w-full" />
@@ -2103,8 +1855,19 @@ export default function DailyWeeklyPage() {
               )}
             </CardContent>
           </Card>
+          </CollapsibleSection>
 
-          {/* Top 10 Products */}
+          {/* ── 暢銷 Top 10(摺)──────────────────────────────── */}
+          <CollapsibleSection
+            id="wk-top10"
+            icon={Trophy}
+            iconColor="text-amber-400"
+            title="暢銷 Top 10"
+            subtitle="Top Products This Week"
+            summary={bestProduct.qty > 0
+              ? <>{bestProduct.title.length > 24 ? bestProduct.title.slice(0, 24) + '…' : bestProduct.title} ×{bestProduct.qty}</>
+              : '本週無數據'}
+          >
           <ChartCard title="本週暢銷 Top 10" subtitle="Top Products This Week" loading={loading}>
             <ResponsiveContainer width="100%" height={320}>
               <BarChart data={weekTopProducts} layout="vertical">
@@ -2117,6 +1880,7 @@ export default function DailyWeeklyPage() {
               </BarChart>
             </ResponsiveContainer>
           </ChartCard>
+          </CollapsibleSection>
         </>
       )}
     </div>
