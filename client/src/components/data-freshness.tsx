@@ -10,15 +10,18 @@ type FreshnessState = {
 };
 
 /**
- * Reads the latest synced_at across the key sales tables to compute a single
- * "last update" timestamp shown across every retail/performance page.
+ * Sync 心跳嚟自 shopify_inventory.synced_at — 夜間 pipeline(02:00-02:50 HKT
+ * 一 batch)每晚重寫成張表,max(synced_at) 就係「尋晚有冇跑過」嘅真時間。
  *
- * Status rules (HKT):
- *  fresh   : last update is today after 02:00 HKT
- *  syncing : last update is between yesterday 23:59 and today 03:00 HKT
- *            (the sync window is running)
- *  stale   : last update is older than today 03:00 HKT but ≤ 24h ago
- *  failed  : last update is > 24h ago
+ * 以前讀 max(shopify_orders.updated_at) — 嗰個係「最後一張單幾點改動」
+ * (business time),收舖後成晚唔郁,搞到日日朝早都誤報「延遲」。
+ * 而家張單時間淨係擺入 tooltip 做參考。
+ *
+ * Status rules(sync 心跳年齡):
+ *  fresh   : ≤26h(尋晚跑咗)
+ *  syncing : >26h 但而家喺 02:00-03:30 HKT 窗口內(可能跑緊)
+ *  stale   : 26-50h(尋晚失咗場;06:00/06:30 HKT 有後備補跑)
+ *  failed  : >50h(連後備都冇跑,要查 GitHub Actions)
  */
 export function useDataFreshness(): FreshnessState {
   const [state, setState] = useState<FreshnessState>({
@@ -31,17 +34,26 @@ export function useDataFreshness(): FreshnessState {
   useEffect(() => {
     (async () => {
       try {
-        // Take the max(updated_at) across the most-recently-written orders + lines.
-        // We avoid hitting low-volume tables (Marsello / BC) so we don't get tripped
-        // up by their slower cadence.
-        const { data: orderRow } = await supabase
-          .from('shopify_orders')
-          .select('updated_at')
-          .order('updated_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
+        const [{ data: syncRow }, { data: orderRow }] = await Promise.all([
+          supabase
+            .from('shopify_inventory')
+            .select('synced_at')
+            .not('synced_at', 'is', null)
+            .order('synced_at', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+          supabase
+            .from('shopify_orders')
+            .select('updated_at')
+            .order('updated_at', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+        ]);
 
-        const last = orderRow?.updated_at ? new Date(orderRow.updated_at) : null;
+        const lastSync  = (syncRow as any)?.synced_at ? new Date((syncRow as any).synced_at) : null;
+        const lastOrder = orderRow?.updated_at ? new Date(orderRow.updated_at) : null;
+        // synced_at 讀唔到(RLS/舊數據)就 fallback 舊指標,badge 唔好死
+        const last = lastSync ?? lastOrder;
         if (!last) {
           setState({
             loading: false,
@@ -57,21 +69,22 @@ export function useDataFreshness(): FreshnessState {
         const hktNow = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
         const todayMid = new Date(hktNow);
         todayMid.setHours(0, 0, 0, 0);
-        const today2am = new Date(todayMid.getTime() + 2 * 3600 * 1000);
-        const today3am = new Date(todayMid.getTime() + 3 * 3600 * 1000);
+        const today2am  = new Date(todayMid.getTime() + 2 * 3600 * 1000);
+        const today330  = new Date(todayMid.getTime() + 3.5 * 3600 * 1000);
         const ageHours = (hktNow.getTime() - last.getTime()) / 3600000;
 
+        const orderNote = lastOrder ? `（最新訂單 ${fmtHK(lastOrder)}）` : '';
         let status: FreshnessState['status'];
         let details = '';
-        if (last >= today2am) {
+        if (ageHours <= 26) {
           status = 'fresh';
-          details = '已更新';
-        } else if (hktNow < today3am && ageHours < 6) {
+          details = `尋晚 sync 完成${orderNote}`;
+        } else if (hktNow >= today2am && hktNow <= today330) {
           status = 'syncing';
-          details = '更新中';
-        } else if (ageHours <= 24) {
+          details = '夜間更新窗口進行中';
+        } else if (ageHours <= 50) {
           status = 'stale';
-          details = '延遲（過 24h 仍未更新會標示同步失敗）';
+          details = `尋晚 sync 冇跑到,06:00 後備會補${orderNote}`;
         } else {
           status = 'failed';
           details = '同步失敗 — 請檢查 GitHub Actions';

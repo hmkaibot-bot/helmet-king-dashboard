@@ -8,6 +8,8 @@ on:
     # 每天 HKT 凌晨 02:30 = UTC 18:30（前一天）
     # 跟 Shopify backfill (02:00) 同一個 2am batch。
     - cron: "30 18 * * *"
+    # 後備補跑：HKT 06:30 = UTC 22:30。upsert idempotent,失敗先有真作用。
+    - cron: "30 22 * * *"
   workflow_dispatch:
     inputs:
       sync_shopify:
@@ -80,4 +82,12 @@ jobs:
           SYNC_BC_SALES_INVOICES: ${{ github.event.inputs.sync_bc_sales_invoices || '1' }}
           BC_SI_FULL_BACKFILL: ${{ github.event.inputs.bc_si_full_backfill || '0' }}
           BC_SI_LOOKBACK_DAYS: ${{ github.event.inputs.bc_si_lookback_days || '7' }}
-        run: python scripts/daily_inventory_snapshot.py
+        # 網絡/API 閃失自動重試 3 次,每次隔 2 分鐘
+        run: |
+          for attempt in 1 2 3; do
+            echo "=== attempt ${attempt} ==="
+            python scripts/daily_inventory_snapshot.py && exit 0
+            [ "$attempt" -lt 3 ] && sleep 120
+          done
+          echo "::error::Inventory snapshot failed after 3 attempts"
+          exit 1

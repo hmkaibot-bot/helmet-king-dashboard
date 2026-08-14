@@ -8,6 +8,9 @@ on:
     # 每天 HKT 凌晨 02:00 = UTC 18:00（前一天）
     # 統一資料更新批次：所有 retail / performance 頁面以此為準
     - cron: "0 18 * * *"
+    # 後備補跑：HKT 06:00 = UTC 22:00。upsert 係 idempotent,
+    # 02:00 跑成功嘅話呢餐純粹重覆寫一次;跑失敗就喺開舖前冚返。
+    - cron: "0 22 * * *"
   workflow_dispatch:
     inputs:
       days_back:
@@ -40,4 +43,12 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           DAYS_BACK: ${{ github.event.inputs.days_back || '7' }}
-        run: python scripts/daily_shopify_backfill.py
+        # 網絡/API 閃失自動重試 3 次,每次隔 2 分鐘
+        run: |
+          for attempt in 1 2 3; do
+            echo "=== attempt ${attempt} ==="
+            python scripts/daily_shopify_backfill.py && exit 0
+            [ "$attempt" -lt 3 ] && sleep 120
+          done
+          echo "::error::Shopify backfill failed after 3 attempts"
+          exit 1
