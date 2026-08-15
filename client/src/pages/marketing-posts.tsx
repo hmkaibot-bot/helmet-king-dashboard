@@ -3,9 +3,12 @@ import { formatNumber } from '@/lib/format';
 import {
   Megaphone, RefreshCw, AlertCircle, Search, Sparkles, Copy, Check,
   PackageOpen, Store, BadgePercent, CloudSun, Loader2, X,
+  ImageIcon, Send, Download,
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { fetchAllRows, todayISO, type Promotion, type PromotionItem } from '@/lib/promotions-shared';
+import { supabase } from '@/lib/supabase';
+import { renderPostCard, downloadDataUrl, type CardProduct, type CardTemplate, type CardSize } from '@/lib/post-card';
 import {
   generateMarketingPost, fetchLiveProduct, variantToClipboard,
   PLATFORM_LABEL, TONE_LABEL, LANG_LABEL, SCENARIO_LABEL,
@@ -98,6 +101,16 @@ export default function MarketingPostsPage() {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   // 生成上下文序號 — 換類型/情境後,飛行中嘅舊 request 結果一律作廢
   const genSeqRef = useRef(0);
+
+  // ── 圖卡 state ──
+  const [cardProducts, setCardProducts] = useState<CardProduct[]>([]);
+  const [cardTemplate, setCardTemplate] = useState<CardTemplate>('dark');
+  const [cardSize, setCardSize] = useState<CardSize>('square');
+  const [cardUrls, setCardUrls] = useState<string[]>([]);
+  const [renderingCards, setRenderingCards] = useState(false);
+  const [sendingIdx, setSendingIdx] = useState<number | null>(null);
+  const [slackNotice, setSlackNotice] = useState<string | null>(null);
+  const [new90Stats, setNew90Stats] = useState<{ total: number; visible: number }>({ total: 0, visible: 0 });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -193,6 +206,17 @@ export default function MarketingPostsPage() {
       }
       out.sort((a, b) => a.title.localeCompare(b.title));
       setProducts(out);
+
+      // 90 日新貨統計:幾多款因冇庫存/冇價入唔到候選(empty state 老實講)
+      const cutoff90 = Date.now() - 90 * 86400000;
+      let total90 = 0;
+      for (const [pid, rows] of byProduct.entries()) {
+        const meta = metaById.get(pid);
+        if (meta?.status && meta.status.toLowerCase() !== 'active') continue;
+        if (meta?.created_at && new Date(meta.created_at).getTime() > cutoff90) total90++;
+      }
+      const visible90 = out.filter(p => p.qty > 0 && p.createdAt && new Date(p.createdAt).getTime() > cutoff90).length;
+      setNew90Stats({ total: total90, visible: visible90 });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -208,6 +232,9 @@ export default function MarketingPostsPage() {
     setSelected(new Set());
     setGenError(null);
     setGenNotice(null);
+    setCardProducts([]);
+    setCardUrls([]);
+    setSlackNotice(null);
   };
 
   const pickType = (t: PostType) => {
@@ -313,6 +340,23 @@ export default function MarketingPostsPage() {
 
       // 生成嗰刻攞 live 數據(並行);失敗就用 snapshot + 提示
       const lives = await Promise.all(picked.map(p => fetchLiveProduct(p.product_id)));
+
+      // 圖卡數據(用 live 相 + live 價;badge 按 post 類型)
+      const cardBadge =
+        postType === 'new_arrival' ? '新品' :
+        postType === 'weekly_deal' ? '優惠' :
+        postType === 'clearance' ? '清貨' : '精選';
+      setCardProducts(picked.map((p, i) => ({
+        title: lives[i]?.title || p.title,
+        vendor: lives[i]?.vendor || p.vendor,
+        price: lives[i]?.price ?? p.price,
+        comparePrice: lives[i] ? lives[i]!.comparePrice : p.comparePrice,
+        promoPrice: p.promo?.promoPrice ?? null,
+        promoEndDate: p.promo?.endDate ?? null,
+        imageUrl: lives[i]?.imageUrls?.[0] ?? null,
+        badge: cardBadge,
+      })));
+
       let staleCount = 0;
       const allGen: GenProduct[] = picked.map((p, i) => {
         const live = lives[i];
@@ -390,6 +434,48 @@ export default function MarketingPostsPage() {
       setTimeout(() => setCopiedIdx(c => (c === idx ? null : c)), 2000);
     } catch {
       alert('複製失敗 — 請手動選取文字');
+    }
+  };
+
+  // ── 圖卡 render(template/size 一轉就重畫)──
+  useEffect(() => {
+    if (cardProducts.length === 0) { setCardUrls([]); return; }
+    let cancelled = false;
+    (async () => {
+      setRenderingCards(true);
+      const urls = await Promise.all(cardProducts.map(p => renderPostCard(p, { template: cardTemplate, size: cardSize })));
+      if (!cancelled) { setCardUrls(urls); setRenderingCards(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [cardProducts, cardTemplate, cardSize]);
+
+  // ── Send 去 Slack(#po-stream):揀咗邊個 variant 就用佢做 caption + 全部圖卡 ──
+  const sendToSlack = async (idx: number) => {
+    if (sendingIdx != null) return;
+    setSendingIdx(idx);
+    setSlackNotice(null);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error('未登入 — 請重新登入 dashboard');
+      const v = variants[idx];
+      const caption = variantToClipboard({ ...v, hashtags: v.hashtagsText.split(/\s+/).filter(Boolean) });
+      const resp = await fetch('/api/slack-post', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          caption,
+          images: cardUrls.map((u, i) => ({ filename: `post-card-${i + 1}.png`, dataUrl: u })),
+        }),
+      });
+      const j = await resp.json().catch(() => ({} as any));
+      if (resp.status === 501) { setSlackNotice('setup'); return; }
+      if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+      setSlackNotice(`✅ 已 send 去 #${j.channel}(${j.files ?? 0} 張圖 + 文案)— 同事可以直接攞去出`);
+    } catch (e) {
+      setSlackNotice(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSendingIdx(null);
     }
   };
 
@@ -508,7 +594,11 @@ export default function MarketingPostsPage() {
           <Skeleton className="h-48 w-full" />
         ) : candidates.length === 0 ? (
           <div className="text-center text-xs text-muted-foreground py-8">
-            {postType === 'brand_story' && !vendorFilter ? '先揀一個品牌' : '冇符合條件嘅候選產品'}
+            {postType === 'brand_story' && !vendorFilter
+              ? '先揀一個品牌'
+              : postType === 'new_arrival' && new90Stats.total > new90Stats.visible
+              ? `90 日內有 ${new90Stats.total} 款新上架,但 ${new90Stats.total - new90Stats.visible} 款因為未有庫存記錄/未定價被隱藏 — 去 Shopify 補返庫存同產品相,先出得 post`
+              : '冇符合條件嘅候選產品'}
           </div>
         ) : (
           <div className="max-h-72 overflow-y-auto rounded border border-border/40">
@@ -613,14 +703,26 @@ export default function MarketingPostsPage() {
                 <span className="text-[11px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
                   {PLATFORM_LABEL[v.platform] ?? v.platform}
                 </span>
-                <button
-                  onClick={() => copyVariant(idx)}
-                  className="text-[11px] px-2 py-1 rounded-md border border-border hover:bg-accent/60 inline-flex items-center gap-1"
-                  data-testid={`copy-variant-${idx}`}
-                >
-                  {copiedIdx === idx ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-                  {copiedIdx === idx ? '已複製' : 'Copy 全文'}
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => copyVariant(idx)}
+                    className="text-[11px] px-2 py-1 rounded-md border border-border hover:bg-accent/60 inline-flex items-center gap-1"
+                    data-testid={`copy-variant-${idx}`}
+                  >
+                    {copiedIdx === idx ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                    {copiedIdx === idx ? '已複製' : 'Copy 全文'}
+                  </button>
+                  <button
+                    onClick={() => sendToSlack(idx)}
+                    disabled={sendingIdx != null || cardUrls.length === 0}
+                    className="text-[11px] px-2 py-1 rounded-md bg-primary/90 text-primary-foreground hover:bg-primary disabled:opacity-50 inline-flex items-center gap-1"
+                    data-testid={`slack-variant-${idx}`}
+                    title="呢個文案 + 全部圖卡 send 去 Slack #po-stream"
+                  >
+                    <Send className="h-3 w-3" />
+                    {sendingIdx === idx ? 'Send 緊…' : 'Send Slack'}
+                  </button>
+                </div>
               </div>
               <input
                 value={v.headline}
@@ -653,6 +755,68 @@ export default function MarketingPostsPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* ⑤ 圖卡 Post 圖 */}
+      {cardProducts.length > 0 && (
+        <div className="rounded-md border border-border/60 bg-card p-3 space-y-3" data-testid="card-studio">
+          <div className="flex items-center gap-2 flex-wrap">
+            <ImageIcon className="h-4 w-4 text-primary" />
+            <span className="text-sm font-semibold">圖卡 Post 圖</span>
+            <span className="text-[11px] text-muted-foreground">產品真相自動排版 — download 或者撳文案格嘅「Send Slack」連文案一齊出</span>
+            <div className="ml-auto flex items-center gap-1.5">
+              {(['dark', 'light'] as CardTemplate[]).map(t => (
+                <button key={t} onClick={() => setCardTemplate(t)}
+                  className={`text-[11px] px-2.5 py-1 rounded-md border ${cardTemplate === t ? 'bg-primary text-primary-foreground border-primary' : 'border-border bg-background hover:bg-accent/60'}`}>
+                  {t === 'dark' ? '黑金' : '白底'}
+                </button>
+              ))}
+              <span className="w-px h-4 bg-border mx-1" />
+              {(['square', 'story'] as CardSize[]).map(s => (
+                <button key={s} onClick={() => setCardSize(s)}
+                  className={`text-[11px] px-2.5 py-1 rounded-md border ${cardSize === s ? 'bg-primary text-primary-foreground border-primary' : 'border-border bg-background hover:bg-accent/60'}`}>
+                  {s === 'square' ? '方圖 Post' : 'Story 長圖'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {renderingCards ? (
+            <div className="text-xs text-muted-foreground py-6 text-center">整緊圖卡…</div>
+          ) : (
+            <div className="flex gap-3 overflow-x-auto pb-1">
+              {cardUrls.map((u, i) => (
+                <div key={i} className="shrink-0 space-y-1.5">
+                  <img src={u} alt={cardProducts[i]?.title}
+                    className={`rounded-lg border border-border/40 ${cardSize === 'story' ? 'h-80' : 'h-64'} w-auto`} />
+                  <button
+                    onClick={() => downloadDataUrl(u, `post-card-${i + 1}.png`)}
+                    className="w-full text-[11px] px-2 py-1 rounded-md border border-border hover:bg-accent/60 inline-flex items-center justify-center gap-1"
+                  >
+                    <Download className="h-3 w-3" /> 下載 PNG
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {slackNotice === 'setup' ? (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-amber-200 text-xs space-y-1">
+              <div className="font-semibold">Slack 未接通(一次過設定,5 分鐘):</div>
+              <ol className="list-decimal list-inside space-y-0.5">
+                <li>Slack 開條 channel 叫 <b>#po-stream</b></li>
+                <li>api.slack.com/apps → Create New App「HK Post Studio」→ OAuth Scopes 加 <code>files:write</code> <code>chat:write</code> <code>channels:read</code> <code>groups:read</code> → Install to Workspace</li>
+                <li>Copy 個 <code>xoxb-</code> token → Vercel 環境變數 <code>SLACK_BOT_TOKEN</code></li>
+                <li>喺 #po-stream 入面 <code>/invite @HK Post Studio</code></li>
+              </ol>
+              <div>設定好之前,用「下載 PNG」+「Copy 全文」照出得。</div>
+            </div>
+          ) : slackNotice ? (
+            <div className={`rounded-md border p-2.5 text-xs ${slackNotice.startsWith('✅') ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-rose-500/40 bg-rose-500/10 text-rose-200'}`}>
+              {slackNotice}
+            </div>
+          ) : null}
         </div>
       )}
 
