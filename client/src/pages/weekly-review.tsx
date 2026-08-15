@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
-  DollarSign, ShoppingCart, TrendingUp, Tag, Calendar,
+  DollarSign, ShoppingCart, TrendingUp, Tag, Calendar, Coins,
   Store, Globe, Truck, ChevronRight, ChevronDown, X,
 } from 'lucide-react';
 import {
@@ -9,6 +9,7 @@ import {
 } from 'recharts';
 
 import { queryAllPages, getProductMeta } from '@/lib/query-helpers';
+import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { DataFreshnessBadge } from '@/components/data-freshness';
@@ -64,18 +65,18 @@ function DateRangeBar({
         type="date"
         value={from}
         onChange={e => onChange(e.target.value, to)}
-        className="bg-accent/40 border border-border/50 rounded px-2 py-1 text-xs text-foreground"
+        className="bg-accent/40 border border-border/50 rounded px-2 py-1 text-[13px] text-foreground"
         data-testid="weekly-from"
       />
-      <span className="text-muted-foreground text-xs">至</span>
+      <span className="text-muted-foreground text-[13px]">至</span>
       <input
         type="date"
         value={to}
         onChange={e => onChange(from, e.target.value)}
-        className="bg-accent/40 border border-border/50 rounded px-2 py-1 text-xs text-foreground"
+        className="bg-accent/40 border border-border/50 rounded px-2 py-1 text-[13px] text-foreground"
         data-testid="weekly-to"
       />
-      <span className="text-xs text-muted-foreground hidden md:inline">
+      <span className="text-[13px] text-muted-foreground hidden md:inline">
         · 預設為週三至週二（週會週期）
       </span>
       <div className="ml-auto flex flex-wrap items-center gap-1.5">
@@ -94,7 +95,7 @@ function PresetButton({ children, onClick }: { children: React.ReactNode; onClic
   return (
     <button
       onClick={onClick}
-      className="text-[11px] px-2 py-1 rounded border border-border/50 bg-accent/30 hover:bg-accent/60 transition-colors"
+      className="text-xs px-2 py-1 rounded border border-border/50 bg-accent/30 hover:bg-accent/60 transition-colors"
     >
       {children}
     </button>
@@ -118,7 +119,7 @@ function Modal({
         <div className="flex items-center justify-between p-4 border-b border-border/40">
           <div>
             <h3 className="text-sm font-semibold">{title}</h3>
-            {subtitle && <div className="text-xs text-muted-foreground mt-0.5">{subtitle}</div>}
+            {subtitle && <div className="text-[13px] text-muted-foreground mt-0.5">{subtitle}</div>}
           </div>
           <button onClick={onClose} className="p-1 rounded hover:bg-accent/50">
             <X className="h-4 w-4" />
@@ -143,6 +144,7 @@ export default function WeeklyReview() {
   const [ordersRaw, setOrdersRaw] = useState<Order[]>([]);
   const [linesRaw, setLinesRaw] = useState<Line[]>([]);
   const [productMeta, setProductMeta] = useState<Record<string, { product_type: string; vendor: string }>>({});
+  const [costMap, setCostMap] = useState<Record<string, number>>({}); // sku → 成本價(>0 先有;毛利用)
 
   // Global date range
   const initial = useMemo(() => getDefaultWeekRange(), []);
@@ -214,6 +216,24 @@ export default function WeeklyReview() {
         setOrdersRaw(orders as any);
         setLinesRaw(lines as any);
         setProductMeta(pmeta);
+
+        // 成本價(毛利 KPI 用)— 按 sold SKU 批次拉,$0 當漏入唔算
+        const skuList = [...new Set((lines as any[]).map(l => l.sku).filter(Boolean))] as string[];
+        const BATCH = 100;
+        const batches: string[][] = [];
+        for (let i = 0; i < skuList.length; i += BATCH) batches.push(skuList.slice(i, i + BATCH));
+        const costResults = await Promise.all(
+          batches.map(b => supabase.from('shopify_inventory').select('sku,cost').in('sku', b))
+        );
+        if (cancelled) return;
+        const cMap: Record<string, number> = {};
+        for (const { data: rows } of costResults) {
+          (rows || []).forEach((r: any) => {
+            const c = parseFloat(r.cost);
+            if (r.sku && c > 0) cMap[r.sku] = c;
+          });
+        }
+        setCostMap(cMap);
       } catch (err) {
         console.error('weekly-review fetch failed:', err);
       } finally {
@@ -226,21 +246,37 @@ export default function WeeklyReview() {
   }, [fetchBounds]);
 
   const cur = useMemo(
-    () => processOrders(ordersRaw, linesRaw, range.from, range.to, productMeta),
-    [ordersRaw, linesRaw, range, productMeta]
+    () => processOrders(ordersRaw, linesRaw, range.from, range.to, productMeta, costMap),
+    [ordersRaw, linesRaw, range, productMeta, costMap]
   );
   const prev = useMemo(
-    () => processOrders(ordersRaw, linesRaw, prevRange.from, prevRange.to, productMeta),
-    [ordersRaw, linesRaw, prevRange, productMeta]
+    () => processOrders(ordersRaw, linesRaw, prevRange.from, prevRange.to, productMeta, costMap),
+    [ordersRaw, linesRaw, prevRange, productMeta, costMap]
   );
   const yoy = useMemo(
-    () => processOrders(ordersRaw, linesRaw, yoyRange.from, yoyRange.to, productMeta),
-    [ordersRaw, linesRaw, yoyRange, productMeta]
+    () => processOrders(ordersRaw, linesRaw, yoyRange.from, yoyRange.to, productMeta, costMap),
+    [ordersRaw, linesRaw, yoyRange, productMeta, costMap]
   );
   const monthly = useMemo(
-    () => processOrders(ordersRaw, linesRaw, monthRange.from, monthRange.to, productMeta),
-    [ordersRaw, linesRaw, monthRange, productMeta]
+    () => processOrders(ordersRaw, linesRaw, monthRange.from, monthRange.to, productMeta, costMap),
+    [ordersRaw, linesRaw, monthRange, productMeta, costMap]
   );
+
+  // 週會 headline:品牌本期 vs 上期,搵最大拉升/最大回落
+  const brandMovers = useMemo(() => {
+    const names = new Set([...Object.keys(cur.brandMap), ...Object.keys(prev.brandMap)]);
+    const deltas = [...names].map(name => ({
+      name,
+      cur: cur.brandMap[name]?.revenue || 0,
+      prev: prev.brandMap[name]?.revenue || 0,
+      delta: (cur.brandMap[name]?.revenue || 0) - (prev.brandMap[name]?.revenue || 0),
+    }));
+    deltas.sort((a, b) => b.delta - a.delta);
+    return {
+      gainer: deltas[0] && deltas[0].delta > 0 ? deltas[0] : null,
+      loser: deltas.length > 0 && deltas[deltas.length - 1].delta < 0 ? deltas[deltas.length - 1] : null,
+    };
+  }, [cur, prev]);
 
   // Section 1 — channel rows
   const channelRows = useMemo(() => {
@@ -386,36 +422,55 @@ export default function WeeklyReview() {
         onChange={(f, t) => setRange({ from: f, to: t })}
       />
 
-      {/* 1. 銷售渠道分析（當月） */}
-      <Card className="border-border/40">
-        <CardHeader>
-          <CardTitle className="text-base">1. 銷售渠道分析（當月）</CardTitle>
-          <p className="text-xs text-muted-foreground">{monthRange.from} → {monthRange.to}</p>
+      {/* ── 週會一分鐘總結 ─────────────────────────────── */}
+      <Card className="border-primary/30 bg-primary/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">📋 一分鐘總結</CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {channelRows.length === 0 && (
-            <div className="text-sm text-muted-foreground col-span-3">本月暫無銷售資料</div>
+        <CardContent className="space-y-2 text-[15px] leading-relaxed">
+          <p>
+            本期營收 <b className="tabular-nums">{formatCurrency(cur.revenue)}</b>
+            <DeltaInline cur={cur.revenue} prev={prev.revenue} label="上期" />
+            <DeltaInline cur={cur.revenue} prev={yoy.revenue} label="去年" />
+            ,訂單 <b className="tabular-nums">{formatNumber(cur.orders)}</b> 張
+            <DeltaInline cur={cur.orders} prev={prev.orders} label="上期" />
+            ,AOV <b className="tabular-nums">{formatCurrency(cur.aov)}</b>
+            <DeltaInline cur={cur.aov} prev={prev.aov} label="上期" />。
+          </p>
+          <p>
+            毛利 <b className="tabular-nums">{formatCurrency(cur.profit)}</b>
+            {cur.coveredRev > 0 && <>(率 {((cur.profit / cur.coveredRev) * 100).toFixed(0)}%)</>}
+            <DeltaInline cur={cur.profit} prev={prev.profit} label="上期" />。
+          </p>
+          {(brandMovers.gainer || brandMovers.loser) && (
+            <p>
+              {brandMovers.gainer && (
+                <>拉升最多:<b>{brandMovers.gainer.name}</b>{' '}
+                <span className="text-emerald-400 tabular-nums">+{formatCurrency(brandMovers.gainer.delta)}</span>
+                (上期 {formatCurrency(brandMovers.gainer.prev)} → {formatCurrency(brandMovers.gainer.cur)})</>
+              )}
+              {brandMovers.gainer && brandMovers.loser && ';'}
+              {brandMovers.loser && (
+                <>回落最多:<b>{brandMovers.loser.name}</b>{' '}
+                <span className="text-red-400 tabular-nums">−{formatCurrency(Math.abs(brandMovers.loser.delta))}</span></>
+              )}。
+            </p>
           )}
-          {channelRows.map(c => (
-            <div key={c.name} className="border border-border/40 rounded-lg p-4 bg-accent/10">
-              <div className="flex items-center gap-2 mb-2">
-                <ChannelIcon name={c.name} />
-                <span className="text-sm font-medium">{c.name}</span>
-                <Badge variant="secondary" className="ml-auto text-[10px]">
-                  {formatPercent(c.share * 100)}
-                </Badge>
-              </div>
-              <div className="text-xl font-bold">{formatCurrency(c.revenue)}</div>
-              <div className="text-xs text-muted-foreground mt-1">{formatNumber(c.orders)} 張訂單</div>
-            </div>
-          ))}
+          {cur.topSkus[0] && (
+            <p>
+              最強產品:<b>{cur.topSkus[0].title}</b>{' '}
+              <span className="tabular-nums text-muted-foreground">×{cur.topSkus[0].qty} · {formatCurrency(cur.topSkus[0].revenue)}</span>
+              ;折扣碼 {cur.promoCount} 個帶來 <span className="tabular-nums">{formatCurrency(promoSummary.totalRev)}</span>
+              (折讓 {formatCurrency(promoSummary.totalDisc)})。
+            </p>
+          )}
         </CardContent>
       </Card>
 
-      {/* 2. 本期核心 KPI */}
+      {/* 1. 本期核心 KPI */}
       <div>
-        <h2 className="text-base font-semibold mb-3">2. 本期核心 KPI</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <h2 className="text-base font-semibold mb-3">1. 本期核心 KPI</h2>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <KpiCard
             title="本期營收"
             subtitle={`vs 上期 / vs 去年`}
@@ -423,6 +478,14 @@ export default function WeeklyReview() {
             icon={DollarSign}
             delta={calcDelta(cur.revenue, prev.revenue)}
             testId="kpi-revenue"
+          />
+          <KpiCard
+            title="本期毛利"
+            subtitle={cur.coveredRev > 0 ? `毛利率 ${((cur.profit / cur.coveredRev) * 100).toFixed(0)}%` : '未有成本數據'}
+            value={formatCurrency(cur.profit)}
+            icon={Coins}
+            delta={calcDelta(cur.profit, prev.profit)}
+            testId="kpi-profit"
           />
           <KpiCard
             title="本期訂單"
@@ -452,104 +515,52 @@ export default function WeeklyReview() {
           </button>
         </div>
         {/* YoY supplementary line */}
-        <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3 text-[11px] text-muted-foreground">
+        <div className="mt-2 grid grid-cols-2 md:grid-cols-5 gap-3 text-[13px] text-muted-foreground">
           <YoyLine label="vs 去年同期" cur={cur.revenue} refValue={yoy.revenue} fmt={formatCurrency} />
+          <YoyLine label="vs 去年同期" cur={cur.profit} refValue={yoy.profit} fmt={formatCurrency} />
           <YoyLine label="vs 去年同期" cur={cur.orders} refValue={yoy.orders} fmt={formatNumber} />
           <YoyLine label="vs 去年同期" cur={cur.aov} refValue={yoy.aov} fmt={formatCurrency} />
           <YoyLine label="vs 去年同期" cur={cur.promoCount} refValue={yoy.promoCount} fmt={formatNumber} />
         </div>
       </div>
 
-      {/* 3. Promo Codes 折扣碼使用情況 */}
-      <Card className="border-border/40">
-        <CardHeader>
-          <CardTitle className="text-base flex items-center justify-between">
-            <span>3. Promo Codes 折扣碼使用情況</span>
-            <span className="text-xs font-normal text-muted-foreground">
-              共 {cur.promoCount} 個折扣碼，使用 {formatNumber(promoSummary.totalUses)} 次，
-              折讓 {formatCurrency(promoSummary.totalDisc)}，
-              帶來 {formatCurrency(promoSummary.totalRev)} 營收
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {promoRows.length === 0 ? (
-            <div className="text-sm text-muted-foreground">本期沒有使用折扣碼</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="text-xs text-muted-foreground border-b border-border/40">
-                  <tr>
-                    <th className="text-left py-2 px-2">折扣碼</th>
-                    <th className="text-right py-2 px-2">使用次數</th>
-                    <th className="text-right py-2 px-2">折讓金額</th>
-                    <th className="text-right py-2 px-2">帶來營收</th>
-                    <th className="text-right py-2 px-2"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {promoRows.map(r => (
-                    <tr key={r.code} className="border-b border-border/20 hover:bg-accent/20">
-                      <td className="py-2 px-2 font-medium">{r.code}</td>
-                      <td className="py-2 px-2 text-right">{formatNumber(r.uses)}</td>
-                      <td className="py-2 px-2 text-right text-amber-400">
-                        − {formatCurrency(r.discountAmt)}
-                      </td>
-                      <td className="py-2 px-2 text-right">{formatCurrency(r.revenue)}</td>
-                      <td className="py-2 px-2 text-right">
-                        <button
-                          onClick={() => setPromoDetail(r.code)}
-                          className="text-xs text-sky-400 hover:underline"
-                        >
-                          明細
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* 4. Top 5 Brands / Categories */}
+      {/* 2. Top 5 Brands / Categories */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card className="border-border/40">
           <CardHeader>
-            <CardTitle className="text-base">4a. Top 5 品牌</CardTitle>
+            <CardTitle className="text-base">2a. Top 5 品牌 <span className="text-[13px] font-normal text-muted-foreground">括號係 vs 上期</span></CardTitle>
           </CardHeader>
           <CardContent>
-            <TopList rows={topBrands} />
+            <TopList rows={topBrands} prevMap={prev.brandMap} />
           </CardContent>
         </Card>
         <Card className="border-border/40">
           <CardHeader>
-            <CardTitle className="text-base">4b. Top 5 品類</CardTitle>
+            <CardTitle className="text-base">2b. Top 5 品類 <span className="text-[13px] font-normal text-muted-foreground">括號係 vs 上期</span></CardTitle>
           </CardHeader>
           <CardContent>
-            <TopList rows={topCats} />
+            <TopList rows={topCats} prevMap={prev.catMap} />
           </CardContent>
         </Card>
       </div>
 
-      {/* 5. Brand Performance */}
+      {/* 3. Brand Performance */}
       <ChartCard
-        title="5. 品牌表現 Brand Performance"
+        title="3. 品牌表現 Brand Performance"
         subtitle={`${range.from} → ${range.to}　·　${brandPerfMetric === 'revenue' ? '銷售額' : '件數'}`}
         note=""
       >
         <div className="flex items-center gap-2 mb-2">
           <button
-            className={`text-xs px-2 py-1 rounded border ${brandPerfMetric === 'revenue' ? 'bg-primary text-primary-foreground' : 'bg-accent/30 border-border/40'}`}
+            className={`text-[13px] px-2 py-1 rounded border ${brandPerfMetric === 'revenue' ? 'bg-primary text-primary-foreground' : 'bg-accent/30 border-border/40'}`}
             onClick={() => setBrandPerfMetric('revenue')}
           >銷售額</button>
           <button
-            className={`text-xs px-2 py-1 rounded border ${brandPerfMetric === 'qty' ? 'bg-primary text-primary-foreground' : 'bg-accent/30 border-border/40'}`}
+            className={`text-[13px] px-2 py-1 rounded border ${brandPerfMetric === 'qty' ? 'bg-primary text-primary-foreground' : 'bg-accent/30 border-border/40'}`}
             onClick={() => setBrandPerfMetric('qty')}
           >件數</button>
           <button
-            className="text-xs px-2 py-1 rounded border bg-accent/30 border-border/40 ml-auto"
+            className="text-[13px] px-2 py-1 rounded border bg-accent/30 border-border/40 ml-auto"
             onClick={() => setBrandPerfExpand(v => !v)}
           >
             {brandPerfExpand ? '收起 (僅顯示 Top10)' : `展開全部 (${Object.keys(cur.brandMap).length})`}
@@ -590,7 +601,7 @@ export default function WeeklyReview() {
                     return n;
                   });
                 }}
-                className={`text-[10px] px-1.5 py-0.5 rounded border ${hidden ? 'bg-muted/30 border-border/30 text-muted-foreground line-through' : 'bg-accent/40 border-border/50'}`}
+                className={`text-xs px-1.5 py-0.5 rounded border ${hidden ? 'bg-muted/30 border-border/30 text-muted-foreground line-through' : 'bg-accent/40 border-border/50'}`}
               >
                 {name}
               </button>
@@ -599,24 +610,26 @@ export default function WeeklyReview() {
         </div>
       </ChartCard>
 
-      {/* 6. Brand & Category Performance Details (drill-down) */}
+      {/* 4. Brand & Category Performance Details (drill-down) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <PerformanceTable
-          title="6a. 品牌表現明細（點擊展開）"
+          title="4a. 品牌表現明細（點擊展開）"
           rows={brandTable}
+          prevMap={prev.brandMap}
           onClick={n => setBrandDrill(n)}
         />
         <PerformanceTable
-          title="6b. 品類表現明細（點擊展開）"
+          title="4b. 品類表現明細（點擊展開）"
           rows={catTable}
+          prevMap={prev.catMap}
           onClick={n => setCatDrill(n)}
         />
       </div>
 
-      {/* 7. Top 5 SKU */}
+      {/* 5. Top 5 SKU */}
       <Card className="border-border/40">
         <CardHeader>
-          <CardTitle className="text-base">7. 本期最佳產品 Top 5 SKU</CardTitle>
+          <CardTitle className="text-base">5. 本期最佳產品 Top 5 SKU</CardTitle>
         </CardHeader>
         <CardContent>
           {cur.topSkus.length === 0 ? (
@@ -624,32 +637,118 @@ export default function WeeklyReview() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="text-xs text-muted-foreground border-b border-border/40">
+                <thead className="text-[13px] text-muted-foreground border-b border-border/40">
                   <tr>
-                    <th className="text-left py-2 px-2">#</th>
-                    <th className="text-left py-2 px-2">品牌</th>
-                    <th className="text-left py-2 px-2">SKU / 產品名稱</th>
-                    <th className="text-right py-2 px-2">件數</th>
-                    <th className="text-right py-2 px-2">銷售額</th>
+                    <th className="text-left py-2.5 px-2">#</th>
+                    <th className="text-left py-2.5 px-2">品牌</th>
+                    <th className="text-left py-2.5 px-2">SKU / 產品名稱</th>
+                    <th className="text-right py-2.5 px-2">件數</th>
+                    <th className="text-right py-2.5 px-2">銷售額</th>
+                    <th className="text-right py-2.5 px-2">vs 上期</th>
                   </tr>
                 </thead>
                 <tbody>
                   {cur.topSkus.map((s, i) => (
                     <tr key={s.sku + i} className="border-b border-border/20 hover:bg-accent/20">
-                      <td className="py-2 px-2 text-muted-foreground">#{i + 1}</td>
-                      <td className="py-2 px-2">{s.vendor}</td>
-                      <td className="py-2 px-2">
+                      <td className="py-2.5 px-2 text-muted-foreground">#{i + 1}</td>
+                      <td className="py-2.5 px-2">{s.vendor}</td>
+                      <td className="py-2.5 px-2">
                         <div className="font-medium text-foreground">{s.title}</div>
-                        <div className="text-xs text-muted-foreground">{s.sku}</div>
+                        <div className="text-[13px] text-muted-foreground">{s.sku}</div>
                       </td>
-                      <td className="py-2 px-2 text-right">{formatNumber(s.qty)}</td>
-                      <td className="py-2 px-2 text-right">{formatCurrency(s.revenue)}</td>
+                      <td className="py-2.5 px-2 text-right">{formatNumber(s.qty)}</td>
+                      <td className="py-2.5 px-2 text-right">{formatCurrency(s.revenue)}</td>
+                      <td className="py-2.5 px-2 text-right"><DeltaCell cur={s.revenue} prev={prev.skuMap[s.sku]?.revenue || 0} /></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* 6. Promo Codes 折扣碼使用情況 */}
+      <Card className="border-border/40">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center justify-between">
+            <span>6. Promo Codes 折扣碼使用情況</span>
+            <span className="text-[13px] font-normal text-muted-foreground">
+              共 {cur.promoCount} 個折扣碼，使用 {formatNumber(promoSummary.totalUses)} 次，
+              折讓 {formatCurrency(promoSummary.totalDisc)}，
+              帶來 {formatCurrency(promoSummary.totalRev)} 營收
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {promoRows.length === 0 ? (
+            <div className="text-sm text-muted-foreground">本期沒有使用折扣碼</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-[13px] text-muted-foreground border-b border-border/40">
+                  <tr>
+                    <th className="text-left py-2.5 px-2">折扣碼</th>
+                    <th className="text-right py-2.5 px-2">使用次數</th>
+                    <th className="text-right py-2.5 px-2">折讓金額</th>
+                    <th className="text-right py-2.5 px-2">帶來營收</th>
+                    <th className="text-right py-2.5 px-2">vs 上期</th>
+                    <th className="text-right py-2.5 px-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {promoRows.map(r => (
+                    <tr key={r.code} className="border-b border-border/20 hover:bg-accent/20">
+                      <td className="py-2.5 px-2 font-medium">{r.code}</td>
+                      <td className="py-2.5 px-2 text-right">{formatNumber(r.uses)}</td>
+                      <td className="py-2.5 px-2 text-right text-amber-400">
+                        − {formatCurrency(r.discountAmt)}
+                      </td>
+                      <td className="py-2.5 px-2 text-right">{formatCurrency(r.revenue)}</td>
+                      <td className="py-2.5 px-2 text-right"><DeltaCell cur={r.revenue} prev={prev.promoCodes[r.code]?.revenue || 0} /></td>
+                      <td className="py-2.5 px-2 text-right">
+                        <button
+                          onClick={() => setPromoDetail(r.code)}
+                          className="text-[13px] text-sky-400 hover:underline"
+                        >
+                          明細
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 7. 銷售渠道分析（本期） */}
+      <Card className="border-border/40">
+        <CardHeader>
+          <CardTitle className="text-base">7. 銷售渠道分析（本期）</CardTitle>
+          <p className="text-[13px] text-muted-foreground">{range.from} → {range.to} · 對比上期</p>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {channelRows.length === 0 && (
+            <div className="text-sm text-muted-foreground col-span-3">本期暫無銷售資料</div>
+          )}
+          {channelRows.map(c => (
+            <div key={c.name} className="border border-border/40 rounded-lg p-4 bg-accent/10">
+              <div className="flex items-center gap-2 mb-2">
+                <ChannelIcon name={c.name} />
+                <span className="text-sm font-medium">{c.name}</span>
+                <Badge variant="secondary" className="ml-auto text-xs">
+                  {formatPercent(c.share * 100)}
+                </Badge>
+              </div>
+              <div className="text-xl font-bold">{formatCurrency(c.revenue)}</div>
+              <div className="text-[13px] text-muted-foreground mt-1">
+                {formatNumber(c.orders)} 張訂單 · 上期 {formatCurrency(prev.channelMap[c.name]?.revenue || 0)}
+                {' '}<DeltaCell cur={c.revenue} prev={prev.channelMap[c.name]?.revenue || 0} />
+              </div>
+            </div>
+          ))}
         </CardContent>
       </Card>
 
@@ -671,24 +770,24 @@ export default function WeeklyReview() {
       >
         {promoDetailRows && (
           <table className="w-full text-sm">
-            <thead className="text-xs text-muted-foreground border-b border-border/40">
+            <thead className="text-[13px] text-muted-foreground border-b border-border/40">
               <tr>
-                <th className="text-left py-2 px-2">訂單</th>
-                <th className="text-left py-2 px-2">商品</th>
-                <th className="text-right py-2 px-2">件數</th>
-                <th className="text-right py-2 px-2">銷售額</th>
+                <th className="text-left py-2.5 px-2">訂單</th>
+                <th className="text-left py-2.5 px-2">商品</th>
+                <th className="text-right py-2.5 px-2">件數</th>
+                <th className="text-right py-2.5 px-2">銷售額</th>
               </tr>
             </thead>
             <tbody>
               {promoDetailRows.map((r, i) => (
                 <tr key={i} className="border-b border-border/20">
-                  <td className="py-2 px-2">{r.orderName}</td>
-                  <td className="py-2 px-2">
+                  <td className="py-2.5 px-2">{r.orderName}</td>
+                  <td className="py-2.5 px-2">
                     <div>{r.title}</div>
-                    <div className="text-xs text-muted-foreground">{r.sku}</div>
+                    <div className="text-[13px] text-muted-foreground">{r.sku}</div>
                   </td>
-                  <td className="py-2 px-2 text-right">{formatNumber(r.qty)}</td>
-                  <td className="py-2 px-2 text-right">{formatCurrency(r.revenue)}</td>
+                  <td className="py-2.5 px-2 text-right">{formatNumber(r.qty)}</td>
+                  <td className="py-2.5 px-2 text-right">{formatCurrency(r.revenue)}</td>
                 </tr>
               ))}
             </tbody>
@@ -722,6 +821,27 @@ export default function WeeklyReview() {
 }
 
 // ─── Sub components ──────────────────────────────────────────────────────────
+// 一分鐘總結入面嘅行內對比:(vs 上期 +12.3%)
+function DeltaInline({ cur, prev, label }: { cur: number; prev: number; label: string }) {
+  const d = calcDelta(cur, prev);
+  if (d == null) return null;
+  const color = d > 0 ? 'text-emerald-400' : d < 0 ? 'text-red-400' : 'text-muted-foreground';
+  return (
+    <span className="text-[13px] text-muted-foreground">
+      (vs {label} <span className={`${color} tabular-nums`}>{d > 0 ? '+' : ''}{d.toFixed(1)}%</span>)
+    </span>
+  );
+}
+
+// 表格入面嘅對比 cell:+12.3% / −8.1% / 新
+function DeltaCell({ cur, prev }: { cur: number; prev: number }) {
+  if (prev === 0 && cur > 0) return <span className="text-[13px] text-sky-400">新</span>;
+  const d = calcDelta(cur, prev);
+  if (d == null) return <span className="text-muted-foreground/40">—</span>;
+  const color = d > 0 ? 'text-emerald-400' : d < 0 ? 'text-red-400' : 'text-muted-foreground';
+  return <span className={`${color} tabular-nums text-[13px]`}>{d > 0 ? '+' : ''}{d.toFixed(1)}%</span>;
+}
+
 function YoyLine({ label, cur, refValue, fmt }: { label: string; cur: number; refValue: number; fmt: (v: number) => string }) {
   const d = calcDelta(cur, refValue);
   if (d == null) {
@@ -735,18 +855,24 @@ function YoyLine({ label, cur, refValue, fmt }: { label: string; cur: number; re
   );
 }
 
-function TopList({ rows }: { rows: { name: string; revenue: number; qty: number }[] }) {
+function TopList({ rows, prevMap }: {
+  rows: { name: string; revenue: number; qty: number }[];
+  prevMap?: Record<string, { revenue: number; qty: number }>;
+}) {
   if (rows.length === 0) return <div className="text-sm text-muted-foreground">本期暫無資料</div>;
   const max = Math.max(...rows.map(r => r.revenue));
   return (
     <div className="space-y-2">
       {rows.map((r, i) => (
         <div key={r.name + i} className="flex items-center gap-3 text-sm">
-          <span className="text-muted-foreground w-5 text-xs">#{i + 1}</span>
+          <span className="text-muted-foreground w-5 text-[13px]">#{i + 1}</span>
           <div className="flex-1">
             <div className="flex items-baseline justify-between">
               <span className="font-medium truncate">{r.name}</span>
-              <span className="text-foreground tabular-nums ml-3">{formatCurrency(r.revenue)}</span>
+              <span className="text-foreground tabular-nums ml-3">
+                {formatCurrency(r.revenue)}
+                {prevMap && <> <DeltaCell cur={r.revenue} prev={prevMap[r.name]?.revenue || 0} /></>}
+              </span>
             </div>
             <div className="h-1.5 bg-accent/30 rounded mt-1 overflow-hidden">
               <div
@@ -754,7 +880,7 @@ function TopList({ rows }: { rows: { name: string; revenue: number; qty: number 
                 style={{ width: max > 0 ? `${(r.revenue / max) * 100}%` : 0 }}
               />
             </div>
-            <div className="text-[11px] text-muted-foreground mt-0.5">{formatNumber(r.qty)} 件</div>
+            <div className="text-xs text-muted-foreground mt-0.5">{formatNumber(r.qty)} 件</div>
           </div>
         </div>
       ))}
@@ -763,10 +889,11 @@ function TopList({ rows }: { rows: { name: string; revenue: number; qty: number 
 }
 
 function PerformanceTable({
-  title, rows, onClick,
+  title, rows, prevMap, onClick,
 }: {
   title: string;
   rows: { name: string; revenue: number; qty: number }[];
+  prevMap?: Record<string, { revenue: number; qty: number }>;
   onClick: (name: string) => void;
 }) {
   return (
@@ -780,12 +907,13 @@ function PerformanceTable({
         ) : (
           <div className="overflow-x-auto max-h-[420px]">
             <table className="w-full text-sm">
-              <thead className="text-xs text-muted-foreground border-b border-border/40 sticky top-0 bg-card">
+              <thead className="text-[13px] text-muted-foreground border-b border-border/40 sticky top-0 bg-card">
                 <tr>
-                  <th className="text-left py-2 px-2">名稱</th>
-                  <th className="text-right py-2 px-2">銷售額</th>
-                  <th className="text-right py-2 px-2">件數</th>
-                  <th className="text-right py-2 px-2">AOV</th>
+                  <th className="text-left py-2.5 px-2">名稱</th>
+                  <th className="text-right py-2.5 px-2">銷售額</th>
+                  <th className="text-right py-2.5 px-2">vs 上期</th>
+                  <th className="text-right py-2.5 px-2">件數</th>
+                  <th className="text-right py-2.5 px-2">AOV</th>
                   <th className="w-6"></th>
                 </tr>
               </thead>
@@ -796,10 +924,13 @@ function PerformanceTable({
                     onClick={() => onClick(r.name)}
                     className="border-b border-border/20 hover:bg-accent/30 cursor-pointer"
                   >
-                    <td className="py-2 px-2 font-medium">{r.name}</td>
-                    <td className="py-2 px-2 text-right">{formatCurrency(r.revenue)}</td>
-                    <td className="py-2 px-2 text-right">{formatNumber(r.qty)}</td>
-                    <td className="py-2 px-2 text-right">
+                    <td className="py-2.5 px-2 font-medium">{r.name}</td>
+                    <td className="py-2.5 px-2 text-right">{formatCurrency(r.revenue)}</td>
+                    <td className="py-2.5 px-2 text-right">
+                      <DeltaCell cur={r.revenue} prev={prevMap?.[r.name]?.revenue || 0} />
+                    </td>
+                    <td className="py-2.5 px-2 text-right">{formatNumber(r.qty)}</td>
+                    <td className="py-2.5 px-2 text-right">
                       {r.qty > 0 ? formatCurrency(r.revenue / r.qty) : '—'}
                     </td>
                     <td className="px-2"><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /></td>
@@ -824,12 +955,12 @@ function PromoTable({
   if (arr.length === 0) return <div className="text-sm text-muted-foreground">本期沒有使用折扣碼</div>;
   return (
     <table className="w-full text-sm">
-      <thead className="text-xs text-muted-foreground border-b border-border/40">
+      <thead className="text-[13px] text-muted-foreground border-b border-border/40">
         <tr>
-          <th className="text-left py-2 px-2">折扣碼</th>
-          <th className="text-right py-2 px-2">使用次數</th>
-          <th className="text-right py-2 px-2">折讓金額</th>
-          <th className="text-right py-2 px-2">帶來營收</th>
+          <th className="text-left py-2.5 px-2">折扣碼</th>
+          <th className="text-right py-2.5 px-2">使用次數</th>
+          <th className="text-right py-2.5 px-2">折讓金額</th>
+          <th className="text-right py-2.5 px-2">帶來營收</th>
         </tr>
       </thead>
       <tbody>
@@ -839,10 +970,10 @@ function PromoTable({
             onClick={() => onPick(r.code)}
             className="border-b border-border/20 hover:bg-accent/30 cursor-pointer"
           >
-            <td className="py-2 px-2 font-medium">{r.code}</td>
-            <td className="py-2 px-2 text-right">{formatNumber(r.uses)}</td>
-            <td className="py-2 px-2 text-right text-amber-400">− {formatCurrency(r.discountAmt)}</td>
-            <td className="py-2 px-2 text-right">{formatCurrency(r.revenue)}</td>
+            <td className="py-2.5 px-2 font-medium">{r.code}</td>
+            <td className="py-2.5 px-2 text-right">{formatNumber(r.uses)}</td>
+            <td className="py-2.5 px-2 text-right text-amber-400">− {formatCurrency(r.discountAmt)}</td>
+            <td className="py-2.5 px-2 text-right">{formatCurrency(r.revenue)}</td>
           </tr>
         ))}
       </tbody>
@@ -861,13 +992,13 @@ function DrillTable({
 
   return (
     <table className="w-full text-sm">
-      <thead className="text-xs text-muted-foreground border-b border-border/40">
+      <thead className="text-[13px] text-muted-foreground border-b border-border/40">
         <tr>
-          <th className="text-left py-2 px-2">產品 (Variant)</th>
-          <th className="text-right py-2 px-2">件數</th>
-          <th className="text-right py-2 px-2">銷售額</th>
-          <th className="text-right py-2 px-2">平均單價</th>
-          <th className="text-right py-2 px-2">佔比</th>
+          <th className="text-left py-2.5 px-2">產品 (Variant)</th>
+          <th className="text-right py-2.5 px-2">件數</th>
+          <th className="text-right py-2.5 px-2">銷售額</th>
+          <th className="text-right py-2.5 px-2">平均單價</th>
+          <th className="text-right py-2.5 px-2">佔比</th>
         </tr>
       </thead>
       <tbody>
@@ -886,29 +1017,29 @@ function DrillTable({
                 }}
                 className="border-b border-border/20 hover:bg-accent/30 cursor-pointer"
               >
-                <td className="py-2 px-2 font-medium">
+                <td className="py-2.5 px-2 font-medium">
                   <span className="inline-flex items-center gap-1">
                     {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                     {v.title}
                   </span>
                 </td>
-                <td className="py-2 px-2 text-right">{formatNumber(v.qty)}</td>
-                <td className="py-2 px-2 text-right">{formatCurrency(v.revenue)}</td>
-                <td className="py-2 px-2 text-right">
+                <td className="py-2.5 px-2 text-right">{formatNumber(v.qty)}</td>
+                <td className="py-2.5 px-2 text-right">{formatCurrency(v.revenue)}</td>
+                <td className="py-2.5 px-2 text-right">
                   {v.qty > 0 ? formatCurrency(v.revenue / v.qty) : '—'}
                 </td>
-                <td className="py-2 px-2 text-right text-xs text-muted-foreground">
+                <td className="py-2.5 px-2 text-right text-[13px] text-muted-foreground">
                   {totalRev > 0 ? formatPercent((v.revenue / totalRev) * 100) : '—'}
                 </td>
               </tr>
               {open && skuList.map(s => (
                 <tr key={v.title + s.sku} className="bg-muted/10 border-b border-border/10">
-                  <td className="py-1.5 pl-10 pr-2 text-xs text-muted-foreground">
+                  <td className="py-1.5 pl-10 pr-2 text-[13px] text-muted-foreground">
                     SKU: {s.sku}
                   </td>
-                  <td className="py-1.5 px-2 text-right text-xs">{formatNumber(s.qty)}</td>
-                  <td className="py-1.5 px-2 text-right text-xs">{formatCurrency(s.revenue)}</td>
-                  <td className="py-1.5 px-2 text-right text-xs">
+                  <td className="py-1.5 px-2 text-right text-[13px]">{formatNumber(s.qty)}</td>
+                  <td className="py-1.5 px-2 text-right text-[13px]">{formatCurrency(s.revenue)}</td>
+                  <td className="py-1.5 px-2 text-right text-[13px]">
                     {s.qty > 0 ? formatCurrency(s.revenue / s.qty) : '—'}
                   </td>
                   <td></td>

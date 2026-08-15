@@ -64,7 +64,8 @@ export function calcDelta(curr: number, prev: number): number | null {
 /** Channel mapping (Shopify source_name → friendly bucket). */
 export function mapChannel(src: string | null): string {
   const s = (src || '').toLowerCase();
-  if (s === 'pos') return '門市 POS';
+  // 數字 source_name 係 POS 機號 — 同 daily-weekly 頁一致當門市
+  if (s === 'pos' || /^\d+$/.test(s)) return '門市 POS';
   if (s === 'web' || s === 'shopify' || s === '') return '網店 Online';
   return '其他';
 }
@@ -110,6 +111,10 @@ export type ProcessResult = {
   orders: number;
   aov: number;
   promoCount: number;
+  /** 毛利(淨計有成本價嘅 lines;costMap 冇俾就係 0) */
+  profit: number;
+  /** 有成本價 lines 嘅營收(毛利率分母) */
+  coveredRev: number;
   channelMap: Record<string, { orders: number; revenue: number }>;
   brandMap: Record<string, { qty: number; revenue: number }>;
   catMap: Record<string, { qty: number; revenue: number }>;
@@ -148,6 +153,8 @@ export type ProcessResult = {
     }
   >;
   topSkus: { title: string; sku: string; vendor: string; qty: number; revenue: number }[];
+  /** 完整 SKU 彙總(對比上期用 — topSkus 淨係頭 5 唔夠) */
+  skuMap: Record<string, { title: string; sku: string; vendor: string; qty: number; revenue: number }>;
   promoCodes: Record<
     string,
     {
@@ -165,7 +172,8 @@ export function processOrders(
   linesRaw: Line[],
   from: string,
   to: string,
-  productMeta?: Record<string, { product_type: string; vendor: string }>
+  productMeta?: Record<string, { product_type: string; vendor: string }>,
+  costMap?: Record<string, number>
 ): ProcessResult {
   const fromStr = from;
   const toStr = to + '\xff';
@@ -197,6 +205,8 @@ export function processOrders(
   const brandTree: ProcessResult['brandTree'] = {};
   const catTree: ProcessResult['catTree'] = {};
   const skuMapForTop: Record<string, { title: string; sku: string; vendor: string; qty: number; revenue: number }> = {};
+  let profit = 0;
+  let coveredRev = 0;
 
   for (const l of lines) {
     // Fallback to shopify_products meta when shopify_order_lines fields are null
@@ -249,6 +259,14 @@ export function processOrders(
     if (!skuMapForTop[tk]) skuMapForTop[tk] = { title, sku, vendor, qty: 0, revenue: 0 };
     skuMapForTop[tk].qty += qty;
     skuMapForTop[tk].revenue += price;
+
+    // 毛利(costMap 淨存 >0 嘅成本;冇成本嘅 line 唔入分母)
+    const rawSku = (l.sku || '').trim();
+    const c = rawSku ? costMap?.[rawSku] : undefined;
+    if (c !== undefined) {
+      profit += price - c * qty;
+      coveredRev += price;
+    }
   }
 
   const topSkus = Object.values(skuMapForTop)
@@ -293,12 +311,15 @@ export function processOrders(
     orders: orderCount,
     aov,
     promoCount,
+    profit,
+    coveredRev,
     channelMap,
     brandMap,
     catMap,
     brandTree,
     catTree,
     topSkus,
+    skuMap: skuMapForTop,
     promoCodes,
     promoOrderIndex,
   };
