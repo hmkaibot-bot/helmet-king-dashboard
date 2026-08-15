@@ -20,6 +20,7 @@ import { FoorirLogin } from '@/components/foorir-login';
 import { getFoorirToken, getKPI, type FoorirKPI } from '@/lib/foorir';
 import { PromoPerformance } from '@/components/promo-performance';
 import { BrandMonthlySales } from '@/components/brand-monthly-sales';
+import { ProductItemList } from '@/components/product-item-list';
 
 // ── Types ─────────────────────────────────────────────────────
 type ViewMode = 'yesterday' | 'this_week' | 'last_week';
@@ -765,27 +766,36 @@ export default function DailyWeeklyPage() {
   }, [weekOrders, allOrderLines]);
 
   // Week category breakdown (for table) — with per-product items for expand
+  // items 帶 productId/skus/毛利,展開明細餵俾共用 ProductItemList(縮圖+庫存+預計缺貨)
   const weekCatBreakdown = useMemo(() => {
     const ids = new Set(weekOrders.map((o: any) => String(o.id)));
     const lines = allOrderLines.filter((l: any) => ids.has(String(l.order_id)));
-    const cm: Record<string, { type: string; qty: number; revenue: number; brands: Set<string>; skus: number; items: Record<string, { title: string; vendor: string; qty: number; revenue: number }> }> = {};
+    type WkItem = { title: string; vendor: string; productId: string | null; skus: Set<string>; qty: number; revenue: number; profit: number; coveredRev: number };
+    const cm: Record<string, { type: string; qty: number; revenue: number; brands: Set<string>; skus: number; items: Record<string, WkItem> }> = {};
     lines.forEach((l: any) => {
       const type = l.product_type || productTypeMap[String(l.product_id)] || 'Other';
       if (!cm[type]) cm[type] = { type, qty: 0, revenue: 0, brands: new Set(), skus: 0, items: {} };
-      cm[type].qty     += l.quantity || 0;
-      cm[type].revenue += (parseFloat(l.price) || 0) * (l.quantity || 0);
+      const qty = l.quantity || 0;
+      const rev = (parseFloat(l.price) || 0) * qty;
+      cm[type].qty     += qty;
+      cm[type].revenue += rev;
       if (l.vendor) cm[type].brands.add(l.vendor);
       cm[type].skus++;
       // Track per-product items
       const itemKey = l.title || String(l.product_id) || 'unknown';
-      if (!cm[type].items[itemKey]) cm[type].items[itemKey] = { title: l.title || itemKey, vendor: l.vendor || '', qty: 0, revenue: 0 };
-      cm[type].items[itemKey].qty += l.quantity || 0;
-      cm[type].items[itemKey].revenue += (parseFloat(l.price) || 0) * (l.quantity || 0);
+      if (!cm[type].items[itemKey]) cm[type].items[itemKey] = { title: l.title || itemKey, vendor: l.vendor || '', productId: null, skus: new Set(), qty: 0, revenue: 0, profit: 0, coveredRev: 0 };
+      const it = cm[type].items[itemKey];
+      it.qty += qty;
+      it.revenue += rev;
+      if (!it.productId && l.product_id) it.productId = String(l.product_id);
+      if (l.sku) it.skus.add(l.sku);
+      const c = l.sku ? costMap[l.sku] : undefined;
+      if (c !== undefined) { it.profit += rev - c * qty; it.coveredRev += rev; }
     });
     return Object.values(cm)
       .map(c => ({ ...c, brands: [...c.brands], itemList: Object.values(c.items).sort((a, b) => b.revenue - a.revenue) }))
       .sort((a, b) => b.revenue - a.revenue);
-  }, [weekOrders, allOrderLines, productTypeMap]);
+  }, [weekOrders, allOrderLines, productTypeMap, costMap]);
   const [expandedWeekCats, setExpandedWeekCats] = useState<Set<string>>(new Set());
 
   // ── Active Promotions (discount codes with ongoing usage) ──
@@ -1872,19 +1882,18 @@ export default function DailyWeeklyPage() {
                             {wcExp && (
                               <tr>
                                 <td colSpan={5} className="p-0">
-                                  <div className="bg-accent/10 px-4 py-2.5 border-b border-border/20">
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
-                                      {cat.itemList.map((item, ii) => (
-                                        <div key={ii} className="flex items-center justify-between text-xs py-1 border-b border-border/10 last:border-0">
-                                          <div className="flex items-center gap-2 min-w-0">
-                                            <span className="text-muted-foreground/50 tabular-nums w-4 text-right shrink-0">{ii + 1}</span>
-                                            <span className="truncate">{item.title}</span>
-                                            {item.vendor && <span className="text-[10px] text-muted-foreground/50 shrink-0">{item.vendor}</span>}
-                                          </div>
-                                          <span className="tabular-nums text-muted-foreground ml-2 shrink-0">×{item.qty} {formatCurrency(item.revenue)}</span>
-                                        </div>
-                                      ))}
-                                    </div>
+                                  <div className="bg-accent/10 px-4 py-3 border-b border-border/20">
+                                    <ProductItemList
+                                      items={cat.itemList.map(item => ({
+                                        title: item.title, productId: item.productId, skus: item.skus,
+                                        qty: item.qty, revenue: item.revenue,
+                                        profit: item.profit, coveredRev: item.coveredRev,
+                                        sub: item.vendor || null,
+                                      }))}
+                                      qtyLabel="本週售出" topN={10} showRank
+                                      imageMap={productImageMap} handleMap={productHandleMap}
+                                      productStockMap={productStockMap} velocityMap={velocityMap}
+                                    />
                                   </div>
                                 </td>
                               </tr>
