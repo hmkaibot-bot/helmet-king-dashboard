@@ -10,7 +10,7 @@ import { fetchAllRows, todayISO, type Promotion, type PromotionItem } from '@/li
 import { supabase } from '@/lib/supabase';
 import { renderPostCard, downloadDataUrl, type CardProduct, type CardTemplate, type CardSize } from '@/lib/post-card';
 import {
-  generateMarketingPost, fetchLiveProduct, variantToClipboard,
+  generateMarketingPost, fetchLiveProduct, variantToClipboard, buildTemplateVariants,
   PLATFORM_LABEL, TONE_LABEL, LANG_LABEL, SCENARIO_LABEL,
   type PostType, type Tone, type Lang, type Platform, type ScenarioKey,
   type PostVariant, type GenProduct,
@@ -393,14 +393,31 @@ export default function MarketingPostsPage() {
         throw new Error(droppedOos > 0 ? '所揀產品全部缺貨(以 live 庫存為準)' : '所揀產品冇有效售價');
       }
 
-      const result = await generateMarketingPost({
+      const genInput = {
         postType,
         products: withPrice,
         scenario: postType === 'scenario' ? scenario : null,
         tone,
         lang,
         platforms: Array.from(platforms),
-      });
+      };
+      let result;
+      let usedTemplate = false;
+      try {
+        result = await generateMarketingPost(genInput);
+      } catch (genErr) {
+        const msg = genErr instanceof Error ? genErr.message : String(genErr);
+        // AI 未接線(冇 ANTHROPIC_API_KEY)→ 用基本模板文案,唔好成個功能死晒
+        if (msg.includes('ANTHROPIC_API_KEY')) {
+          result = {
+            variants: buildTemplateVariants(genInput),
+            dropped: { belowCost: [], outOfStock: 0, noPrice: 0 },
+          };
+          usedTemplate = true;
+        } else {
+          throw genErr;
+        }
+      }
 
       // 用戶喺等緊嗰陣換咗類型/情境 → 呢個結果已經唔啱 context,棄掉
       if (genSeqRef.current !== mySeq) return;
@@ -408,6 +425,7 @@ export default function MarketingPostsPage() {
       setVariants(result.variants.map(v => ({ ...v, hashtagsText: v.hashtags.join(' ') })));
 
       const notices: string[] = [];
+      if (usedTemplate) notices.push('AI 文案未接通(Vercel 未設定 ANTHROPIC_API_KEY)— 已改用基本模板文案,可以照改照 send;想要 AI 執筆先至使設定');
       if (staleCount > 0) notices.push(`${staleCount} 件產品攞唔到 live 價,用咗每日 snapshot 數(出街前請自行核對價錢)`);
       if (droppedOos > 0) notices.push(`${droppedOos} 件缺貨產品已自動剔走`);
       if (droppedNoPrice > 0 || result.dropped.noPrice > 0) notices.push(`${droppedNoPrice + result.dropped.noPrice} 件冇有效售價已剔走`);

@@ -142,6 +142,89 @@ export async function fetchLiveProduct(productId: string): Promise<LiveProduct |
   }
 }
 
+
+/**
+ * 基本模板文案(唔靠 AI)— ANTHROPIC_API_KEY 未設定時嘅 fallback。
+ * 規則式:貨名 + 價錢(優惠/原價)+ 語氣 CTA + hashtags,照改照出得。
+ */
+export function buildTemplateVariants(input: {
+  postType: PostType;
+  products: GenProduct[];
+  scenario: ScenarioKey | null;
+  tone: Tone;
+  lang: Lang;
+  platforms: Platform[];
+}): PostVariant[] {
+  const { postType, products, scenario, tone, lang, platforms } = input;
+
+  const HEADLINES: Record<PostType, string> = {
+    new_arrival: '新品到港 🔥',
+    brand_story: `${products[0]?.vendor || ''} 精選推介`,
+    weekly_deal: '今期優惠 ⏰',
+    scenario:
+      scenario === 'rainy' ? '雨季裝備準備好未?☔️' :
+      scenario === 'summer' ? '夏日出車裝備 ☀️' :
+      scenario === 'night' ? '夜騎裝備推介 🌙' :
+      scenario === 'touring' ? '長途 Touring 裝備 🛣' : '新手上路裝備 ✅',
+    clearance: '清貨價 最後機會',
+    price_beat: '價格保證 抵買之選',
+    last_size: '最後碼數 售完即止',
+  };
+
+  const fmtP = (n: number) => `HK$${Math.round(n).toLocaleString('en-US')}`;
+  const productLine = (g: GenProduct): string => {
+    const eff = g.promoPrice ?? g.price;
+    let price: string;
+    if (g.promoPrice != null && g.promoPrice < g.price) {
+      price = `優惠價 ${fmtP(g.promoPrice)}(原價 ${fmtP(g.price)}${g.promoEndDate ? `,至 ${g.promoEndDate.slice(5).replace('-', '/')}` : ''})`;
+    } else if (g.comparePrice != null && g.comparePrice > eff) {
+      price = `${fmtP(eff)}(原價 ${fmtP(g.comparePrice)})`;
+    } else {
+      price = fmtP(eff);
+    }
+    return `▸ ${g.title} — ${price}`;
+  };
+
+  const closing =
+    tone === 'value' ? '門市現貨,先到先得!' :
+    tone === 'pro' ? '規格細節歡迎查詢,專人為你講解。' : '手快有手慢冇 🔥';
+  const cta =
+    tone === 'value' ? '親臨門市或 DM 訂購' :
+    tone === 'pro' ? 'DM 查詢詳細規格' : 'DM 即刻留貨!';
+  const enLine = lang === 'yue_en' ? '\nDM us or visit our store to order!' : '';
+
+  const vendors = [...new Set(products.map(g => g.vendor).filter(Boolean))];
+  const hashtags = [
+    '#頭盔王', '#HelmetKing',
+    ...vendors.map(v => '#' + v.replace(/\s+/g, '')),
+    '#電單車裝備',
+    ...(postType === 'new_arrival' ? ['#新品'] : postType === 'weekly_deal' ? ['#優惠'] : []),
+  ];
+  const altText = products.map(g => g.title).join('、');
+
+  return platforms.map((platform): PostVariant => {
+    if (platform === 'ig_story') {
+      const g = products[0];
+      return {
+        platform,
+        headline: HEADLINES[postType],
+        body: g ? `${g.title}\n${productLine(g).replace(/^▸ .*? — /, '')}${enLine}` : '',
+        hashtags: hashtags.slice(0, 4),
+        cta: '⬆️ DM 落單/查詢',
+        altText,
+      };
+    }
+    return {
+      platform,
+      headline: HEADLINES[postType],
+      body: `${products.map(productLine).join('\n')}\n\n${closing}${enLine}`,
+      hashtags,
+      cta,
+      altText,
+    };
+  });
+}
+
 /** 組合一個 variant 做可以直接貼落 IG/FB 嘅純文字 */
 export function variantToClipboard(v: PostVariant): string {
   const parts = [v.headline, '', v.body];
