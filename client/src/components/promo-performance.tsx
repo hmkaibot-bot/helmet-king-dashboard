@@ -298,14 +298,14 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
               {/* Tab Toggle */}
               <div className="flex gap-1 bg-accent/30 rounded-md p-0.5">
                 <button
-                  className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${tab === 'yesterday' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                  className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${tab === 'yesterday' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                   onClick={() => setTab('yesterday')}
                   data-testid="tab-promo-yesterday"
                 >
                   {dateLabel}
                 </button>
                 <button
-                  className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${tab === 'thirty_days' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                  className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${tab === 'thirty_days' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                   onClick={() => setTab('thirty_days')}
                   data-testid="tab-promo-30days"
                 >
@@ -322,26 +322,26 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
               <p className="text-sm text-muted-foreground">
                 {tab === 'yesterday' ? `${dateLabel}無使用 Promotion Code 的訂單` : '近30日無使用 Promotion Code 的訂單'}
               </p>
-              <p className="text-[10px] text-muted-foreground/60 mt-1">Marsello 忠誠積分碼及獎勵碼已排除</p>
+              <p className="text-[11px] text-muted-foreground/60 mt-1">Marsello 忠誠積分碼及獎勵碼已排除</p>
             </div>
           ) : (
             <>
               {/* Summary Row */}
               <div className="grid grid-cols-3 gap-3 mb-3">
                 <div className="bg-violet-500/10 rounded-lg p-2.5 text-center">
-                  <p className="text-[10px] text-muted-foreground">
+                  <p className="text-[11px] text-muted-foreground">
                     {tab === 'yesterday' ? '促銷訂單' : '30日促銷訂單'}
                   </p>
                   <p className="text-base font-semibold tabular-nums">{totalPromoOrders}</p>
                 </div>
                 <div className="bg-violet-500/10 rounded-lg p-2.5 text-center">
-                  <p className="text-[10px] text-muted-foreground">
+                  <p className="text-[11px] text-muted-foreground">
                     {tab === 'yesterday' ? '促銷營收' : '30日促銷營收'}
                   </p>
                   <p className="text-base font-semibold tabular-nums">{formatCurrency(totalPromoRevenue)}</p>
                 </div>
                 <div className="bg-violet-500/10 rounded-lg p-2.5 text-center">
-                  <p className="text-[10px] text-muted-foreground">
+                  <p className="text-[11px] text-muted-foreground">
                     {tab === 'yesterday' ? '折扣總額' : '30日折扣總額'}
                   </p>
                   <p className="text-base font-semibold tabular-nums text-red-400">-{formatCurrency(totalPromoDiscount)}</p>
@@ -352,16 +352,16 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
               {tab === 'yesterday' && (
                 <>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-xs" data-testid="table-promo-codes-yesterday">
+                    <table className="w-full text-[13px]" data-testid="table-promo-codes-yesterday">
                       <thead>
                         <tr className="border-b border-border/50 text-muted-foreground">
-                          <th className="py-2 text-left font-medium">Promotion Code</th>
-                          <th className="py-2 text-left font-medium">類型 Type</th>
-                          <th className="py-2 text-right font-medium">訂單數</th>
-                          <th className="py-2 text-right font-medium">件數</th>
-                          <th className="py-2 text-right font-medium">銷售額</th>
-                          <th className="py-2 text-right font-medium">折扣額</th>
-                          <th className="py-2 text-center font-medium">詳情</th>
+                          <th className="py-2.5 text-left font-medium">Promotion Code</th>
+                          <th className="py-2.5 text-left font-medium">類型 Type</th>
+                          <th className="py-2.5 text-right font-medium">訂單數</th>
+                          <th className="py-2.5 text-right font-medium">件數</th>
+                          <th className="py-2.5 text-right font-medium">銷售額</th>
+                          <th className="py-2.5 text-right font-medium">折扣額</th>
+                          <th className="py-2.5 text-center font-medium">詳情</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -372,15 +372,15 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
                             onClick={() => openDetail(p.code)}
                             data-testid={`row-promo-y-${p.code.toLowerCase()}`}
                           >
-                            <td className="py-2">
-                              <Badge variant="outline" className="text-[11px] font-mono px-1.5 py-0">{p.code}</Badge>
+                            <td className="py-2.5">
+                              <Badge variant="outline" className="text-xs font-mono px-1.5 py-0">{p.code}</Badge>
                             </td>
-                            <td className="py-2 text-muted-foreground">{typeLabel(p.type)}</td>
-                            <td className="py-2 text-right tabular-nums">{p.orderCount}</td>
-                            <td className="py-2 text-right tabular-nums">{p.totalItems}</td>
-                            <td className="py-2 text-right tabular-nums font-medium">{formatCurrency(p.totalRevenue)}</td>
-                            <td className="py-2 text-right tabular-nums text-red-400">-{formatCurrency(p.totalDiscount)}</td>
-                            <td className="py-2 text-center">
+                            <td className="py-2.5 text-muted-foreground">{typeLabel(p.type)}</td>
+                            <td className="py-2.5 text-right tabular-nums">{p.orderCount}</td>
+                            <td className="py-2.5 text-right tabular-nums">{p.totalItems}</td>
+                            <td className="py-2.5 text-right tabular-nums font-medium">{formatCurrency(p.totalRevenue)}</td>
+                            <td className="py-2.5 text-right tabular-nums text-red-400">-{formatCurrency(p.totalDiscount)}</td>
+                            <td className="py-2.5 text-center">
                               <ChevronDown className="h-3.5 w-3.5 text-muted-foreground mx-auto" />
                             </td>
                           </tr>
@@ -395,18 +395,18 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
               {tab === 'thirty_days' && (
                 <>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-xs" data-testid="table-promo-codes-30days">
+                    <table className="w-full text-[13px]" data-testid="table-promo-codes-30days">
                       <thead>
                         <tr className="border-b border-border/50 text-muted-foreground">
-                          <th className="py-2 text-left font-medium">Promotion Code</th>
-                          <th className="py-2 text-left font-medium">類型</th>
-                          <th className="py-2 text-right font-medium">30日訂單</th>
-                          <th className="py-2 text-right font-medium">30日營收</th>
-                          <th className="py-2 text-right font-medium">30日折扣</th>
-                          <th className="py-2 text-right font-medium">生命周期訂單</th>
-                          <th className="py-2 text-right font-medium">生命周期營收</th>
-                          <th className="py-2 text-left font-medium">使用期間</th>
-                          <th className="py-2 text-center font-medium">詳情</th>
+                          <th className="py-2.5 text-left font-medium">Promotion Code</th>
+                          <th className="py-2.5 text-left font-medium">類型</th>
+                          <th className="py-2.5 text-right font-medium">30日訂單</th>
+                          <th className="py-2.5 text-right font-medium">30日營收</th>
+                          <th className="py-2.5 text-right font-medium">30日折扣</th>
+                          <th className="py-2.5 text-right font-medium">生命周期訂單</th>
+                          <th className="py-2.5 text-right font-medium">生命周期營收</th>
+                          <th className="py-2.5 text-left font-medium">使用期間</th>
+                          <th className="py-2.5 text-center font-medium">詳情</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -417,19 +417,19 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
                             onClick={() => openDetail(p.code)}
                             data-testid={`row-promo-30d-${p.code.toLowerCase()}`}
                           >
-                            <td className="py-2">
-                              <Badge variant="outline" className="text-[11px] font-mono px-1.5 py-0">{p.code}</Badge>
+                            <td className="py-2.5">
+                              <Badge variant="outline" className="text-xs font-mono px-1.5 py-0">{p.code}</Badge>
                             </td>
-                            <td className="py-2 text-muted-foreground">{typeLabel(p.type)}</td>
-                            <td className="py-2 text-right tabular-nums">{p.recent30Orders}</td>
-                            <td className="py-2 text-right tabular-nums font-medium">{formatCurrency(p.recent30Revenue)}</td>
-                            <td className="py-2 text-right tabular-nums text-red-400">-{formatCurrency(p.recent30Discount)}</td>
-                            <td className="py-2 text-right tabular-nums">{p.orderCount}</td>
-                            <td className="py-2 text-right tabular-nums font-medium">{formatCurrency(p.totalRevenue)}</td>
-                            <td className="py-2 text-[10px] text-muted-foreground whitespace-nowrap">
+                            <td className="py-2.5 text-muted-foreground">{typeLabel(p.type)}</td>
+                            <td className="py-2.5 text-right tabular-nums">{p.recent30Orders}</td>
+                            <td className="py-2.5 text-right tabular-nums font-medium">{formatCurrency(p.recent30Revenue)}</td>
+                            <td className="py-2.5 text-right tabular-nums text-red-400">-{formatCurrency(p.recent30Discount)}</td>
+                            <td className="py-2.5 text-right tabular-nums">{p.orderCount}</td>
+                            <td className="py-2.5 text-right tabular-nums font-medium">{formatCurrency(p.totalRevenue)}</td>
+                            <td className="py-2.5 text-[11px] text-muted-foreground whitespace-nowrap">
                               {formatDate(p.firstUsed)} ~ {formatDate(p.lastUsed)}
                             </td>
-                            <td className="py-2 text-center">
+                            <td className="py-2.5 text-center">
                               <ChevronDown className="h-3.5 w-3.5 text-muted-foreground mx-auto" />
                             </td>
                           </tr>
@@ -440,7 +440,7 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
                 </>
               )}
 
-              <p className="text-[10px] text-muted-foreground/60 mt-2">* Marsello 忠誠積分碼（格式: A1234567）及獎勵碼已排除</p>
+              <p className="text-[11px] text-muted-foreground/60 mt-2">* Marsello 忠誠積分碼（格式: A1234567）及獎勵碼已排除</p>
             </>
           )}
         </CardContent>
@@ -461,25 +461,25 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
               {/* ── Lifetime KPI (only for 30-day tab) ────────── */}
               {selectedLifetime && (
                 <div className="space-y-2">
-                  <h4 className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                  <h4 className="text-[13px] font-medium text-muted-foreground flex items-center gap-1.5">
                     <TrendingUp className="h-3.5 w-3.5" /> 生命周期表現 Lifetime Performance
                   </h4>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <div className="bg-violet-500/10 rounded-lg p-2.5 text-center">
-                      <p className="text-[10px] text-muted-foreground">總訂單</p>
+                      <p className="text-[11px] text-muted-foreground">總訂單</p>
                       <p className="text-lg font-semibold tabular-nums">{selectedLifetime.orderCount}</p>
                     </div>
                     <div className="bg-violet-500/10 rounded-lg p-2.5 text-center">
-                      <p className="text-[10px] text-muted-foreground">總營收</p>
+                      <p className="text-[11px] text-muted-foreground">總營收</p>
                       <p className="text-lg font-semibold tabular-nums">{formatCurrency(selectedLifetime.totalRevenue)}</p>
                     </div>
                     <div className="bg-violet-500/10 rounded-lg p-2.5 text-center">
-                      <p className="text-[10px] text-muted-foreground">總折扣</p>
+                      <p className="text-[11px] text-muted-foreground">總折扣</p>
                       <p className="text-lg font-semibold tabular-nums text-red-400">-{formatCurrency(selectedLifetime.totalDiscount)}</p>
                     </div>
                     <div className="bg-violet-500/10 rounded-lg p-2.5 text-center">
-                      <p className="text-[10px] text-muted-foreground">使用期間</p>
-                      <p className="text-xs font-medium tabular-nums mt-1">
+                      <p className="text-[11px] text-muted-foreground">使用期間</p>
+                      <p className="text-[13px] font-medium tabular-nums mt-1">
                         {formatDate(selectedLifetime.firstUsed)}
                         <br />~ {formatDate(selectedLifetime.lastUsed)}
                       </p>
@@ -489,30 +489,30 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
                   {/* 30-day vs lifetime comparison */}
                   <div className="grid grid-cols-3 gap-2">
                     <div className="bg-accent/30 rounded-lg p-2 text-center">
-                      <p className="text-[10px] text-muted-foreground">30日訂單</p>
+                      <p className="text-[11px] text-muted-foreground">30日訂單</p>
                       <p className="text-base font-semibold tabular-nums">{selectedLifetime.recent30Orders}</p>
-                      <p className="text-[10px] text-muted-foreground">
+                      <p className="text-[11px] text-muted-foreground">
                         佔 {selectedLifetime.orderCount > 0 ? ((selectedLifetime.recent30Orders / selectedLifetime.orderCount) * 100).toFixed(0) : 0}%
                       </p>
                     </div>
                     <div className="bg-accent/30 rounded-lg p-2 text-center">
-                      <p className="text-[10px] text-muted-foreground">30日營收</p>
+                      <p className="text-[11px] text-muted-foreground">30日營收</p>
                       <p className="text-base font-semibold tabular-nums">{formatCurrency(selectedLifetime.recent30Revenue)}</p>
-                      <p className="text-[10px] text-muted-foreground">
+                      <p className="text-[11px] text-muted-foreground">
                         佔 {selectedLifetime.totalRevenue > 0 ? ((selectedLifetime.recent30Revenue / selectedLifetime.totalRevenue) * 100).toFixed(0) : 0}%
                       </p>
                     </div>
                     <div className="bg-accent/30 rounded-lg p-2 text-center">
-                      <p className="text-[10px] text-muted-foreground">30日折扣</p>
+                      <p className="text-[11px] text-muted-foreground">30日折扣</p>
                       <p className="text-base font-semibold tabular-nums text-red-400">-{formatCurrency(selectedLifetime.recent30Discount)}</p>
-                      <p className="text-[10px] text-muted-foreground">
+                      <p className="text-[11px] text-muted-foreground">
                         佔 {selectedLifetime.totalDiscount > 0 ? ((selectedLifetime.recent30Discount / selectedLifetime.totalDiscount) * 100).toFixed(0) : 0}%
                       </p>
                     </div>
                   </div>
 
                   <div className="border-t border-border/30 pt-2">
-                    <p className="text-[10px] text-muted-foreground">
+                    <p className="text-[11px] text-muted-foreground">
                       折扣類型: {typeLabel(selectedLifetime.type)} · 平均訂單金額: {formatCurrency(selectedLifetime.orderCount > 0 ? selectedLifetime.totalRevenue / selectedLifetime.orderCount : 0)}
                     </p>
                   </div>
@@ -524,23 +524,23 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
                 <>
                   <div className="grid grid-cols-4 gap-3">
                     <div className="bg-accent/30 rounded-lg p-3 text-center">
-                      <p className="text-[10px] text-muted-foreground uppercase">訂單數</p>
+                      <p className="text-[11px] text-muted-foreground uppercase">訂單數</p>
                       <p className="text-lg font-semibold tabular-nums">{selectedPromo.orderCount}</p>
                     </div>
                     <div className="bg-accent/30 rounded-lg p-3 text-center">
-                      <p className="text-[10px] text-muted-foreground uppercase">件數</p>
+                      <p className="text-[11px] text-muted-foreground uppercase">件數</p>
                       <p className="text-lg font-semibold tabular-nums">{selectedPromo.totalItems}</p>
                     </div>
                     <div className="bg-accent/30 rounded-lg p-3 text-center">
-                      <p className="text-[10px] text-muted-foreground uppercase">銷售額</p>
+                      <p className="text-[11px] text-muted-foreground uppercase">銷售額</p>
                       <p className="text-lg font-semibold tabular-nums">{formatCurrency(selectedPromo.totalRevenue)}</p>
                     </div>
                     <div className="bg-accent/30 rounded-lg p-3 text-center">
-                      <p className="text-[10px] text-muted-foreground uppercase">折扣額</p>
+                      <p className="text-[11px] text-muted-foreground uppercase">折扣額</p>
                       <p className="text-lg font-semibold tabular-nums text-red-400">-{formatCurrency(selectedPromo.totalDiscount)}</p>
                     </div>
                   </div>
-                  <div className="text-xs text-muted-foreground">
+                  <div className="text-[13px] text-muted-foreground">
                     折扣類型: {typeLabel(selectedPromo.type)}
                   </div>
                 </>
@@ -548,10 +548,10 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
 
               {/* ── Orders List ───────────────────────────────── */}
               <div>
-                <h4 className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
+                <h4 className="text-[13px] font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
                   <ShoppingCart className="h-3.5 w-3.5" />
                   {selectedTab === 'yesterday' ? `${dateLabel}訂單明細` : '全部訂單明細'}
-                  <span className="text-[10px]">({selectedPromo.orders.length} 筆)</span>
+                  <span className="text-[11px]">({selectedPromo.orders.length} 筆)</span>
                 </h4>
                 <div className="space-y-2 max-h-[400px] overflow-y-auto">
                   {(selectedTab === 'thirty_days' ? selectedPromo.orders.slice(0, 50) : selectedPromo.orders).map((order, oi) => (
@@ -559,16 +559,16 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
                           <ShoppingCart className="h-3.5 w-3.5 text-muted-foreground" />
-                          <span className="text-xs font-medium">訂單 #{order.orderNumber}</span>
-                          <span className="text-[10px] text-muted-foreground">{order.customerName}</span>
+                          <span className="text-[13px] font-medium">訂單 #{order.orderNumber}</span>
+                          <span className="text-[11px] text-muted-foreground">{order.customerName}</span>
                         </div>
-                        <div className="flex items-center gap-3 text-xs">
-                          <span className="text-[10px] text-muted-foreground">{toHKDateStr(order.createdAt).replace(/-/g, '/')}</span>
+                        <div className="flex items-center gap-3 text-[13px]">
+                          <span className="text-[11px] text-muted-foreground">{toHKDateStr(order.createdAt).replace(/-/g, '/')}</span>
                           <span className="tabular-nums font-medium">{formatCurrency(order.totalPrice)}</span>
-                          <span className="text-red-400 tabular-nums text-[10px]">折扣 -{formatCurrency(order.discountAmount)}</span>
+                          <span className="text-red-400 tabular-nums text-[11px]">折扣 -{formatCurrency(order.discountAmount)}</span>
                         </div>
                       </div>
-                      <table className="w-full text-[11px]">
+                      <table className="w-full text-xs">
                         <thead>
                           <tr className="border-b border-border/30 text-muted-foreground">
                             <th className="py-1 text-left font-medium">商品 Item</th>
@@ -591,7 +591,7 @@ export function PromoPerformance({ allOrders, allOrderLines, dateStr, dateLabel,
                     </div>
                   ))}
                   {selectedTab === 'thirty_days' && selectedPromo.orders.length > 50 && (
-                    <p className="text-[10px] text-center text-muted-foreground py-2">
+                    <p className="text-[11px] text-center text-muted-foreground py-2.5">
                       顯示最近 50 筆（共 {selectedPromo.orders.length} 筆）
                     </p>
                   )}
