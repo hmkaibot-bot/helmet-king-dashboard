@@ -41,6 +41,7 @@ const DailyWeeklyPage = lazy(() => import("@/pages/daily-weekly"));
 const VelocityPage = lazy(() => import("@/pages/velocity"));
 const NewProductsPage = lazy(() => import("@/pages/new-products"));
 const WeeklyReviewPage = lazy(() => import("@/pages/weekly-review"));
+const MonthlyReviewPage = lazy(() => import("@/pages/monthly-review"));
 const MarselloApprovalPage = lazy(() => import("@/pages/marsello-approval"));
 const ProductAnalyticsPage = lazy(() => import("@/pages/product-analytics"));
 const ForecastPage = lazy(() => import("@/pages/forecast"));
@@ -93,6 +94,7 @@ function AppRouter() {
         <Route path="/performance/velocity" component={VelocityPage} />
         <Route path="/performance/new-products" component={NewProductsPage} />
         <Route path="/performance/weekly-review" component={WeeklyReviewPage} />
+        <Route path="/performance/monthly-review" component={MonthlyReviewPage} />
         <Route path="/crm/marsello-approval" component={MarselloApprovalPage} />
         <Route path="/performance/product-analytics" component={ProductAnalyticsPage} />
         <Route path="/performance/forecast" component={ForecastPage} />
