@@ -15,6 +15,9 @@ const DEFAULT_BRANDS = [
 
 const BRANDS_LS_KEY = 'dw-brands';
 
+// 公開 storefront domain(products/{handle}.json 有 CORS,攞產品圖用)
+const STOREFRONT_DOMAIN = 'helmetking-0001.myshopify.com';
+
 function loadSelectedBrands(): string[] {
   try {
     const raw = localStorage.getItem(BRANDS_LS_KEY);
@@ -93,11 +96,12 @@ interface Props {
   weekOrderIds: Set<string>; // 本週 order ids
   costMap: Record<string, number>;         // sku → 成本價(>0 先有)
   velocityMap: Record<string, number>;     // sku → 件/日(60日均)
-  imageMap: Record<string, string>;        // product_id → 產品圖
+  imageMap: Record<string, string>;        // product_id → 產品圖(DB image_url,有先有)
+  handleMap: Record<string, string>;       // product_id → handle(DB 冇圖時去 storefront 即場攞)
   productStockMap: Record<string, number>; // product_id → 所有 variant 庫存總和
 }
 
-export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds, weekOrderIds, costMap, velocityMap, imageMap, productStockMap }: Props) {
+export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds, weekOrderIds, costMap, velocityMap, imageMap, handleMap, productStockMap }: Props) {
   // ── State ──────────────────────────────────────────────────
   const [selectedBrands, setSelectedBrandsRaw] = useState<string[]>(loadSelectedBrands);
   const setSelectedBrands = useCallback((updater: string[] | ((prev: string[]) => string[])) => {
@@ -112,6 +116,25 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
   const [expandedBrands, setExpandedBrands] = useState<Set<string>>(new Set());
   const [showAllItems, setShowAllItems] = useState<Set<string>>(new Set()); // 撳咗「開晒長尾」嘅品牌
   const [lightbox, setLightbox] = useState<{ url: string; title: string } | null>(null); // 撳大產品圖
+
+  // ── Storefront 即場攞圖(DB 冇 image_url 時嘅後備)─────────
+  // 公開 endpoint,有 CORS;展開先至 fetch,結果(包括「冇圖」)都 cache
+  const [storefrontImgs, setStorefrontImgs] = useState<Record<string, string | null>>({});
+  const fetchingRef = React.useRef<Set<string>>(new Set());
+  const fetchStorefrontImage = useCallback((productId: string) => {
+    const handle = handleMap[productId];
+    if (!handle || fetchingRef.current.has(productId)) return;
+    fetchingRef.current.add(productId);
+    fetch(`https://${STOREFRONT_DOMAIN}/products/${handle}.json`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        const src: string | undefined = d?.product?.image?.src || d?.product?.images?.[0]?.src;
+        setStorefrontImgs(prev => ({ ...prev, [productId]: src || null }));
+      })
+      .catch(() => {
+        setStorefrontImgs(prev => ({ ...prev, [productId]: null }));
+      });
+  }, [handleMap]);
   const [showPicker, setShowPicker] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -486,7 +509,10 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                         const GRID = 'grid grid-cols-[44px_minmax(0,1fr)_150px_72px_64px_92px] items-center gap-x-3';
 
                         const thumb = (item: BrandItem) => {
-                          const img = item.productId ? imageMap[item.productId] : undefined;
+                          const pid = item.productId;
+                          // DB 圖優先;冇就用 storefront 攞返嚟嗰張;未攞過就開始攞
+                          const img = pid ? (imageMap[pid] ?? storefrontImgs[pid] ?? undefined) : undefined;
+                          if (pid && !imageMap[pid] && storefrontImgs[pid] === undefined) fetchStorefrontImage(pid);
                           return img ? (
                             <button
                               onClick={e => { e.stopPropagation(); setLightbox({ url: img, title: item.title }); }}
