@@ -172,6 +172,14 @@ export function buildTemplateVariants(input: {
   };
 
   const fmtP = (n: number) => `HK$${Math.round(n).toLocaleString('en-US')}`;
+  // 每件貨:名 + 價 + 一句賣點(嚟自 Shopify 產品描述,冇就略過)
+  const sellingLine = (g: GenProduct): string => {
+    const txt = (g.sellingPoints || '').replace(/\s+/g, ' ').trim();
+    if (!txt) return '';
+    const cut = txt.slice(0, 78);
+    const stop = Math.max(cut.lastIndexOf('。'), cut.lastIndexOf('!'), cut.lastIndexOf('!'), cut.lastIndexOf(','));
+    return '  ' + (stop > 20 ? cut.slice(0, stop + 1) : cut + (txt.length > 78 ? '…' : ''));
+  };
   const productLine = (g: GenProduct): string => {
     const eff = g.promoPrice ?? g.price;
     let price: string;
@@ -182,7 +190,8 @@ export function buildTemplateVariants(input: {
     } else {
       price = fmtP(eff);
     }
-    return `▸ ${g.title} — ${price}`;
+    const extra = sellingLine(g);
+    return `▸ ${g.title} — ${price}${extra ? '\n' + extra : ''}`;
   };
 
   const closing =
@@ -214,10 +223,21 @@ export function buildTemplateVariants(input: {
         altText,
       };
     }
+    const HOOKS: Record<PostType, string> = {
+      new_arrival: '新貨啱啱返到,即刻同大家開箱!',
+      brand_story: `${products[0]?.vendor || ''} 呢個名,老車友一定唔陌生。今次帶咗呢幾件返嚟:`,
+      weekly_deal: '今個星期呢幾件抵到唔講得笑:',
+      scenario: '裝備準備好,先玩得盡興 — 呢套組合幫到你:',
+      clearance: '清貨價,執到就係賺到:',
+      price_beat: '香港行貨、門市現貨,價錢仲要係咁:',
+      last_size: '斷碼清,啱 size 即刻入手:',
+    };
+    const urgency = ['new_arrival', 'weekly_deal', 'clearance', 'last_size'].includes(postType)
+      ? '\n\n數量有限,售完即止!' : '';
     return {
       platform,
       headline: HEADLINES[postType],
-      body: `${products.map(productLine).join('\n')}\n\n${closing}${enLine}`,
+      body: `${HOOKS[postType]}\n\n${products.map(productLine).join('\n\n')}\n\n${closing}${urgency}${enLine}`,
       hashtags,
       cta,
       altText,
@@ -226,10 +246,23 @@ export function buildTemplateVariants(input: {
 }
 
 /** 組合一個 variant 做可以直接貼落 IG/FB 嘅純文字 */
+/** 每篇 post 固定嘅店舖資料尾巴(老闆提供嘅 house style) */
+export const STORE_FOOTER = [
+  '＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝＝',
+  '日本26自駕遊/車輛保養維修/頭盔及人身部品',
+  '盡在頭盔王旺角4000呎旗艦店,距離朗豪坊5分鐘路程,購物/放低整車超方便',
+  '🛒頭盔王網購平台: helmetking.com',
+  '🎁頭盔王outlet: https://reurl.cc/1bdlRV',
+  '📍地址: 旺角東安街43號',
+  '📱一按即開Whatsapp查詢: wa.me/85263858830',
+].join('\n');
+
 export function variantToClipboard(v: PostVariant): string {
   const parts = [v.headline, '', v.body];
   if (v.cta) parts.push('', v.cta);
   if (v.hashtags.length) parts.push('', v.hashtags.join(' '));
+  // Story 冇 caption 位,唔使尾巴;Post/FB 自動加店舖資料
+  if (v.platform !== 'ig_story') parts.push('', STORE_FOOTER);
   return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 

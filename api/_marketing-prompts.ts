@@ -78,9 +78,21 @@ const TYPE_ANGLE: Record<PostType, string> = {
 };
 
 const PLATFORM_RULES = `## 平台格式
-- ig_post: headline ≤ 30 字吸睛;body 120-200 字,開頭 125 字內要有 hook(IG 摺疊位);適量 emoji
+- ig_post: headline ≤ 30 字吸睛;body 200-350 字,開頭 125 字內要有 hook(IG 摺疊位);適量 emoji
 - ig_story: headline 一句 punchy;body ≤ 40 字;CTA 明確(「上滑」/「DM 留貨」)
-- fb: headline 可略長;body 150-300 字,可以講多啲細節;段落之間空行`;
+- fb: headline 可略長;body 300-550 字,講故仔講細節;段落之間空行`;
+
+const STYLE_EXAMPLE = `## 風格範文(結構同筆觸參考 — 內容係另一件貨,唔准照抄字句)
+呢篇係本店出街效果最好嘅 post 結構,盡量跟:
+1. 【】括住嘅有力標題
+2. 開場一句定調:「唔只係一件裝備,而係…」— 講件貨背後嘅文化/故事/品牌淵源(只可用產品數據或 web_search 核實到嘅資料,唔准作)
+3. 中段:產品細節同亮點,逐樣講(材質/認證/限量/配件)
+4. 收尾:講俾邊類人聽(「無論你係…抑或…」),點出收藏/實用價值
+5. 最後一句急迫感:「數量有限,售完即止!」
+語感示範(節錄):「唔只係一頂裝備,而係一段由 JDM、速度與改裝文化交織而成的故事。…全球限量 700 頂,真正屬於收藏家的聯乘。…無論你係金色 Supra 的擁躉,抑或著迷於日本改裝黃金年代,呢頂都唔係普通聯名帽。數量有限,售完即止!」
+
+## 店舖資料
+唔使寫店舖地址/連結/WhatsApp 尾巴 — 系統會喺 copy/send 時自動加,你淨係寫正文。`;
 
 const COMMON_RULES = `## 鐵律(違反即廢)
 1. 只可以用「產品數據」入面提供嘅規格、認證、賣點 — 冇提供嘅嘢一律唔准寫,唔准靠估
@@ -135,6 +147,8 @@ ${scenarioLine}
 ${productLines}
 
 ${PLATFORM_RULES}
+
+${STYLE_EXAMPLE}
 
 ${COMMON_RULES}
 
