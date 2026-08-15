@@ -70,7 +70,15 @@ interface BrandRow {
   yQty: number;
   yRevenue: number;
   wkRevenue: number;
-  items: { title: string; qty: number; revenue: number; yQty: number }[];
+  items: BrandItem[];
+}
+
+interface BrandItem {
+  title: string;
+  qty: number;
+  revenue: number;
+  yQty: number;
+  yRevenue: number;
 }
 
 interface Props {
@@ -95,6 +103,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
   const [sortField, setSortField] = useState<SortField>('revenue');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [expandedBrands, setExpandedBrands] = useState<Set<string>>(new Set());
+  const [showAllItems, setShowAllItems] = useState<Set<string>>(new Set()); // 撳咗「開晒長尾」嘅品牌
   const [showPicker, setShowPicker] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -131,7 +140,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
     const map: Record<string, {
       revenue: number; qty: number; profit: number; coveredRev: number;
       yQty: number; yRevenue: number; wkRevenue: number;
-      items: Record<string, { title: string; qty: number; revenue: number; yQty: number }>;
+      items: Record<string, BrandItem>;
     }> = {};
     selectedBrands.forEach(b => {
       map[b] = { revenue: 0, qty: 0, profit: 0, coveredRev: 0, yQty: 0, yRevenue: 0, wkRevenue: 0, items: {} };
@@ -159,10 +168,10 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
           map[brand].coveredRev += rev;
         }
         const title = l.title || 'unknown';
-        if (!map[brand].items[title]) map[brand].items[title] = { title, qty: 0, revenue: 0, yQty: 0 };
+        if (!map[brand].items[title]) map[brand].items[title] = { title, qty: 0, revenue: 0, yQty: 0, yRevenue: 0 };
         map[brand].items[title].qty += qty;
         map[brand].items[title].revenue += rev;
-        if (inY) map[brand].items[title].yQty += qty;
+        if (inY) { map[brand].items[title].yQty += qty; map[brand].items[title].yRevenue += rev; }
       }
       if (inY)  { map[brand].yQty += qty; map[brand].yRevenue += rev; }
       if (inWk) { map[brand].wkRevenue += rev; }
@@ -263,13 +272,13 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <BarChart3 className="h-3.5 w-3.5 text-primary shrink-0" />
             品牌銷售
-            <span className="text-xs font-normal text-muted-foreground">
+            <span className="text-[13px] font-normal text-muted-foreground">
               昨日 / 本週 / 當月MTD — {monthLabel} ({mtdRange.from} ~ {mtdRange.to})
             </span>
           </CardTitle>
           <button
             onClick={() => { setShowPicker(!showPicker); setSearchTerm(''); }}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors"
           >
             <Plus className="h-3 w-3" />
             管理品牌
@@ -282,10 +291,10 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
         {showPicker && (
           <div className="mb-4 p-3 rounded-lg border border-border/50 bg-accent/10">
             {/* Selected brands */}
-            <p className="text-[10px] font-semibold text-muted-foreground mb-1.5">已選品牌 Selected ({selectedBrands.length})</p>
+            <p className="text-[11px] font-semibold text-muted-foreground mb-1.5">已選品牌 Selected ({selectedBrands.length})</p>
             <div className="flex flex-wrap gap-1 mb-3">
               {selectedBrands.map(b => (
-                <span key={b} className="inline-flex items-center gap-1 text-[11px] bg-primary/15 text-primary border border-primary/25 px-2 py-0.5 rounded-full">
+                <span key={b} className="inline-flex items-center gap-1 text-xs bg-primary/15 text-primary border border-primary/25 px-2 py-0.5 rounded-full">
                   {b}
                   <button
                     onClick={() => removeBrand(b)}
@@ -299,7 +308,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
             </div>
 
             {/* Search + add */}
-            <p className="text-[10px] font-semibold text-muted-foreground mb-1.5">新增品牌 Add Brand</p>
+            <p className="text-[11px] font-semibold text-muted-foreground mb-1.5">新增品牌 Add Brand</p>
             <div className="flex items-center gap-2 mb-2">
               <div className="relative flex-1">
                 <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground/50" />
@@ -308,13 +317,13 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                   value={searchTerm}
                   onChange={e => setSearchTerm(e.target.value)}
                   placeholder="搜尋品牌名稱..."
-                  className="w-full pl-7 pr-2 py-1.5 text-xs bg-background border border-border rounded text-foreground focus:outline-none focus:border-primary"
+                  className="w-full pl-7 pr-2 py-1.5 text-[13px] bg-background border border-border rounded text-foreground focus:outline-none focus:border-primary"
                 />
               </div>
             </div>
             <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto">
               {filteredVendors.length === 0 ? (
-                <p className="text-[10px] text-muted-foreground/50 py-2">
+                <p className="text-[11px] text-muted-foreground/50 py-2.5">
                   {searchTerm ? '找不到匹配品牌' : '所有品牌已選取'}
                 </p>
               ) : (
@@ -322,7 +331,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                   <button
                     key={v}
                     onClick={() => addBrand(v)}
-                    className="text-[11px] px-2 py-0.5 bg-accent/60 text-muted-foreground border border-border/40 rounded hover:bg-primary/10 hover:text-primary hover:border-primary/30 transition-colors"
+                    className="text-xs px-2 py-0.5 bg-accent/60 text-muted-foreground border border-border/40 rounded hover:bg-primary/10 hover:text-primary hover:border-primary/30 transition-colors"
                   >
                     + {v}
                   </button>
@@ -334,13 +343,13 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
             <div className="mt-2 pt-2 border-t border-border/30 flex items-center gap-2">
               <button
                 onClick={() => setSelectedBrands(DEFAULT_BRANDS)}
-                className="text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+                className="text-[11px] text-muted-foreground/60 hover:text-muted-foreground transition-colors"
               >
                 重設為預設品牌 Reset to default
               </button>
               <button
                 onClick={() => { setShowPicker(false); setSearchTerm(''); }}
-                className="ml-auto text-[10px] px-2 py-0.5 bg-primary/80 text-primary-foreground rounded hover:bg-primary transition-colors"
+                className="ml-auto text-[11px] px-2 py-0.5 bg-primary/80 text-primary-foreground rounded hover:bg-primary transition-colors"
               >
                 完成
               </button>
@@ -355,13 +364,13 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
           <p className="text-sm text-muted-foreground py-6 text-center">請新增品牌以顯示數據</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-xs" data-testid="table-brand-mtd">
+            <table className="w-full text-[13px]" data-testid="table-brand-mtd">
               <thead>
                 <tr className="border-b border-border/50 text-muted-foreground">
-                  <th className="py-2 text-left font-medium">品牌 Brand</th>
-                  <th className="py-2 text-right font-medium">昨日</th>
-                  <th className="py-2 text-right font-medium">本週營收</th>
-                  <th className="py-2 text-right font-medium">
+                  <th className="py-2.5 text-left font-medium">品牌 Brand</th>
+                  <th className="py-2.5 text-right font-medium">昨日</th>
+                  <th className="py-2.5 text-right font-medium">本週營收</th>
+                  <th className="py-2.5 text-right font-medium">
                     <button
                       onClick={() => toggleSort('qty')}
                       className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
@@ -369,7 +378,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                       當月件數 <SortIcon field="qty" />
                     </button>
                   </th>
-                  <th className="py-2 text-right font-medium">
+                  <th className="py-2.5 text-right font-medium">
                     <button
                       onClick={() => toggleSort('revenue')}
                       className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
@@ -377,9 +386,9 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                       當月營收 <SortIcon field="revenue" />
                     </button>
                   </th>
-                  <th className="py-2 text-right font-medium">當月毛利</th>
-                  <th className="py-2 text-right font-medium">占比</th>
-                  <th className="py-2 text-center font-medium w-8"></th>
+                  <th className="py-2.5 text-right font-medium">當月毛利</th>
+                  <th className="py-2.5 text-right font-medium">占比</th>
+                  <th className="py-2.5 text-center font-medium w-8"></th>
                 </tr>
               </thead>
               <tbody>
@@ -395,7 +404,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                         }`}
                         onClick={() => toggleExpand(b.brand)}
                       >
-                        <td className="py-2 font-medium">
+                        <td className="py-2.5 font-medium">
                           <span className="inline-flex items-center gap-1.5">
                             {isExpanded
                               ? <ChevronDown className="h-3 w-3 text-muted-foreground" />
@@ -406,39 +415,39 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                             {b.brand}
                           </span>
                         </td>
-                        <td className="py-2 text-right tabular-nums">
+                        <td className="py-2.5 text-right tabular-nums">
                           {b.yQty > 0
                             ? <span className="font-semibold text-primary">{b.yQty}件 {formatCurrency(b.yRevenue)}</span>
                             : <span className="text-muted-foreground/30">—</span>}
                         </td>
-                        <td className="py-2 text-right tabular-nums">
+                        <td className="py-2.5 text-right tabular-nums">
                           {b.wkRevenue > 0 ? formatCurrency(b.wkRevenue) : <span className="text-muted-foreground/30">—</span>}
                         </td>
-                        <td className="py-2 text-right tabular-nums font-bold">
+                        <td className="py-2.5 text-right tabular-nums font-bold">
                           {b.qty > 0 ? b.qty : <span className="text-muted-foreground/30">0</span>}
                         </td>
-                        <td className="py-2 text-right tabular-nums font-semibold">
+                        <td className="py-2.5 text-right tabular-nums font-semibold">
                           {b.revenue > 0 ? formatCurrency(b.revenue) : <span className="text-muted-foreground/30">—</span>}
                         </td>
-                        <td className="py-2 text-right tabular-nums">
+                        <td className="py-2.5 text-right tabular-nums">
                           {margin !== null ? (
                             <>
                               <span className={b.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatCurrency(b.profit)}</span>
-                              <span className="text-[10px] text-muted-foreground ml-1">{margin.toFixed(0)}%</span>
+                              <span className="text-[11px] text-muted-foreground ml-1">{margin.toFixed(0)}%</span>
                             </>
                           ) : <span className="text-muted-foreground/30">—</span>}
                         </td>
-                        <td className="py-2 text-right">
+                        <td className="py-2.5 text-right">
                           {pct > 0 ? (
                             <div className="flex items-center justify-end gap-1.5">
                               <div className="w-12 h-1.5 bg-border/40 rounded-full overflow-hidden">
                                 <div className="h-full bg-primary/60 rounded-full" style={{ width: `${Math.min(pct, 100)}%` }} />
                               </div>
-                              <span className="text-[10px] tabular-nums text-muted-foreground w-8 text-right">{pct.toFixed(1)}%</span>
+                              <span className="text-[11px] tabular-nums text-muted-foreground w-8 text-right">{pct.toFixed(1)}%</span>
                             </div>
                           ) : <span className="text-muted-foreground/30">—</span>}
                         </td>
-                        <td className="py-2 text-center">
+                        <td className="py-2.5 text-center">
                           <button
                             onClick={e => { e.stopPropagation(); removeBrand(b.brand); }}
                             className="text-muted-foreground/30 hover:text-red-400 transition-colors"
@@ -450,58 +459,111 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                       </tr>
 
                       {/* ── Expanded item details ──────────── */}
-                      {isExpanded && (
+                      {/* 老闆撳開想答「昨日郁咗邊啲」→ 昨日售出行先;
+                          當月排名 Top 10 單欄直落,長尾摺埋一行 */}
+                      {isExpanded && (() => {
+                        const yesterdayItems = b.items.filter(it => it.yQty > 0)
+                          .sort((x, y) => y.yRevenue - x.yRevenue);
+                        const TOP_N = 10;
+                        const showAll = showAllItems.has(b.brand);
+                        const shown = showAll ? b.items : b.items.slice(0, TOP_N);
+                        const rest = b.items.slice(TOP_N);
+                        const restRev = rest.reduce((s, it) => s + it.revenue, 0);
+                        const itemRow = (item: BrandItem, left: React.ReactNode, qty: number, rev: number, highlight = false) => (
+                          <div key={item.title} className={`flex items-center justify-between text-[13px] py-1.5 border-b border-border/10 last:border-0 ${highlight ? 'bg-primary/5 -mx-2 px-2 rounded' : ''}`}>
+                            <div className="flex items-center gap-2 min-w-0">{left}</div>
+                            <span className="tabular-nums ml-3 shrink-0">
+                              <span className="text-muted-foreground">×{qty}</span>
+                              <span className="font-medium ml-2">{formatCurrency(rev)}</span>
+                            </span>
+                          </div>
+                        );
+                        return (
                         <tr>
                           <td colSpan={8} className="p-0">
-                            <div className="bg-accent/10 px-4 py-2 border-b border-border/20">
-                              {b.items.length === 0 ? (
-                                <p className="text-[10px] text-muted-foreground/50 py-1">本月無銷售記錄</p>
-                              ) : (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
-                                  {b.items.map((item, ii) => (
-                                    <div key={ii} className="flex items-center justify-between text-[11px] py-1 border-b border-border/10 last:border-0">
-                                      <div className="flex items-center gap-2 min-w-0">
-                                        <span className="text-muted-foreground/50 tabular-nums w-4 text-right shrink-0">{ii + 1}</span>
-                                        <span className="truncate">{item.title}</span>
-                                        {item.yQty > 0 && (
-                                          <span className="text-[9px] bg-primary/15 text-primary px-1 py-0.5 rounded shrink-0">昨日×{item.yQty}</span>
-                                        )}
-                                      </div>
-                                      <span className="tabular-nums text-muted-foreground ml-2 shrink-0">
-                                        ×{item.qty} {formatCurrency(item.revenue)}
-                                      </span>
-                                    </div>
+                            <div className="bg-accent/10 px-4 py-3 border-b border-border/20 space-y-3 max-w-3xl">
+                              {b.items.length === 0 && (
+                                <p className="text-[13px] text-muted-foreground/50 py-1">本月無銷售記錄</p>
+                              )}
+
+                              {/* 昨日售出 — 行先 */}
+                              {yesterdayItems.length > 0 && (
+                                <div>
+                                  <p className="text-[13px] font-semibold text-primary mb-1.5">
+                                    昨日售出 · {yesterdayItems.reduce((s, it) => s + it.yQty, 0)}件 {formatCurrency(yesterdayItems.reduce((s, it) => s + it.yRevenue, 0))}
+                                  </p>
+                                  {yesterdayItems.map(item => itemRow(
+                                    item,
+                                    <span className="truncate font-medium">{item.title}</span>,
+                                    item.yQty, item.yRevenue, true,
                                   ))}
+                                </div>
+                              )}
+
+                              {/* 當月 Top 10(單欄直落) */}
+                              {b.items.length > 0 && (
+                                <div>
+                                  <p className="text-[13px] font-semibold text-muted-foreground mb-1.5">
+                                    當月排名{!showAll && b.items.length > TOP_N ? ` Top ${TOP_N}` : ''} · 共 {b.items.length} 款
+                                  </p>
+                                  {shown.map((item, ii) => itemRow(
+                                    item,
+                                    <>
+                                      <span className="text-muted-foreground/50 tabular-nums w-5 text-right shrink-0">{ii + 1}</span>
+                                      <span className="truncate">{item.title}</span>
+                                      {item.yQty > 0 && (
+                                        <span className="text-[11px] bg-primary/15 text-primary px-1 py-0.5 rounded shrink-0">昨日×{item.yQty}</span>
+                                      )}
+                                    </>,
+                                    item.qty, item.revenue,
+                                  ))}
+                                  {rest.length > 0 && !showAll && (
+                                    <button
+                                      onClick={e => { e.stopPropagation(); setShowAllItems(prev => new Set(prev).add(b.brand)); }}
+                                      className="w-full text-left text-[13px] text-muted-foreground hover:text-foreground py-1.5 transition-colors"
+                                    >
+                                      ⋯ 仲有 {rest.length} 款 · {formatCurrency(restRev)} — 撳開晒
+                                    </button>
+                                  )}
+                                  {showAll && b.items.length > TOP_N && (
+                                    <button
+                                      onClick={e => { e.stopPropagation(); setShowAllItems(prev => { const n = new Set(prev); n.delete(b.brand); return n; }); }}
+                                      className="w-full text-left text-[13px] text-muted-foreground/60 hover:text-foreground py-1.5 transition-colors"
+                                    >
+                                      收返埋長尾
+                                    </button>
+                                  )}
                                 </div>
                               )}
                             </div>
                           </td>
                         </tr>
-                      )}
+                        );
+                      })()}
                     </React.Fragment>
                   );
                 })}
               </tbody>
               <tfoot>
                 <tr className="border-t border-border/40 bg-muted/10">
-                  <td className="py-2 text-xs font-semibold text-muted-foreground">
+                  <td className="py-2.5 text-[13px] font-semibold text-muted-foreground">
                     小計 ({sorted.length} 品牌)
                   </td>
-                  <td className="py-2 text-right tabular-nums text-xs">
+                  <td className="py-2.5 text-right tabular-nums text-[13px]">
                     {totals.yQty > 0 ? <>{totals.yQty}件 {formatCurrency(totals.yRevenue)}</> : '—'}
                   </td>
-                  <td className="py-2 text-right tabular-nums text-xs">{totals.wkRevenue > 0 ? formatCurrency(totals.wkRevenue) : '—'}</td>
-                  <td className="py-2 text-right tabular-nums font-bold text-xs">{totals.qty}</td>
-                  <td className="py-2 text-right tabular-nums font-bold text-xs">{formatCurrency(totals.revenue)}</td>
-                  <td className="py-2 text-right tabular-nums text-xs">
+                  <td className="py-2.5 text-right tabular-nums text-[13px]">{totals.wkRevenue > 0 ? formatCurrency(totals.wkRevenue) : '—'}</td>
+                  <td className="py-2.5 text-right tabular-nums font-bold text-[13px]">{totals.qty}</td>
+                  <td className="py-2.5 text-right tabular-nums font-bold text-[13px]">{formatCurrency(totals.revenue)}</td>
+                  <td className="py-2.5 text-right tabular-nums text-[13px]">
                     {totals.coveredRev > 0 ? (
                       <>
                         <span className={totals.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}>{formatCurrency(totals.profit)}</span>
-                        <span className="text-[10px] text-muted-foreground ml-1">{((totals.profit / totals.coveredRev) * 100).toFixed(0)}%</span>
+                        <span className="text-[11px] text-muted-foreground ml-1">{((totals.profit / totals.coveredRev) * 100).toFixed(0)}%</span>
                       </>
                     ) : '—'}
                   </td>
-                  <td className="py-2 text-right text-[10px] text-muted-foreground/60">100%</td>
+                  <td className="py-2.5 text-right text-[11px] text-muted-foreground/60">100%</td>
                   <td></td>
                 </tr>
               </tfoot>
@@ -510,7 +572,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
         )}
 
         {/* ── Hint ────────────────────────────────────────── */}
-        <p className="text-[10px] text-muted-foreground/50 mt-2 flex items-center gap-1.5">
+        <p className="text-[11px] text-muted-foreground/50 mt-2 flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0 inline-block" />
           點擊品牌行展開當月明細　|　毛利按有成本價之貨品計{totalCoverage > 0 && totalCoverage < 95 ? `(而家覆蓋 ${totalCoverage.toFixed(0)}% 營收,想準啲去 Shopify 補返 cost)` : ''}　|　「管理品牌」增減品牌
         </p>

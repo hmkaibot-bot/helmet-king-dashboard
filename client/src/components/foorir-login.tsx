@@ -75,16 +75,16 @@ export function FoorirLogin({ onSuccess, compact = false }: Props) {
   // Already connected — show success badge
   if (connected) {
     return compact ? (
-      <div className="flex items-center gap-1.5 text-[11px] text-green-400">
+      <div className="flex items-center gap-1.5 text-xs text-green-400">
         <CheckCircle2 className="h-3 w-3" /> 客流已連接
       </div>
     ) : (
       <Card className="border-green-500/20 bg-green-500/5">
         <CardContent className="p-3 flex items-center gap-2">
           <CheckCircle2 className="h-4 w-4 text-green-400" />
-          <span className="text-xs text-green-300">Foorir 客流系統已連接</span>
+          <span className="text-[13px] text-green-300">Foorir 客流系統已連接</span>
           <button onClick={() => { setConnected(false); refreshCaptcha(); }}
-            className="ml-auto text-[10px] text-muted-foreground hover:text-foreground">
+            className="ml-auto text-[11px] text-muted-foreground hover:text-foreground">
             重新連接
           </button>
         </CardContent>
@@ -99,7 +99,7 @@ export function FoorirLogin({ onSuccess, compact = false }: Props) {
         <div className="flex items-start gap-3">
           <Users className={`text-muted-foreground shrink-0 ${compact ? 'h-4 w-4 mt-0.5' : 'h-5 w-5 mt-0.5'}`} />
           <div className="flex-1 min-w-0">
-            <p className={`font-medium mb-1 ${compact ? 'text-[11px]' : 'text-xs'}`}>
+            <p className={`font-medium mb-1 ${compact ? 'text-xs' : 'text-[13px]'}`}>
               輸入驗證碼查看客流數據
               <span className="text-muted-foreground font-normal ml-1">Foorir Foot Traffic</span>
             </p>
@@ -126,17 +126,17 @@ export function FoorirLogin({ onSuccess, compact = false }: Props) {
                 placeholder="輸入驗證碼"
                 maxLength={6}
                 autoComplete="off"
-                className="w-20 px-2 py-1 text-xs bg-background border border-border/60 rounded text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary"
+                className="w-20 px-2 py-1 text-[13px] bg-background border border-border/60 rounded text-foreground placeholder-muted-foreground focus:outline-none focus:border-primary"
               />
               <button
                 type="submit"
                 disabled={loading || code.length < 3}
-                className="px-3 py-1 text-xs bg-primary/90 text-primary-foreground rounded hover:bg-primary disabled:opacity-50 transition-colors"
+                className="px-3 py-1 text-[13px] bg-primary/90 text-primary-foreground rounded hover:bg-primary disabled:opacity-50 transition-colors"
               >
                 {loading ? '連接中...' : '連接'}
               </button>
               {error && (
-                <span className="flex items-center gap-1 text-[10px] text-red-400">
+                <span className="flex items-center gap-1 text-[11px] text-red-400">
                   <AlertCircle className="h-3 w-3" /> {error}
                 </span>
               )}

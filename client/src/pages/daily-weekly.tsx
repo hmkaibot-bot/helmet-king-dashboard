@@ -110,23 +110,23 @@ function computeRisk(stock: number | null, velocity: number): { risk: StockRisk;
 function RiskBadge({ risk, days }: { risk: StockRisk; days: number | null }) {
   if (risk === 'critical')
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/20 text-red-400 whitespace-nowrap">
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-red-500/20 text-red-400 whitespace-nowrap">
         🔴 {days === 0 ? '缺貨' : `${days}天`}
       </span>
     );
   if (risk === 'warning')
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-yellow-500/20 text-yellow-400 whitespace-nowrap">
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-yellow-500/20 text-yellow-400 whitespace-nowrap">
         🟡 {days}天
       </span>
     );
   if (risk === 'ok')
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-500/20 text-green-400 whitespace-nowrap">
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-green-500/20 text-green-400 whitespace-nowrap">
         🟢 充足
       </span>
     );
-  return <span className="text-[10px] text-muted-foreground/40">—</span>;
+  return <span className="text-[11px] text-muted-foreground/40">—</span>;
 }
 
 // ── Collapsible Section ───────────────────────────────────────
@@ -165,8 +165,8 @@ function CollapsibleSection({ id, icon: Icon, iconColor, title, subtitle, summar
             : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
           <Icon className={`h-3.5 w-3.5 shrink-0 ${iconColor}`} />
           <span className="text-sm font-medium shrink-0">{title}</span>
-          {subtitle && <span className="text-xs font-normal text-muted-foreground hidden md:inline shrink-0">{subtitle}</span>}
-          <span className="ml-auto text-xs text-muted-foreground tabular-nums truncate text-right">{summary}</span>
+          {subtitle && <span className="text-[13px] font-normal text-muted-foreground hidden md:inline shrink-0">{subtitle}</span>}
+          <span className="ml-auto text-[13px] text-muted-foreground tabular-nums truncate text-right">{summary}</span>
         </button>
       </Card>
       {open && <div className="space-y-3">{children}</div>}
@@ -802,7 +802,7 @@ export default function DailyWeeklyPage() {
             key={mode}
             onClick={() => setViewMode(mode)}
             data-testid={`btn-view-${mode}`}
-            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+            className={`px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
               viewMode === mode
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-accent/50 text-muted-foreground hover:text-foreground hover:bg-accent'
@@ -811,7 +811,7 @@ export default function DailyWeeklyPage() {
             {mode === 'yesterday' ? '昨日 Yesterday' : mode === 'this_week' ? '本週 This Week' : '上週 Last Week'}
           </button>
         ))}
-        <span className="text-xs text-muted-foreground ml-2">
+        <span className="text-[13px] text-muted-foreground ml-2">
           {viewMode === 'yesterday' ? yesterday : `${wkBounds.from} → ${wkBounds.to}`}
         </span>
       </div>
@@ -820,7 +820,7 @@ export default function DailyWeeklyPage() {
       {viewMode === 'yesterday' && (
         <>
           {/* ── 背景一行:天氣 + 假期(解讀生意用,唔霸位)─────── */}
-          <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-[11px] text-muted-foreground px-1">
+          <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-xs text-muted-foreground px-1">
             {weather.temp !== null && (
               <span>{weatherLabel(weather.icon).emoji} {weather.temp}°C {weatherLabel(weather.icon).label} · 濕度{weather.humidity}%</span>
             )}
@@ -849,7 +849,7 @@ export default function DailyWeeklyPage() {
               <CardTitle className="text-sm font-medium flex items-center gap-2">
                 <Store className="h-3.5 w-3.5 text-primary" />
                 銷售渠道分析
-                <span className="text-xs font-normal text-muted-foreground">Sales Channel Breakdown — {yesterday}</span>
+                <span className="text-[13px] font-normal text-muted-foreground">Sales Channel Breakdown — {yesterday}</span>
               </CardTitle>
             </CardHeader>
             <CardContent className="px-4 pb-4">
@@ -870,17 +870,17 @@ export default function DailyWeeklyPage() {
                       <div key={ch.key} className={`rounded-lg border ${ch.border} ${ch.bg} p-3`}>
                         <div className="flex items-center gap-1.5 mb-2">
                           <ch.icon className={`h-3.5 w-3.5 ${ch.color}`} />
-                          <span className={`text-[11px] font-semibold ${ch.color}`}>{ch.label}</span>
+                          <span className={`text-xs font-semibold ${ch.color}`}>{ch.label}</span>
                         </div>
                         <p className="text-lg font-bold tabular-nums">{formatCurrency(ch.data.revenue)}</p>
-                        <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted-foreground">
+                        <div className="flex items-center gap-2 mt-0.5 text-[11px] text-muted-foreground">
                           <span>{ch.data.count} 單</span>
                           {ch.data.count > 0 && <span>AOV {formatCurrency(ch.data.aov)}</span>}
                         </div>
                         {'domains' in ch.data && Object.keys((ch.data as { domains: Record<string, number> }).domains).length > 0 && (
                           <div className="mt-1.5">
                             {Object.entries(ch.data.domains as Record<string,number>).slice(0,2).map(([d,n]) => (
-                              <p key={d} className="text-[10px] text-muted-foreground/70 truncate">{d} ×{n}</p>
+                              <p key={d} className="text-[11px] text-muted-foreground/70 truncate">{d} ×{n}</p>
                             ))}
                           </div>
                         )}
@@ -921,33 +921,33 @@ export default function DailyWeeklyPage() {
                   <p className="text-sm text-muted-foreground py-4 text-center">昨日售出貨品冇庫存警號 👍</p>
                 ) : (
                   <div className="overflow-x-auto">
-                    <table className="w-full text-xs" data-testid="table-stock-alerts">
+                    <table className="w-full text-[13px]" data-testid="table-stock-alerts">
                       <thead>
                         <tr className="border-b border-border/50 text-muted-foreground">
-                          <th className="py-2 text-left font-medium">產品 Product</th>
-                          <th className="py-2 text-left font-medium hidden md:table-cell">品牌</th>
-                          <th className="py-2 text-right font-medium">昨日售出</th>
-                          <th className="py-2 text-right font-medium">剩餘庫存</th>
-                          <th className="py-2 text-right font-medium hidden lg:table-cell">速率/日</th>
-                          <th className="py-2 text-right font-medium">預計缺貨</th>
+                          <th className="py-2.5 text-left font-medium">產品 Product</th>
+                          <th className="py-2.5 text-left font-medium hidden md:table-cell">品牌</th>
+                          <th className="py-2.5 text-right font-medium">昨日售出</th>
+                          <th className="py-2.5 text-right font-medium">剩餘庫存</th>
+                          <th className="py-2.5 text-right font-medium hidden lg:table-cell">速率/日</th>
+                          <th className="py-2.5 text-right font-medium">預計缺貨</th>
                         </tr>
                       </thead>
                       <tbody>
                         {stockAlerts.top.map(p => (
                           <tr key={p.key} className={`border-b border-border/20 ${p.risk === 'critical' ? 'bg-red-500/5' : 'bg-yellow-500/5'}`}>
-                            <td className="py-2 max-w-[220px]">
+                            <td className="py-2.5 max-w-[220px]">
                               <div className="truncate font-medium">{p.title}</div>
-                              {p.sku && <div className="text-[10px] font-mono text-muted-foreground/50">{p.sku}</div>}
+                              {p.sku && <div className="text-[11px] font-mono text-muted-foreground/50">{p.sku}</div>}
                             </td>
-                            <td className="py-2 text-muted-foreground text-[11px] hidden md:table-cell">{p.vendor || '—'}</td>
-                            <td className="py-2 text-right tabular-nums font-bold">{p.qty}</td>
-                            <td className={`py-2 text-right tabular-nums font-semibold ${p.stock === 0 ? 'text-red-400' : 'text-yellow-400'}`}>
+                            <td className="py-2.5 text-muted-foreground text-xs hidden md:table-cell">{p.vendor || '—'}</td>
+                            <td className="py-2.5 text-right tabular-nums font-bold">{p.qty}</td>
+                            <td className={`py-2.5 text-right tabular-nums font-semibold ${p.stock === 0 ? 'text-red-400' : 'text-yellow-400'}`}>
                               {p.stock !== null ? p.stock : '—'}
                             </td>
-                            <td className="py-2 text-right tabular-nums text-muted-foreground hidden lg:table-cell">
+                            <td className="py-2.5 text-right tabular-nums text-muted-foreground hidden lg:table-cell">
                               {p.velocity >= 0.01 ? p.velocity.toFixed(2) : p.velocity > 0 ? '<0.01' : '—'}
                             </td>
-                            <td className="py-2 text-right"><RiskBadge risk={p.risk} days={p.daysToStockout} /></td>
+                            <td className="py-2.5 text-right"><RiskBadge risk={p.risk} days={p.daysToStockout} /></td>
                           </tr>
                         ))}
                       </tbody>
@@ -956,7 +956,7 @@ export default function DailyWeeklyPage() {
                 )}
                 <a
                   href="/retail/restock"
-                  className="mt-2 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                  className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
                   <ExternalLink className="h-3 w-3" /> 去補貨頁睇全部庫存風險
                 </a>
@@ -992,7 +992,7 @@ export default function DailyWeeklyPage() {
           {foorirConnected && !foorirData && (
             <Card className="border-border/40">
               <CardContent className="px-4 py-3">
-                <p className="text-xs text-muted-foreground text-center">客流數據暫時無法取得</p>
+                <p className="text-[13px] text-muted-foreground text-center">客流數據暫時無法取得</p>
               </CardContent>
             </Card>
           )}
@@ -1002,7 +1002,7 @@ export default function DailyWeeklyPage() {
                 <CardTitle className="text-sm font-medium flex items-center gap-2">
                   <Users className="h-3.5 w-3.5 text-cyan-400" />
                   客流總覽
-                  <span className="text-xs font-normal text-muted-foreground">Foot Traffic — 昨日 vs 本週</span>
+                  <span className="text-[13px] font-normal text-muted-foreground">Foot Traffic — 昨日 vs 本週</span>
                 </CardTitle>
               </CardHeader>
               <CardContent className="px-4 pb-4">
@@ -1018,18 +1018,18 @@ export default function DailyWeeklyPage() {
                       { label: '轉化率', sublabel: 'Conversion', yVal: yConversion, wVal: wkConversion, color: 'text-green-400', isPercent: true },
                     ].map((m, i) => (
                       <div key={i} className="rounded-lg border border-border/30 bg-accent/20 p-3">
-                        <p className={`text-[11px] font-medium ${m.color}`}>{m.label}</p>
-                        <p className="text-xs text-muted-foreground mb-1">{m.sublabel}</p>
+                        <p className={`text-xs font-medium ${m.color}`}>{m.label}</p>
+                        <p className="text-[13px] text-muted-foreground mb-1">{m.sublabel}</p>
                         <div className="flex items-end gap-2">
                           <div>
-                            <p className="text-[9px] text-muted-foreground">昨日</p>
+                            <p className="text-[10px] text-muted-foreground">昨日</p>
                             <p className="text-lg font-bold tabular-nums">
                               {m.isPercent ? `${m.yVal.toFixed(1)}%` : formatNumber(m.yVal)}
                             </p>
                           </div>
                           {m.wVal !== null && (
                             <div className="border-l border-border/30 pl-2">
-                              <p className="text-[9px] text-muted-foreground">本週</p>
+                              <p className="text-[10px] text-muted-foreground">本週</p>
                               <p className="text-sm font-semibold tabular-nums text-muted-foreground">
                                 {m.isPercent ? `${m.wVal.toFixed(1)}%` : formatNumber(m.wVal)}
                               </p>
@@ -1041,24 +1041,24 @@ export default function DailyWeeklyPage() {
                   })()}
                 </div>
                 {foorirData.flowIn > 0 && (
-                  <div className="mt-3 grid grid-cols-3 gap-3 text-[11px]">
+                  <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
                     <div className="rounded border border-border/20 p-2 text-center">
                       <p className="text-muted-foreground">每客消費</p>
                       <p className="font-semibold tabular-nums">{formatCurrency(yRevenue / foorirData.flowIn)}</p>
                       {foorirWeekly && foorirWeekly.flowIn > 0 && (
-                        <p className="text-[10px] text-muted-foreground mt-0.5">本週 {formatCurrency(twRevenue / foorirWeekly.flowIn)}</p>
+                        <p className="text-[11px] text-muted-foreground mt-0.5">本週 {formatCurrency(twRevenue / foorirWeekly.flowIn)}</p>
                       )}
                     </div>
                     <div className="rounded border border-border/20 p-2 text-center">
                       <p className="text-muted-foreground">成人</p>
                       <p className="font-semibold tabular-nums">{formatNumber(foorirData.adult)}</p>
-                      {foorirWeekly && <p className="text-[10px] text-muted-foreground mt-0.5">本週 {formatNumber(foorirWeekly.adult)}</p>}
+                      {foorirWeekly && <p className="text-[11px] text-muted-foreground mt-0.5">本週 {formatNumber(foorirWeekly.adult)}</p>}
                     </div>
                     <div className="rounded border border-border/20 p-2 text-center">
                       <p className="text-muted-foreground">兒童</p>
                       <p className="font-semibold tabular-nums">{foorirData.children > 0 ? formatNumber(foorirData.children) : '—'}</p>
                       {foorirWeekly && foorirWeekly.children > 0 && (
-                        <p className="text-[10px] text-muted-foreground mt-0.5">本週 {formatNumber(foorirWeekly.children)}</p>
+                        <p className="text-[11px] text-muted-foreground mt-0.5">本週 {formatNumber(foorirWeekly.children)}</p>
                       )}
                     </div>
                   </div>
@@ -1143,12 +1143,12 @@ export default function DailyWeeklyPage() {
                     <CardTitle className="text-sm font-medium flex items-center gap-2">
                       <TrendingUp className="h-3.5 w-3.5 text-green-400" />
                       轉化漏斗
-                      <span className="text-xs font-normal text-muted-foreground">Conversion Funnel — 昨日 vs 本週</span>
+                      <span className="text-[13px] font-normal text-muted-foreground">Conversion Funnel — 昨日 vs 本週</span>
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="px-4 pb-4">
                     {/* Legend */}
-                    <div className="flex items-center gap-4 mb-3 text-[10px]">
+                    <div className="flex items-center gap-4 mb-3 text-[11px]">
                       <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-cyan-500 opacity-70" /> 昨日</span>
                       <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-cyan-500 opacity-30" /> 本週</span>
                     </div>
@@ -1161,21 +1161,21 @@ export default function DailyWeeklyPage() {
                           <div key={stage.label}>
                             <div className="flex items-center gap-3">
                               <div className="w-14 shrink-0 text-right">
-                                <p className={`text-[11px] font-semibold ${stage.textColor}`}>{stage.label}</p>
-                                <p className="text-[9px] text-muted-foreground">{stage.sublabel}</p>
+                                <p className={`text-xs font-semibold ${stage.textColor}`}>{stage.label}</p>
+                                <p className="text-[10px] text-muted-foreground">{stage.sublabel}</p>
                               </div>
                               <div className="flex-1 space-y-0.5">
                                 {/* Yesterday bar */}
                                 <div className={`${stage.color}/20 rounded-r h-4 flex items-center transition-all`} style={{ width: `${yWidthPct}%` }}>
                                   <div className={`${stage.color} rounded-r h-4 flex items-center px-2`} style={{ width: '100%', opacity: 0.7 }}>
-                                    <span className="text-[10px] font-bold text-white tabular-nums drop-shadow">{formatNumber(stage.yVal)}</span>
+                                    <span className="text-[11px] font-bold text-white tabular-nums drop-shadow">{formatNumber(stage.yVal)}</span>
                                   </div>
                                 </div>
                                 {/* Weekly bar */}
                                 {wk && (
                                   <div className={`${stage.color}/10 rounded-r h-3 flex items-center transition-all`} style={{ width: `${wWidthPct}%` }}>
                                     <div className={`${stage.color} rounded-r h-3 flex items-center px-2`} style={{ width: '100%', opacity: 0.3 }}>
-                                      <span className="text-[9px] font-semibold text-white/80 tabular-nums drop-shadow">{formatNumber(stage.wVal)}</span>
+                                      <span className="text-[10px] font-semibold text-white/80 tabular-nums drop-shadow">{formatNumber(stage.wVal)}</span>
                                     </div>
                                   </div>
                                 )}
@@ -1186,7 +1186,7 @@ export default function DailyWeeklyPage() {
                             {idx < funnelRates.length && (
                               <div className="flex items-center gap-3 my-1">
                                 <div className="w-14" />
-                                <div className="flex items-center gap-3 text-[10px]">
+                                <div className="flex items-center gap-3 text-[11px]">
                                   <span className="text-amber-400">↓</span>
                                   <span className="font-medium text-amber-400">
                                     {funnelRates[idx].label}: 昨日{' '}
@@ -1213,18 +1213,18 @@ export default function DailyWeeklyPage() {
                       {/* Revenue row (final stage) */}
                       <div className="flex items-center gap-3">
                         <div className="w-14 shrink-0 text-right">
-                          <p className="text-[11px] font-semibold text-emerald-400">消費額</p>
-                          <p className="text-[9px] text-muted-foreground">Revenue</p>
+                          <p className="text-xs font-semibold text-emerald-400">消費額</p>
+                          <p className="text-[10px] text-muted-foreground">Revenue</p>
                         </div>
                         <div className="flex-1 space-y-0.5">
                           <div className="bg-emerald-500/20 rounded-r h-4 flex items-center px-3" style={{ width: '60%' }}>
-                            <span className="text-[10px] font-bold text-emerald-400 tabular-nums">
+                            <span className="text-[11px] font-bold text-emerald-400 tabular-nums">
                               昨日 {formatCurrency(rev)}
                             </span>
                           </div>
                           {wk && (
                             <div className="bg-emerald-500/10 rounded-r h-3 flex items-center px-3" style={{ width: '60%' }}>
-                              <span className="text-[9px] font-semibold text-emerald-400/60 tabular-nums">
+                              <span className="text-[10px] font-semibold text-emerald-400/60 tabular-nums">
                                 本週 {formatCurrency(wkRev)}
                               </span>
                             </div>
@@ -1241,25 +1241,25 @@ export default function DailyWeeklyPage() {
                   {/* Revenue per Visitor */}
                   <Card className="border-border/40">
                     <CardContent className="px-4 py-3">
-                      <p className="text-[11px] font-medium text-cyan-400">每客消費</p>
-                      <p className="text-[9px] text-muted-foreground mb-1">Revenue per Visitor</p>
+                      <p className="text-xs font-medium text-cyan-400">每客消費</p>
+                      <p className="text-[10px] text-muted-foreground mb-1">Revenue per Visitor</p>
                       <div className="flex items-end gap-2">
                         <div>
-                          <p className="text-[9px] text-muted-foreground">昨日</p>
+                          <p className="text-[10px] text-muted-foreground">昨日</p>
                           <p className="text-xl font-bold tabular-nums">{formatCurrency(revenuePerVisitor)}</p>
                         </div>
                         {wk && wkFlowIn > 0 && (
                           <div className="border-l border-border/30 pl-2">
-                            <p className="text-[9px] text-muted-foreground">本週</p>
+                            <p className="text-[10px] text-muted-foreground">本週</p>
                             <p className="text-sm font-semibold tabular-nums text-muted-foreground">{formatCurrency(wkRevenuePerVisitor)}</p>
                           </div>
                         )}
                       </div>
-                      <p className="text-[10px] text-muted-foreground mt-1">
+                      <p className="text-[11px] text-muted-foreground mt-1">
                         昨日 = {formatCurrency(rev)} ÷ {formatNumber(flowIn)} 人
                       </p>
                       {revenuePerVisitor < (aov || 0) * 0.3 && (
-                        <p className="text-[10px] text-amber-400 mt-1.5">
+                        <p className="text-[11px] text-amber-400 mt-1.5">
                           ⚠ 每客消費偏低，多數訪客未消費
                         </p>
                       )}
@@ -1269,21 +1269,21 @@ export default function DailyWeeklyPage() {
                   {/* Average Order Value */}
                   <Card className="border-border/40">
                     <CardContent className="px-4 py-3">
-                      <p className="text-[11px] font-medium text-green-400">客單價</p>
-                      <p className="text-[9px] text-muted-foreground mb-1">Average Order Value</p>
+                      <p className="text-xs font-medium text-green-400">客單價</p>
+                      <p className="text-[10px] text-muted-foreground mb-1">Average Order Value</p>
                       <div className="flex items-end gap-2">
                         <div>
-                          <p className="text-[9px] text-muted-foreground">昨日</p>
+                          <p className="text-[10px] text-muted-foreground">昨日</p>
                           <p className="text-xl font-bold tabular-nums">{aov !== null ? formatCurrency(aov) : '—'}</p>
                         </div>
                         {wk && wkAov !== null && (
                           <div className="border-l border-border/30 pl-2">
-                            <p className="text-[9px] text-muted-foreground">本週</p>
+                            <p className="text-[10px] text-muted-foreground">本週</p>
                             <p className="text-sm font-semibold tabular-nums text-muted-foreground">{formatCurrency(wkAov)}</p>
                           </div>
                         )}
                       </div>
-                      <p className="text-[10px] text-muted-foreground mt-1">
+                      <p className="text-[11px] text-muted-foreground mt-1">
                         昨日 = {formatCurrency(rev)} ÷ {orders} 單
                       </p>
                     </CardContent>
@@ -1292,16 +1292,16 @@ export default function DailyWeeklyPage() {
                   {/* Non-converting visitors */}
                   <Card className="border-border/40">
                     <CardContent className="px-4 py-3">
-                      <p className="text-[11px] font-medium text-amber-400">未轉化比例</p>
-                      <p className="text-[9px] text-muted-foreground mb-1">Non-converting Visitors</p>
+                      <p className="text-xs font-medium text-amber-400">未轉化比例</p>
+                      <p className="text-[10px] text-muted-foreground mb-1">Non-converting Visitors</p>
                       <div className="flex items-end gap-2">
                         <div>
-                          <p className="text-[9px] text-muted-foreground">昨日</p>
+                          <p className="text-[10px] text-muted-foreground">昨日</p>
                           <p className="text-xl font-bold tabular-nums">{nonConvertPct.toFixed(1)}%</p>
                         </div>
                         {wk && wkFlowIn > 0 && (
                           <div className="border-l border-border/30 pl-2">
-                            <p className="text-[9px] text-muted-foreground">本週</p>
+                            <p className="text-[10px] text-muted-foreground">本週</p>
                             <p className="text-sm font-semibold tabular-nums text-muted-foreground">{wkNonConvertPct.toFixed(1)}%</p>
                           </div>
                         )}
@@ -1313,7 +1313,7 @@ export default function DailyWeeklyPage() {
                           style={{ width: `${Math.min(nonConvertPct, 100)}%` }}
                         />
                       </div>
-                      <div className="flex justify-between text-[9px] text-muted-foreground mt-0.5">
+                      <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
                         <span>昨日已轉化 {orders}</span>
                         <span>未轉化 {flowIn - orders}</span>
                       </div>
@@ -1326,7 +1326,7 @@ export default function DailyWeeklyPage() {
                               style={{ width: `${Math.min(wkNonConvertPct, 100)}%` }}
                             />
                           </div>
-                          <div className="flex justify-between text-[9px] text-muted-foreground/60 mt-0.5">
+                          <div className="flex justify-between text-[10px] text-muted-foreground/60 mt-0.5">
                             <span>本週已轉化 {wkOrderCount}</span>
                             <span>未轉化 {wkFlowIn - wkOrderCount}</span>
                           </div>
@@ -1338,12 +1338,12 @@ export default function DailyWeeklyPage() {
 
                 {/* Insight line */}
                 <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-2.5 space-y-1">
-                  <p className="text-[11px] text-amber-300">
+                  <p className="text-xs text-amber-300">
                     昨日 {formatNumber(flowIn)} 人進店，僅 {orders} 人下單，{nonConvertPct.toFixed(1)}% 客人未消費
                     {aov !== null && ` — 客單價 ${formatCurrency(aov)}`}
                   </p>
                   {wk && wkFlowIn > 0 && (
-                    <p className="text-[11px] text-amber-300/70">
+                    <p className="text-xs text-amber-300/70">
                       本週 {formatNumber(wkFlowIn)} 人進店，{wkOrderCount} 人下單，{wkNonConvertPct.toFixed(1)}% 未消費
                       {wkAov !== null && ` — 客單價 ${formatCurrency(wkAov)}`}
                     </p>
@@ -1356,22 +1356,22 @@ export default function DailyWeeklyPage() {
                     <CardTitle className="text-sm font-medium flex items-center gap-2">
                       <Zap className="h-3.5 w-3.5 text-amber-400" />
                       訂單時段分佈
-                      <span className="text-xs font-normal text-muted-foreground">Order Time Distribution — 昨日 vs 本週</span>
+                      <span className="text-[13px] font-normal text-muted-foreground">Order Time Distribution — 昨日 vs 本週</span>
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="px-4 pb-4">
                     {orders === 0 && wkOrderCount === 0 ? (
-                      <p className="text-xs text-muted-foreground text-center py-4">暫無訂單數據</p>
+                      <p className="text-[13px] text-muted-foreground text-center py-4">暫無訂單數據</p>
                     ) : (
                       <>
                         {/* Peak hour summary */}
-                        <div className="mb-3 rounded border border-green-500/20 bg-green-500/5 px-3 py-2">
-                          <p className="text-[11px] text-green-400 font-medium">
+                        <div className="mb-3 rounded border border-green-500/20 bg-green-500/5 px-3 py-2.5">
+                          <p className="text-xs text-green-400 font-medium">
                             昨日銷售高峰: {peakSummary}
                           </p>
                         </div>
                         {/* Legend */}
-                        <div className="flex items-center gap-4 mb-2 text-[10px]">
+                        <div className="flex items-center gap-4 mb-2 text-[11px]">
                           <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-cyan-500/60" /> 昨日</span>
                           <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-purple-500/40" /> 本週</span>
                         </div>
@@ -1386,7 +1386,7 @@ export default function DailyWeeklyPage() {
                                 {/* Yesterday bar */}
                                 <div className="flex-1 flex flex-col items-center justify-end h-full">
                                   {h.count > 0 && (
-                                    <span className="text-[7px] tabular-nums text-muted-foreground mb-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <span className="text-[9px] tabular-nums text-muted-foreground mb-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                                       {h.count}
                                     </span>
                                   )}
@@ -1399,7 +1399,7 @@ export default function DailyWeeklyPage() {
                                 {/* Weekly bar */}
                                 <div className="flex-1 flex flex-col items-center justify-end h-full">
                                   {h.wkCount > 0 && (
-                                    <span className="text-[7px] tabular-nums text-purple-400/60 mb-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <span className="text-[9px] tabular-nums text-purple-400/60 mb-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                                       {h.wkCount}
                                     </span>
                                   )}
@@ -1417,7 +1417,7 @@ export default function DailyWeeklyPage() {
                         <div className="flex gap-[3px] mt-1">
                           {hourData.map(h => (
                             <div key={h.hour} className="flex-1 text-center">
-                              <span className={`text-[7px] tabular-nums ${
+                              <span className={`text-[9px] tabular-nums ${
                                 h.hour % 3 === 0 ? 'text-muted-foreground' : 'text-transparent'
                               }`}>
                                 {String(h.hour).padStart(2, '0')}
@@ -1425,7 +1425,7 @@ export default function DailyWeeklyPage() {
                             </div>
                           ))}
                         </div>
-                        <p className="text-[10px] text-muted-foreground mt-2 text-center">
+                        <p className="text-[11px] text-muted-foreground mt-2 text-center">
                           ※ 此為 Shopify 訂單創建時間分佈，非客流進店時間
                         </p>
                       </>
@@ -1458,7 +1458,7 @@ export default function DailyWeeklyPage() {
               <CardTitle className="text-sm font-medium flex items-center gap-2">
                 <Percent className="h-3.5 w-3.5 text-primary shrink-0" />
                 生效中 Promotions
-                <span className="text-xs font-normal text-muted-foreground">Active Discount Codes (30 Days)</span>
+                <span className="text-[13px] font-normal text-muted-foreground">Active Discount Codes (30 Days)</span>
               </CardTitle>
             </CardHeader>
             <CardContent className="px-4 pb-4">
@@ -1468,16 +1468,16 @@ export default function DailyWeeklyPage() {
                 <p className="text-sm text-muted-foreground py-4 text-center">近 30 天無活躍折扣碼</p>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-xs" data-testid="table-active-promotions">
+                  <table className="w-full text-[13px]" data-testid="table-active-promotions">
                     <thead>
                       <tr className="border-b border-border/50 text-muted-foreground">
-                        <th className="py-2 text-left font-medium">折扣碼 Code</th>
-                        <th className="py-2 text-right font-medium">30天使用次數</th>
-                        <th className="py-2 text-right font-medium">30天帶動銷售</th>
-                        <th className="py-2 text-right font-medium">30天折扣額</th>
-                        <th className="py-2 text-right font-medium">昨日使用</th>
-                        <th className="py-2 text-right font-medium">昨日銷售</th>
-                        <th className="py-2 text-left font-medium pl-3">活躍期間</th>
+                        <th className="py-2.5 text-left font-medium">折扣碼 Code</th>
+                        <th className="py-2.5 text-right font-medium">30天使用次數</th>
+                        <th className="py-2.5 text-right font-medium">30天帶動銷售</th>
+                        <th className="py-2.5 text-right font-medium">30天折扣額</th>
+                        <th className="py-2.5 text-right font-medium">昨日使用</th>
+                        <th className="py-2.5 text-right font-medium">昨日銷售</th>
+                        <th className="py-2.5 text-left font-medium pl-3">活躍期間</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1485,23 +1485,23 @@ export default function DailyWeeklyPage() {
                         <tr key={p.code} className={`border-b border-border/20 transition-colors ${
                           p.yesterdayUses > 0 ? 'bg-primary/5 hover:bg-primary/10' : 'hover:bg-accent/30'
                         }`}>
-                          <td className="py-2 font-mono font-semibold text-primary">{p.code}</td>
-                          <td className="py-2 text-right tabular-nums">{p.uses}</td>
-                          <td className="py-2 text-right tabular-nums font-semibold">{formatCurrency(p.totalSales)}</td>
-                          <td className="py-2 text-right tabular-nums text-red-400">-{formatCurrency(p.totalDiscount)}</td>
-                          <td className="py-2 text-right tabular-nums">
+                          <td className="py-2.5 font-mono font-semibold text-primary">{p.code}</td>
+                          <td className="py-2.5 text-right tabular-nums">{p.uses}</td>
+                          <td className="py-2.5 text-right tabular-nums font-semibold">{formatCurrency(p.totalSales)}</td>
+                          <td className="py-2.5 text-right tabular-nums text-red-400">-{formatCurrency(p.totalDiscount)}</td>
+                          <td className="py-2.5 text-right tabular-nums">
                             {p.yesterdayUses > 0
                               ? <span className="font-bold text-primary">{p.yesterdayUses}</span>
                               : <span className="text-muted-foreground/40">0</span>
                             }
                           </td>
-                          <td className="py-2 text-right tabular-nums">
+                          <td className="py-2.5 text-right tabular-nums">
                             {p.yesterdaySales > 0
                               ? <span className="font-semibold">{formatCurrency(p.yesterdaySales)}</span>
                               : <span className="text-muted-foreground/40">—</span>
                             }
                           </td>
-                          <td className="py-2 pl-3 text-muted-foreground text-[10px]">
+                          <td className="py-2.5 pl-3 text-muted-foreground text-[11px]">
                             {p.firstUse === p.lastUse ? p.firstUse : `${p.firstUse} ~ ${p.lastUse}`}
                           </td>
                         </tr>
@@ -1551,7 +1551,7 @@ export default function DailyWeeklyPage() {
                     <CardTitle className="text-sm font-medium flex items-center gap-2">
                       <Users className="h-3.5 w-3.5 text-primary" />
                       員工表現
-                      <span className="text-xs font-normal text-muted-foreground">POS Staff Performance</span>
+                      <span className="text-[13px] font-normal text-muted-foreground">POS Staff Performance</span>
                     </CardTitle>
                     {/* Tab switcher */}
                     <div className="flex items-center gap-1 bg-accent/30 rounded p-0.5 ml-auto">
@@ -1563,7 +1563,7 @@ export default function DailyWeeklyPage() {
                         <button
                           key={t.key}
                           onClick={() => setStaffTab(t.key)}
-                          className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                          className={`px-2.5 py-1 rounded text-[13px] font-medium transition-colors ${
                             staffTab === t.key
                               ? 'bg-primary text-primary-foreground'
                               : 'text-muted-foreground hover:text-foreground'
@@ -1573,7 +1573,7 @@ export default function DailyWeeklyPage() {
                         </button>
                       ))}
                     </div>
-                    <span className="text-[10px] text-muted-foreground/60 hidden sm:block">點擊姓名可設定</span>
+                    <span className="text-[11px] text-muted-foreground/60 hidden sm:block">點擊姓名可設定</span>
                   </div>
                 </CardHeader>
                 <CardContent className="px-4 pb-4 pt-3">
@@ -1581,14 +1581,14 @@ export default function DailyWeeklyPage() {
                     <Skeleton className="h-32 w-full" />
                   ) : (
                     <div className="overflow-x-auto">
-                      <table className="w-full text-xs">
+                      <table className="w-full text-[13px]">
                         <thead>
                           <tr className="border-b border-border/50 text-muted-foreground">
-                            <th className="py-2 text-left font-medium">姓名 Staff</th>
-                            <th className="py-2 text-right font-medium">{tabLabel}訂單</th>
-                            <th className="py-2 text-right font-medium">{tabLabel}營收</th>
-                            <th className="py-2 text-right font-medium">均價</th>
-                            <th className="py-2 text-right font-medium">占比</th>
+                            <th className="py-2.5 text-left font-medium">姓名 Staff</th>
+                            <th className="py-2.5 text-right font-medium">{tabLabel}訂單</th>
+                            <th className="py-2.5 text-right font-medium">{tabLabel}營收</th>
+                            <th className="py-2.5 text-right font-medium">均價</th>
+                            <th className="py-2.5 text-right font-medium">占比</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1600,7 +1600,7 @@ export default function DailyWeeklyPage() {
                               <tr key={s.uid} className={`border-b border-border/20 hover:bg-accent/30 transition-colors ${
                                 i === 0 && rev > 0 ? 'bg-amber-500/5' : ''
                               }`}>
-                                <td className="py-2">
+                                <td className="py-2.5">
                                   {editingUid === s.uid ? (
                                     <div className="space-y-1">
                                       <div className="flex flex-wrap gap-1">
@@ -1608,7 +1608,7 @@ export default function DailyWeeklyPage() {
                                           <button
                                             key={name}
                                             onClick={() => saveStaffName(s.uid, name)}
-                                            className="text-[10px] px-1.5 py-0.5 bg-primary/15 text-primary border border-primary/30 rounded hover:bg-primary/30 transition-colors"
+                                            className="text-[11px] px-1.5 py-0.5 bg-primary/15 text-primary border border-primary/30 rounded hover:bg-primary/30 transition-colors"
                                           >
                                             {name}
                                           </button>
@@ -1616,9 +1616,9 @@ export default function DailyWeeklyPage() {
                                       </div>
                                       <form className="flex items-center gap-1" onSubmit={e => { e.preventDefault(); saveStaffName(s.uid, editName); }}>
                                         <input autoFocus value={editName} onChange={e => setEditName(e.target.value)} placeholder="自行輸入..."
-                                          className="w-24 px-1.5 py-0.5 text-xs bg-muted border border-border rounded text-foreground focus:outline-none focus:border-primary" />
-                                        <button type="submit" className="text-[10px] px-1.5 py-0.5 bg-primary/80 text-primary-foreground rounded">存</button>
-                                        <button type="button" onClick={() => setEditingUid(null)} className="text-[10px] px-1 text-muted-foreground">取</button>
+                                          className="w-24 px-1.5 py-0.5 text-[13px] bg-muted border border-border rounded text-foreground focus:outline-none focus:border-primary" />
+                                        <button type="submit" className="text-[11px] px-1.5 py-0.5 bg-primary/80 text-primary-foreground rounded">存</button>
+                                        <button type="button" onClick={() => setEditingUid(null)} className="text-[11px] px-1 text-muted-foreground">取</button>
                                       </form>
                                     </div>
                                   ) : (
@@ -1630,26 +1630,26 @@ export default function DailyWeeklyPage() {
                                       <span className={`font-medium ${staffNames[s.uid] ? '' : 'text-muted-foreground italic'}`}>
                                         {getStaffName(s.uid)}
                                       </span>
-                                      <span className="text-[10px] text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity">✏️</span>
+                                      <span className="text-[11px] text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity">✏️</span>
                                     </button>
                                   )}
                                 </td>
-                                <td className="py-2 text-right tabular-nums text-muted-foreground">
+                                <td className="py-2.5 text-right tabular-nums text-muted-foreground">
                                   {cnt > 0 ? cnt : <span className="opacity-30">—</span>}
                                 </td>
-                                <td className={`py-2 text-right tabular-nums font-semibold ${rev > 0 ? '' : 'text-muted-foreground/30'}`}>
+                                <td className={`py-2.5 text-right tabular-nums font-semibold ${rev > 0 ? '' : 'text-muted-foreground/30'}`}>
                                   {rev > 0 ? formatCurrency(rev) : '—'}
                                 </td>
-                                <td className="py-2 text-right tabular-nums text-muted-foreground">
+                                <td className="py-2.5 text-right tabular-nums text-muted-foreground">
                                   {cnt > 0 ? formatCurrency(rev / cnt) : '—'}
                                 </td>
-                                <td className="py-2 text-right">
+                                <td className="py-2.5 text-right">
                                   {pct > 0 ? (
                                     <div className="flex items-center justify-end gap-1.5">
                                       <div className="w-12 h-1.5 bg-border/40 rounded-full overflow-hidden">
                                         <div className="h-full bg-primary/60 rounded-full" style={{ width: `${pct}%` }} />
                                       </div>
-                                      <span className="text-[10px] tabular-nums text-muted-foreground w-6 text-right">{pct.toFixed(0)}%</span>
+                                      <span className="text-[11px] tabular-nums text-muted-foreground w-6 text-right">{pct.toFixed(0)}%</span>
                                     </div>
                                   ) : <span className="opacity-30">—</span>}
                                 </td>
@@ -1659,13 +1659,13 @@ export default function DailyWeeklyPage() {
                         </tbody>
                         <tfoot>
                           <tr className="border-t border-border/40 bg-muted/10">
-                            <td className="py-2 text-xs font-semibold text-muted-foreground">小計</td>
-                            <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">{totalCnt}</td>
-                            <td className="py-2 text-right tabular-nums font-bold text-xs">{formatCurrency(totalRev)}</td>
-                            <td className="py-2 text-right tabular-nums text-muted-foreground text-xs">
+                            <td className="py-2.5 text-[13px] font-semibold text-muted-foreground">小計</td>
+                            <td className="py-2.5 text-right tabular-nums text-muted-foreground text-[13px]">{totalCnt}</td>
+                            <td className="py-2.5 text-right tabular-nums font-bold text-[13px]">{formatCurrency(totalRev)}</td>
+                            <td className="py-2.5 text-right tabular-nums text-muted-foreground text-[13px]">
                               {totalCnt > 0 ? formatCurrency(totalRev / totalCnt) : '—'}
                             </td>
-                            <td className="py-2 text-right text-[10px] text-muted-foreground/60">100%</td>
+                            <td className="py-2.5 text-right text-[11px] text-muted-foreground/60">100%</td>
                           </tr>
                         </tfoot>
                       </table>
@@ -1784,14 +1784,14 @@ export default function DailyWeeklyPage() {
                 <p className="text-sm text-muted-foreground py-6 text-center">本週無數據</p>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
+                  <table className="w-full text-[13px]">
                     <thead>
                       <tr className="border-b border-border/50 text-muted-foreground">
-                        <th className="py-2 text-left font-medium">類別 Category</th>
-                        <th className="py-2 text-right font-medium">件數</th>
-                        <th className="py-2 text-right font-medium">週營收</th>
-                        <th className="py-2 text-right font-medium">均單價</th>
-                        <th className="py-2 text-left font-medium pl-3">品牌組成</th>
+                        <th className="py-2.5 text-left font-medium">類別 Category</th>
+                        <th className="py-2.5 text-right font-medium">件數</th>
+                        <th className="py-2.5 text-right font-medium">週營收</th>
+                        <th className="py-2.5 text-right font-medium">均單價</th>
+                        <th className="py-2.5 text-left font-medium pl-3">品牌組成</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1804,24 +1804,24 @@ export default function DailyWeeklyPage() {
                               className="border-b border-border/20 hover:bg-accent/30 transition-colors cursor-pointer"
                               onClick={() => setExpandedWeekCats(prev => { const n = new Set(prev); n.has(cat.type) ? n.delete(cat.type) : n.add(cat.type); return n; })}
                             >
-                              <td className={`py-2 font-medium ${style.color}`}>
+                              <td className={`py-2.5 font-medium ${style.color}`}>
                                 <span className="inline-flex items-center gap-1">
                                   {wcExp ? <ChevronDown className="h-3 w-3 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 text-muted-foreground" />}
                                   {cat.type}
                                 </span>
                               </td>
-                              <td className="py-2 text-right tabular-nums">{cat.qty}</td>
-                              <td className="py-2 text-right tabular-nums font-semibold">{formatCurrency(cat.revenue)}</td>
-                              <td className="py-2 text-right tabular-nums text-muted-foreground">
+                              <td className="py-2.5 text-right tabular-nums">{cat.qty}</td>
+                              <td className="py-2.5 text-right tabular-nums font-semibold">{formatCurrency(cat.revenue)}</td>
+                              <td className="py-2.5 text-right tabular-nums text-muted-foreground">
                                 {formatCurrency(cat.qty > 0 ? cat.revenue / cat.qty : 0)}
                               </td>
-                              <td className="py-2 pl-3">
+                              <td className="py-2.5 pl-3">
                                 <div className="flex flex-wrap gap-1">
                                   {cat.brands.slice(0, 5).map(b => (
-                                    <span key={b} className="text-[10px] bg-accent/60 text-muted-foreground px-1.5 py-0.5 rounded">{b}</span>
+                                    <span key={b} className="text-[11px] bg-accent/60 text-muted-foreground px-1.5 py-0.5 rounded">{b}</span>
                                   ))}
                                   {cat.brands.length > 5 && (
-                                    <span className="text-[10px] text-muted-foreground/50">+{cat.brands.length - 5}</span>
+                                    <span className="text-[11px] text-muted-foreground/50">+{cat.brands.length - 5}</span>
                                   )}
                                 </div>
                               </td>
@@ -1829,14 +1829,14 @@ export default function DailyWeeklyPage() {
                             {wcExp && (
                               <tr>
                                 <td colSpan={5} className="p-0">
-                                  <div className="bg-accent/10 px-4 py-2 border-b border-border/20">
+                                  <div className="bg-accent/10 px-4 py-2.5 border-b border-border/20">
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
                                       {cat.itemList.map((item, ii) => (
-                                        <div key={ii} className="flex items-center justify-between text-[11px] py-1 border-b border-border/10 last:border-0">
+                                        <div key={ii} className="flex items-center justify-between text-xs py-1 border-b border-border/10 last:border-0">
                                           <div className="flex items-center gap-2 min-w-0">
                                             <span className="text-muted-foreground/50 tabular-nums w-4 text-right shrink-0">{ii + 1}</span>
                                             <span className="truncate">{item.title}</span>
-                                            {item.vendor && <span className="text-[9px] text-muted-foreground/50 shrink-0">{item.vendor}</span>}
+                                            {item.vendor && <span className="text-[10px] text-muted-foreground/50 shrink-0">{item.vendor}</span>}
                                           </div>
                                           <span className="tabular-nums text-muted-foreground ml-2 shrink-0">×{item.qty} {formatCurrency(item.revenue)}</span>
                                         </div>
