@@ -117,6 +117,7 @@ const NAV_ITEMS: NavItem[] = [
     children: [
       { path: '/performance/daily',         label: '昨日/本週',   sublabel: 'Daily/Weekly',      icon: Calendar },
       { path: '/performance/weekly-review',  label: '週報',        sublabel: 'Weekly Review',     icon: ClipboardCheck },
+      { path: '/performance/monthly-review', label: '月報',        sublabel: 'Monthly Review',    icon: ClipboardCheck },
       { path: '/performance/velocity',       label: '銷售速率',    sublabel: 'Sales Velocity',    icon: TrendingUp },
       { path: '/performance/new-products',   label: '新品表現',    sublabel: 'New Products',      icon: Sparkles },
       { path: '/performance/product-analytics', label: '商品分析', sublabel: 'Product Analytics',  icon: BarChart3 },
@@ -206,6 +207,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
     '/performance/velocity',
     '/performance/new-products',
     '/performance/weekly-review',
+    '/performance/monthly-review',
     '/finance/retail-commission',
     '/performance/product-analytics',
     '/performance/forecast',
