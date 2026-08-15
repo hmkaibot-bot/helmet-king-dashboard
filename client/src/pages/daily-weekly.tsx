@@ -271,6 +271,8 @@ export default function DailyWeeklyPage() {
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
   const [costMap, setCostMap] = useState<Record<string, number>>({}); // sku → 成本價(淨係存 >0 嘅)
   const [productTypeMap, setProductTypeMap] = useState<Record<string, string>>({});
+  const [productImageMap, setProductImageMap] = useState<Record<string, string>>({}); // product_id → 圖
+  const [productStockMap, setProductStockMap] = useState<Record<string, number>>({}); // product_id → 全部 variant 庫存總和
   const [foorirData, setFoorirData] = useState<FoorirKPI | null>(null);
   const [foorirWeekly, setFoorirWeekly] = useState<FoorirKPI | null>(null);
   const [foorirConnected, setFoorirConnected] = useState(false);
@@ -402,6 +404,14 @@ export default function DailyWeeklyPage() {
         });
         setProductTypeMap(ptMap);
 
+        // 產品圖(獨立 query:image_url 欄未加會 error → 靜靜跳過,唔累其他嘢)
+        queryAll('shopify_products', 'id,image_url').then((rows: any[]) => {
+          if (cancelled) return;
+          const im: Record<string, string> = {};
+          rows.forEach((r: any) => { if (r.id && r.image_url) im[String(r.id)] = r.image_url; });
+          setProductImageMap(im);
+        });
+
         // Phase 2: batch inventory for sold SKUs (並行拉所有 batches)
         const skuList = [...new Set(orderLines.map((l: any) => l.sku).filter(Boolean))] as string[];
         const invMap: Record<string, number> = {};
@@ -424,6 +434,26 @@ export default function DailyWeeklyPage() {
           });
         }
         if (!cancelled) { setInventoryMap(invMap); setCostMap(cMap); }
+
+        // Phase 3: 品牌明細用 — 按 product_id 攞齊「所有」variant 庫存
+        // (上面按售出 SKU 拉,冇賣過嘅 size 唔喺入面,產品層面會報少)
+        const pidList = [...new Set(orderLines.map((l: any) => l.product_id).filter(Boolean).map(String))] as string[];
+        const pidBatches: string[][] = [];
+        for (let i = 0; i < pidList.length; i += BATCH) pidBatches.push(pidList.slice(i, i + BATCH));
+        const stockResults = await Promise.all(
+          pidBatches.map(b =>
+            supabase.from('shopify_inventory').select('product_id,inventory_quantity').in('product_id', b)
+          )
+        );
+        const psMap: Record<string, number> = {};
+        for (const { data: rows } of stockResults) {
+          (rows || []).forEach((r: any) => {
+            if (!r.product_id) return;
+            const k = String(r.product_id);
+            psMap[k] = (psMap[k] || 0) + Math.max(0, r.inventory_quantity || 0);
+          });
+        }
+        if (!cancelled) setProductStockMap(psMap);
       } catch (e) {
         console.error('Daily/Weekly load error:', e);
       } finally {
@@ -900,6 +930,9 @@ export default function DailyWeeklyPage() {
             yOrderIds={yOrderIdSet}
             weekOrderIds={twOrderIdSet}
             costMap={costMap}
+            velocityMap={velocityMap}
+            imageMap={productImageMap}
+            productStockMap={productStockMap}
           />
 
           {/* ── 庫存警號(摺):昨日有售而且缺貨/低庫存 ──────────── */}

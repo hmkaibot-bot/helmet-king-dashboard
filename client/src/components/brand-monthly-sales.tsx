@@ -2,7 +2,7 @@ import React, { useState, useMemo, useCallback } from 'react';
 import { formatCurrency } from '@/lib/format';
 import {
   ChevronDown, ChevronRight, ArrowUpDown, ArrowUp, ArrowDown,
-  Plus, X, Search, BarChart3,
+  Plus, X, Search, BarChart3, ImageOff,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -75,10 +75,14 @@ interface BrandRow {
 
 interface BrandItem {
   title: string;
+  productId: string | null;
+  skus: Set<string>;
   qty: number;
   revenue: number;
   yQty: number;
   yRevenue: number;
+  profit: number;      // 當月毛利(淨計有成本價嘅 lines)
+  coveredRev: number;  // 有成本價嘅當月營收
 }
 
 interface Props {
@@ -87,10 +91,13 @@ interface Props {
   loading: boolean;
   yOrderIds: Set<string>;    // 昨日 order ids
   weekOrderIds: Set<string>; // 本週 order ids
-  costMap: Record<string, number>; // sku → 成本價(>0 先有)
+  costMap: Record<string, number>;         // sku → 成本價(>0 先有)
+  velocityMap: Record<string, number>;     // sku → 件/日(60日均)
+  imageMap: Record<string, string>;        // product_id → 產品圖
+  productStockMap: Record<string, number>; // product_id → 所有 variant 庫存總和
 }
 
-export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds, weekOrderIds, costMap }: Props) {
+export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds, weekOrderIds, costMap, velocityMap, imageMap, productStockMap }: Props) {
   // ── State ──────────────────────────────────────────────────
   const [selectedBrands, setSelectedBrandsRaw] = useState<string[]>(loadSelectedBrands);
   const setSelectedBrands = useCallback((updater: string[] | ((prev: string[]) => string[])) => {
@@ -104,6 +111,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [expandedBrands, setExpandedBrands] = useState<Set<string>>(new Set());
   const [showAllItems, setShowAllItems] = useState<Set<string>>(new Set()); // 撳咗「開晒長尾」嘅品牌
+  const [lightbox, setLightbox] = useState<{ url: string; title: string } | null>(null); // 撳大產品圖
   const [showPicker, setShowPicker] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -168,10 +176,14 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
           map[brand].coveredRev += rev;
         }
         const title = l.title || 'unknown';
-        if (!map[brand].items[title]) map[brand].items[title] = { title, qty: 0, revenue: 0, yQty: 0, yRevenue: 0 };
-        map[brand].items[title].qty += qty;
-        map[brand].items[title].revenue += rev;
-        if (inY) { map[brand].items[title].yQty += qty; map[brand].items[title].yRevenue += rev; }
+        if (!map[brand].items[title]) map[brand].items[title] = { title, productId: null, skus: new Set(), qty: 0, revenue: 0, yQty: 0, yRevenue: 0, profit: 0, coveredRev: 0 };
+        const it = map[brand].items[title];
+        it.qty += qty;
+        it.revenue += rev;
+        if (!it.productId && l.product_id) it.productId = String(l.product_id);
+        if (l.sku) it.skus.add(l.sku);
+        if (c !== undefined) { it.profit += rev - c * qty; it.coveredRev += rev; }
+        if (inY) { it.yQty += qty; it.yRevenue += rev; }
       }
       if (inY)  { map[brand].yQty += qty; map[brand].yRevenue += rev; }
       if (inWk) { map[brand].wkRevenue += rev; }
@@ -460,7 +472,8 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
 
                       {/* ── Expanded item details ──────────── */}
                       {/* 老闆撳開想答「昨日郁咗邊啲」→ 昨日售出行先;
-                          當月排名 Top 10 單欄直落,長尾摺埋一行 */}
+                          當月排名 Top 10 直落,長尾摺埋一行。
+                          全闊 grid:縮圖(撳大)+ 件數營收 + 毛利 + 庫存 + 預計缺貨 */}
                       {isExpanded && (() => {
                         const yesterdayItems = b.items.filter(it => it.yQty > 0)
                           .sort((x, y) => y.yRevenue - x.yRevenue);
@@ -469,19 +482,84 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                         const shown = showAll ? b.items : b.items.slice(0, TOP_N);
                         const rest = b.items.slice(TOP_N);
                         const restRev = rest.reduce((s, it) => s + it.revenue, 0);
-                        const itemRow = (item: BrandItem, left: React.ReactNode, qty: number, rev: number, highlight = false) => (
-                          <div key={item.title} className={`flex items-center justify-between text-[13px] py-1.5 border-b border-border/10 last:border-0 ${highlight ? 'bg-primary/5 -mx-2 px-2 rounded' : ''}`}>
-                            <div className="flex items-center gap-2 min-w-0">{left}</div>
-                            <span className="tabular-nums ml-3 shrink-0">
+
+                        const GRID = 'grid grid-cols-[44px_minmax(0,1fr)_150px_72px_64px_92px] items-center gap-x-3';
+
+                        const thumb = (item: BrandItem) => {
+                          const img = item.productId ? imageMap[item.productId] : undefined;
+                          return img ? (
+                            <button
+                              onClick={e => { e.stopPropagation(); setLightbox({ url: img, title: item.title }); }}
+                              className="w-10 h-10 rounded-md overflow-hidden bg-white/90 hover:ring-2 hover:ring-primary/60 transition-all cursor-zoom-in shrink-0"
+                              title="撳大睇"
+                            >
+                              <img src={img} alt={item.title} loading="lazy" className="w-full h-full object-cover" />
+                            </button>
+                          ) : (
+                            <div className="w-10 h-10 rounded-md bg-accent/40 flex items-center justify-center shrink-0">
+                              <ImageOff className="h-4 w-4 text-muted-foreground/40" />
+                            </div>
+                          );
+                        };
+
+                        const stockCells = (item: BrandItem) => {
+                          const stock = item.productId != null ? productStockMap[item.productId] : undefined;
+                          const margin = item.coveredRev > 0 ? (item.profit / item.coveredRev) * 100 : null;
+                          const velocity = [...item.skus].reduce((s, k) => s + (velocityMap[k] || 0), 0);
+                          const days = stock != null && stock > 0 && velocity > 0 ? stock / velocity : null;
+                          const riskBadge = stock == null
+                            ? <span className="text-muted-foreground/30">—</span>
+                            : stock === 0
+                            ? <span className="text-xs font-semibold text-red-400 bg-red-500/15 px-1.5 py-0.5 rounded whitespace-nowrap">🔴 缺貨</span>
+                            : days !== null && days <= 7
+                            ? <span className="text-xs font-semibold text-red-400 bg-red-500/15 px-1.5 py-0.5 rounded whitespace-nowrap">🔴 {Math.round(days)}日</span>
+                            : days !== null && days <= 21
+                            ? <span className="text-xs text-yellow-400 bg-yellow-500/15 px-1.5 py-0.5 rounded whitespace-nowrap">🟡 {Math.round(days)}日</span>
+                            : <span className="text-xs text-muted-foreground/60 whitespace-nowrap">{days !== null ? `${Math.round(days)}日` : '充足'}</span>;
+                          return (
+                            <>
+                              <span className="text-right tabular-nums text-xs">
+                                {margin !== null
+                                  ? <span className={item.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}>{margin.toFixed(0)}%</span>
+                                  : <span className="text-muted-foreground/30">—</span>}
+                              </span>
+                              <span className={`text-right tabular-nums text-xs font-semibold ${
+                                stock == null ? 'text-muted-foreground/30' : stock === 0 ? 'text-red-400' : stock <= 5 ? 'text-yellow-400' : ''
+                              }`}>
+                                {stock != null ? stock : '—'}
+                              </span>
+                              <span className="text-right">{riskBadge}</span>
+                            </>
+                          );
+                        };
+
+                        const itemRow = (item: BrandItem, name: React.ReactNode, qty: number, rev: number, highlight = false) => (
+                          <div key={item.title} className={`${GRID} text-[13px] py-1.5 border-b border-border/10 last:border-0 ${highlight ? 'bg-primary/5 -mx-2 px-2 rounded' : ''}`}>
+                            {thumb(item)}
+                            <div className="flex items-center gap-2 min-w-0">{name}</div>
+                            <span className="text-right tabular-nums">
                               <span className="text-muted-foreground">×{qty}</span>
                               <span className="font-medium ml-2">{formatCurrency(rev)}</span>
                             </span>
+                            {stockCells(item)}
                           </div>
                         );
+
+                        const headerRow = (qtyLabel: string) => (
+                          <div className={`${GRID} text-xs text-muted-foreground/60 pb-1 border-b border-border/20`}>
+                            <span />
+                            <span>產品</span>
+                            <span className="text-right">{qtyLabel}</span>
+                            <span className="text-right">毛利率</span>
+                            <span className="text-right">庫存</span>
+                            <span className="text-right">預計缺貨</span>
+                          </div>
+                        );
+
                         return (
                         <tr>
                           <td colSpan={8} className="p-0">
-                            <div className="bg-accent/10 px-4 py-3 border-b border-border/20 space-y-3 max-w-3xl">
+                            <div className="bg-accent/10 px-4 py-3 border-b border-border/20 space-y-4">
                               {b.items.length === 0 && (
                                 <p className="text-[13px] text-muted-foreground/50 py-1">本月無銷售記錄</p>
                               )}
@@ -492,6 +570,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                                   <p className="text-[13px] font-semibold text-primary mb-1.5">
                                     昨日售出 · {yesterdayItems.reduce((s, it) => s + it.yQty, 0)}件 {formatCurrency(yesterdayItems.reduce((s, it) => s + it.yRevenue, 0))}
                                   </p>
+                                  {headerRow('昨日售出')}
                                   {yesterdayItems.map(item => itemRow(
                                     item,
                                     <span className="truncate font-medium">{item.title}</span>,
@@ -500,19 +579,20 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                                 </div>
                               )}
 
-                              {/* 當月 Top 10(單欄直落) */}
+                              {/* 當月 Top 10(直落) */}
                               {b.items.length > 0 && (
                                 <div>
                                   <p className="text-[13px] font-semibold text-muted-foreground mb-1.5">
                                     當月排名{!showAll && b.items.length > TOP_N ? ` Top ${TOP_N}` : ''} · 共 {b.items.length} 款
                                   </p>
+                                  {headerRow('當月售出')}
                                   {shown.map((item, ii) => itemRow(
                                     item,
                                     <>
                                       <span className="text-muted-foreground/50 tabular-nums w-5 text-right shrink-0">{ii + 1}</span>
                                       <span className="truncate">{item.title}</span>
                                       {item.yQty > 0 && (
-                                        <span className="text-[11px] bg-primary/15 text-primary px-1 py-0.5 rounded shrink-0">昨日×{item.yQty}</span>
+                                        <span className="text-xs bg-primary/15 text-primary px-1 py-0.5 rounded shrink-0">昨日×{item.yQty}</span>
                                       )}
                                     </>,
                                     item.qty, item.revenue,
@@ -577,6 +657,23 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
           點擊品牌行展開當月明細　|　毛利按有成本價之貨品計{totalCoverage > 0 && totalCoverage < 95 ? `(而家覆蓋 ${totalCoverage.toFixed(0)}% 營收,想準啲去 Shopify 補返 cost)` : ''}　|　「管理品牌」增減品牌
         </p>
       </CardContent>
+
+      {/* ── 產品圖 Lightbox(撳任何地方閂)────────────── */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 flex flex-col items-center justify-center p-6 cursor-zoom-out"
+          onClick={() => setLightbox(null)}
+          data-testid="product-lightbox"
+        >
+          <img
+            src={lightbox.url}
+            alt={lightbox.title}
+            className="max-w-[85vw] max-h-[78vh] rounded-lg bg-white object-contain shadow-2xl"
+          />
+          <p className="mt-3 text-sm text-white/90 text-center max-w-[85vw]">{lightbox.title}</p>
+          <p className="text-xs text-white/40 mt-1">撳任何地方閂返</p>
+        </div>
+      )}
     </Card>
   );
 }

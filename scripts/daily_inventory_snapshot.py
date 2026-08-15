@@ -128,21 +128,37 @@ def sync_shopify_inventory():
         print(f"[Shopify] cost fetch failed, keeping previous costs: {e}", flush=True)
 
     # 3. Upsert shopify_products and shopify_inventory
+    # image_url 欄未必加咗(sql/add-product-image.sql)— 冇就唔帶,免得成批 upsert 400
+    has_image_col = False
+    try:
+        probe = requests.get(f"{SB_URL}/rest/v1/shopify_products",
+                             headers=SB_GET_H, params={"select": "image_url", "limit": 1}, timeout=30)
+        has_image_col = probe.status_code == 200
+    except requests.RequestException:
+        pass
+    if not has_image_col:
+        print("[Shopify] shopify_products.image_url 欄未加 — 跳過產品圖(見 sql/add-product-image.sql)", flush=True)
+
     print("[Shopify] upserting shopify_products...", flush=True)
-    prod_rows = [{
-        "id": p["id"],
-        "title": s(p.get("title"), 500),
-        "handle": s(p.get("handle"), 255),
-        "product_type": s(p.get("product_type"), 255),
-        "vendor": s(p.get("vendor"), 255),
-        "status": s(p.get("status"), 50),
-        "tags": p.get("tags"),
-        "created_at": p.get("created_at"),
-        "updated_at": p.get("updated_at"),
-        "published_at": p.get("published_at"),
-        "variants_count": len(p.get("variants") or []),
-        "synced_at": datetime.now(timezone.utc).isoformat(),
-    } for p in products]
+    prod_rows = []
+    for p in products:
+        row = {
+            "id": p["id"],
+            "title": s(p.get("title"), 500),
+            "handle": s(p.get("handle"), 255),
+            "product_type": s(p.get("product_type"), 255),
+            "vendor": s(p.get("vendor"), 255),
+            "status": s(p.get("status"), 50),
+            "tags": p.get("tags"),
+            "created_at": p.get("created_at"),
+            "updated_at": p.get("updated_at"),
+            "published_at": p.get("published_at"),
+            "variants_count": len(p.get("variants") or []),
+            "synced_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if has_image_col:
+            row["image_url"] = s((p.get("image") or {}).get("src"), 1000)
+        prod_rows.append(row)
     ok, err = upsert_batch("shopify_products", "id", prod_rows)
     print(f"[Shopify] products: {ok} ok, {err} err", flush=True)
 
