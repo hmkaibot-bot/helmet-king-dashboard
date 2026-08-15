@@ -271,7 +271,8 @@ export default function DailyWeeklyPage() {
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
   const [costMap, setCostMap] = useState<Record<string, number>>({}); // sku → 成本價(淨係存 >0 嘅)
   const [productTypeMap, setProductTypeMap] = useState<Record<string, string>>({});
-  const [productImageMap, setProductImageMap] = useState<Record<string, string>>({}); // product_id → 圖
+  const [productImageMap, setProductImageMap] = useState<Record<string, string>>({}); // product_id → 圖(DB 有先有)
+  const [productHandleMap, setProductHandleMap] = useState<Record<string, string>>({}); // product_id → handle(storefront 攞圖用)
   const [productStockMap, setProductStockMap] = useState<Record<string, number>>({}); // product_id → 全部 variant 庫存總和
   const [foorirData, setFoorirData] = useState<FoorirKPI | null>(null);
   const [foorirWeekly, setFoorirWeekly] = useState<FoorirKPI | null>(null);
@@ -404,12 +405,20 @@ export default function DailyWeeklyPage() {
         });
         setProductTypeMap(ptMap);
 
-        // 產品圖(獨立 query:image_url 欄未加會 error → 靜靜跳過,唔累其他嘢)
-        queryAll('shopify_products', 'id,image_url').then((rows: any[]) => {
+        // 產品圖(獨立 query:image_url 欄未加會 error → fallback 淨攞 handle,
+        // 縮圖改由 Shopify storefront 即場攞 — 兩條路品牌表都食到)
+        queryAll('shopify_products', 'id,handle,image_url').then(async (rows: any[]) => {
+          if (rows.length === 0) rows = await queryAll('shopify_products', 'id,handle');
           if (cancelled) return;
           const im: Record<string, string> = {};
-          rows.forEach((r: any) => { if (r.id && r.image_url) im[String(r.id)] = r.image_url; });
+          const hm: Record<string, string> = {};
+          rows.forEach((r: any) => {
+            if (!r.id) return;
+            if (r.image_url) im[String(r.id)] = r.image_url;
+            if (r.handle) hm[String(r.id)] = r.handle;
+          });
           setProductImageMap(im);
+          setProductHandleMap(hm);
         });
 
         // Phase 2: batch inventory for sold SKUs (並行拉所有 batches)
@@ -932,6 +941,7 @@ export default function DailyWeeklyPage() {
             costMap={costMap}
             velocityMap={velocityMap}
             imageMap={productImageMap}
+            handleMap={productHandleMap}
             productStockMap={productStockMap}
           />
 
