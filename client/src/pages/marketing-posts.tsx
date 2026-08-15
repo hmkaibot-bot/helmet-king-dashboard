@@ -770,6 +770,7 @@ export default function MarketingPostsPage() {
               />
               <div className="text-[10px] text-muted-foreground">
                 圖片 alt:{v.altText || '—'}
+                {v.platform !== 'ig_story' && <span className="ml-2 text-muted-foreground/60">· Copy/Send 會自動加店舖資料尾巴</span>}
               </div>
             </div>
           ))}
