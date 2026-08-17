@@ -371,6 +371,7 @@ export default function MarketingPage() {
   }, [viewInquiries]);
   // 品牌/單品 Top 10 撳行 → 對話彈窗
   const [inquiryDetail, setInquiryDetail] = useState<{ title: string; count: number; msgs: InqMsg[]; subtitle?: string } | null>(null);
+  const [showHowTo, setShowHowTo] = useState(false); // 頁頂長說明摺埋,想睇定義先撳開
   const costPerInquiry = inquiryStats.total > 0 ? totalSpend / inquiryStats.total : 0;
 
   const salesVsSpend = useMemo(() => {
@@ -502,6 +503,95 @@ export default function MarketingPage() {
     return { overallRoas, targetRoas, roasProgress, bestCampaign, worstSpender, top10, top15, shouldRedo, avoid };
   }, [viewCampaigns]);
 
+  /* ── 🚦 廣告健康警號 ────────────────────────────────────────
+     老闆用呢頁嘅目的:監控現有廣告健康。三類警號 + 停投提示,
+     全部用手上數據算,唔使多拉 API:
+     ① 燒費冇查詢/冇單 ② 每查詢成本比前半期飛升 ③ CTR 跌 / CPM 升
+     趨勢一律「後半期 vs 前半期」— adSeries 已經逐日齊。 */
+  const adHealth = useMemo(() => {
+    const alerts: { level: 'red' | 'amber'; title: string; detail: string }[] = [];
+
+    // ① 燒咗錢但零查詢零轉化嘅 campaign(最近 7 日仲投緊嘅先計 — 停咗嘅唔嘈)
+    const burners = viewCampaigns
+      .filter(c => isLive(c) && c.spend >= 200 && c.purchases === 0)
+      .sort((a, b) => b.spend - a.spend);
+    const burnTotal = burners.reduce((s, c) => s + c.spend, 0);
+    if (burners.length > 0) {
+      alerts.push({
+        level: burnTotal >= 500 ? 'red' : 'amber',
+        title: `${burners.length} 個仲投緊嘅活動燒咗 ${formatCurrency(burnTotal)} 但零轉化`,
+        detail: burners.slice(0, 3).map(c => `${c.campaign_name || '未命名'}(${formatCurrency(c.spend)})`).join('、')
+          + (burners.length > 3 ? ` 等 ${burners.length} 個` : '') + ' — 考慮停咗佢或者換受眾',
+      });
+    }
+
+    // ②③ 前半期 vs 後半期:每查詢成本 / CTR / CPM
+    const mid = Math.floor(adSeries.length / 2);
+    if (adSeries.length >= 4) {
+      const sum = (arr: typeof adSeries) => arr.reduce(
+        (a, d) => ({ spend: a.spend + d.spend, imp: a.imp + d.impressions, clicks: a.clicks + d.clicks }),
+        { spend: 0, imp: 0, clicks: 0 }
+      );
+      const firstHalf = sum(adSeries.slice(0, mid));
+      const secondHalf = sum(adSeries.slice(mid));
+      const firstDays = new Set(adSeries.slice(0, mid).map(d => d.date));
+      const secondDays = new Set(adSeries.slice(mid).map(d => d.date));
+      const inqIn = (days: Set<string>) =>
+        Object.entries(inquiryStats.dayCounts || {}).reduce((s, [d, n]) => s + (days.has(d) ? (n as number) : 0), 0);
+
+      // ② 每查詢成本
+      const inq1 = inqIn(firstDays);
+      const inq2 = inqIn(secondDays);
+      const cpi1 = inq1 > 0 ? firstHalf.spend / inq1 : 0;
+      const cpi2 = inq2 > 0 ? secondHalf.spend / inq2 : 0;
+      if (cpi1 > 0 && cpi2 > 0) {
+        const jump = ((cpi2 - cpi1) / cpi1) * 100;
+        if (jump >= 25) {
+          alerts.push({
+            level: jump >= 50 ? 'red' : 'amber',
+            title: `每查詢成本升咗 ${jump.toFixed(0)}%`,
+            detail: `前半期 ${formatCurrency(cpi1)}/查詢 → 後半期 ${formatCurrency(cpi2)}/查詢 — 同樣嘅錢換少咗客`,
+          });
+        }
+      }
+
+      // ③ CTR 跌 / CPM 升(創意疲乏)
+      const ctr1 = firstHalf.imp > 0 ? (firstHalf.clicks / firstHalf.imp) * 100 : 0;
+      const ctr2 = secondHalf.imp > 0 ? (secondHalf.clicks / secondHalf.imp) * 100 : 0;
+      if (ctr1 > 0 && ctr2 > 0 && ((ctr2 - ctr1) / ctr1) * 100 <= -20) {
+        alerts.push({
+          level: 'amber',
+          title: `CTR 由 ${ctr1.toFixed(1)}% 跌到 ${ctr2.toFixed(1)}%`,
+          detail: '跌超過兩成通常係創意睇厭咗 — 換圖換文案',
+        });
+      }
+      const cpm1 = firstHalf.imp > 0 ? (firstHalf.spend / firstHalf.imp) * 1000 : 0;
+      const cpm2 = secondHalf.imp > 0 ? (secondHalf.spend / secondHalf.imp) * 1000 : 0;
+      if (cpm1 > 0 && cpm2 > 0 && ((cpm2 - cpm1) / cpm1) * 100 >= 30) {
+        alerts.push({
+          level: 'amber',
+          title: `CPM 升咗 ${(((cpm2 - cpm1) / cpm1) * 100).toFixed(0)}%`,
+          detail: `每千次曝光 ${formatCurrency(cpm1)} → ${formatCurrency(cpm2)} — 受眾太窄或者競爭大咗`,
+        });
+      }
+    }
+
+    // ④ 廣告係咪停晒(負責人撳停 / 信用卡出事)
+    const lastSpendDay = [...adSeries].reverse().find(d => d.spend > 0)?.date || null;
+    const daysSince = lastSpendDay
+      ? Math.floor((Date.now() - new Date(lastSpendDay + 'T00:00:00Z').getTime()) / 86400000)
+      : null;
+    if (totalSpend > 0 && daysSince != null && daysSince >= 3) {
+      alerts.push({
+        level: 'amber',
+        title: `已經 ${daysSince} 日冇廣告支出`,
+        detail: `最後有花費係 ${lastSpendDay} — 係咪有人撳咗停,定係付款方式出咗問題?`,
+      });
+    }
+
+    return { alerts, burners };
+  }, [viewCampaigns, isLive, adSeries, inquiryStats, totalSpend]);
+
   /* ── Status color helper ── */
   function statusColor(status: string) {
     if (status === 'ACTIVE') return 'text-green-400';
@@ -535,43 +625,55 @@ export default function MarketingPage() {
           全部業務
         </button>
         {retailOnly && !campaignsLoading && hiddenCampaignCount > 0 && (
-          <span className="text-[11px] text-muted-foreground">
-            已隱藏 {hiddenCampaignCount} 個非零售活動（26King 賣車／租車／車房／自駕團）· 查詢按同事分隊＋channel 線過濾，認唔到業務嘅唔計
-          </span>
+          <span className="text-xs text-muted-foreground">已隱藏 {hiddenCampaignCount} 個非零售活動</span>
         )}
-        {retailOnly && (
-          <span className="text-[10px] text-muted-foreground ml-auto">
-            * 零售廣告數字按 campaign 分類逐日加總；分類唔啱可以喺活動表撳「業務」chip 反轉
-          </span>
-        )}
+        <button
+          onClick={() => setShowHowTo(v => !v)}
+          data-testid="toggle-howto"
+          className="ml-auto text-xs px-2 py-1 rounded border border-border/60 text-muted-foreground hover:text-foreground transition-colors"
+        >
+          {showHowTo ? '收埋說明' : '點解讀 ▾'}
+        </button>
       </div>
 
-      {/* ── Existing Meta KPIs ── */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <KpiCard title={retailOnly ? 'Meta 支出（零售）' : 'Meta 支出'} subtitle="Spend" value={formatCurrency(totalSpend)} icon={DollarSign} loading={loading} testId="kpi-spend" />
-        <KpiCard title="曝光量" subtitle="Impressions" value={formatNumber(totalImpressions)} icon={Eye} loading={loading} testId="kpi-imp" />
-        <KpiCard title="點擊" subtitle="Clicks" value={formatNumber(totalClicks)} icon={MousePointer} loading={loading} testId="kpi-clicks" />
-        <KpiCard title="CPC" subtitle="Avg" value={`HK$${avgCPC.toFixed(2)}`} icon={BarChart3} loading={loading} testId="kpi-cpc" />
-        <KpiCard title="CTR" subtitle="Rate" value={formatPercent(avgCTR)} icon={Percent} loading={loading} testId="kpi-ctr" />
-        <KpiCard title="線上 ROAS" subtitle="網店收入/廣告費" value={roas > 100 ? `>​99x` : `${roas.toFixed(1)}x`} icon={TrendingUp} loading={loading} testId="kpi-roas" />
-      </div>
+      {showHowTo && (
+        <div className="rounded-md border border-border/50 bg-accent/10 p-3 text-xs text-muted-foreground space-y-1.5" data-testid="howto-panel">
+          <p><b className="text-foreground">數字點嚟:</b>零售廣告數字按 campaign 分類逐日加總;分類唔啱可以喺下面活動表撳「業務」chip 反轉。查詢按同事分隊 + channel 過濾,認唔到業務嘅唔計。</p>
+          <p><b className="text-foreground">睇邊個指標:</b>你 97% 生意喺門市 POS,廣告睇完入舖買嘅人網上追蹤唔到 — 所以主指標係<b className="text-foreground">「查詢量」同「每查詢成本」</b>(客人問完先買,呢個先追蹤到廣告嘅實際功效)。</p>
+          <p><b className="text-foreground">ROAS 要小心:</b>係 Meta pixel 報嘅購買數 × 平均單價 ÷ 廣告費估出嚟,<b className="text-foreground">只反映網店</b>,唔包門市成交,亦唔係真收銀數 — 當參考,唔好當實數。</p>
+          <p><b className="text-foreground">廣告佔比:</b>廣告費 ÷ 總銷售。而家極低(1% 以下),即係生意主要唔係靠廣告推動 — 加大廣告前先睇「每查詢成本」頂唔頂得順。</p>
+        </div>
+      )}
 
-      {/* ═══ 💰 廣告 ↔ 銷售掛勾 Ad ↔ Sales ═══ */}
-      <h2 className="text-sm font-semibold pt-2" data-testid="section-ad-sales">
-        💰 廣告 ↔ 銷售掛勾 <span className="text-xs font-normal text-muted-foreground">Ad ↔ Sales</span>
-      </h2>
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <KpiCard title="總銷售" subtitle="Total Sales" value={formatCurrency(totalSales)} icon={DollarSign} loading={loading} testId="kpi-total-sales" />
-        <KpiCard title="門市 POS" subtitle="Shopify POS" value={formatCurrency(totalPosRev)} icon={Store} loading={loading} testId="kpi-retail-sales" />
-        <KpiCard title="線上" subtitle="網店 + 其他銷售渠道" value={formatCurrency(totalOnlineRev)} icon={Globe} loading={loading} testId="kpi-online-sales" />
-        <KpiCard title="廣告費" subtitle="Ad Spend" value={formatCurrency(totalSpend)} icon={DollarSign} loading={loading} testId="kpi-ad-spend" />
-        <KpiCard title="廣告成本佔比" subtitle="Spend/Sales" value={formatPercent(adCostPct)} icon={Percent} loading={loading} testId="kpi-ad-cost-pct" />
-        <KpiCard title="Blended CAC" subtitle="廣告費/新會員" value={blendedCAC > 0 ? formatCurrency(blendedCAC) : '—'} icon={Target} loading={loading} testId="kpi-blended-cac" />
-      </div>
+      {/* ── 🚦 廣告健康警號 ── */}
+      {!loading && (
+        <div data-testid="ad-health">
+          {adHealth.alerts.length === 0 ? (
+            <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-300 flex items-center gap-2">
+              ✅ 廣告健康:冇燒費零轉化嘅活動,每查詢成本同 CTR 都穩定
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {adHealth.alerts.map((a, i) => (
+                <div
+                  key={i}
+                  className={`rounded-md border p-3 ${a.level === 'red' ? 'border-red-500/40 bg-red-500/10' : 'border-amber-500/40 bg-amber-500/10'}`}
+                >
+                  <div className={`text-sm font-semibold ${a.level === 'red' ? 'text-red-300' : 'text-amber-300'}`}>
+                    {a.level === 'red' ? '🔴' : '🟡'} {a.title}
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{a.detail}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
-      {/* ═══ 💬 客服查詢 SleekFlow ═══ */}
+      {/* ═══ 💬 客服查詢 SleekFlow — 主指標 ═══ */}
       <h2 className="text-sm font-semibold pt-2" data-testid="section-inquiries">
-        💬 客服查詢 <span className="text-xs font-normal text-muted-foreground">SleekFlow Inquiries</span>
+        💬 客服查詢 <span className="text-xs font-normal text-primary">⭐ 廣告主指標</span>
+        <span className="text-xs font-normal text-muted-foreground ml-2">SleekFlow · 客人問完先買,呢個先追蹤到廣告功效</span>
       </h2>
       {!loading && inquiries.length === 0 && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs text-amber-300">
@@ -707,6 +809,32 @@ export default function MarketingPage() {
           </AreaChart>
         </ResponsiveContainer>
       </ChartCard>
+
+      {/* ── ② 廣告表現(次要:睇健康,唔係睇成效)── */}
+      <h2 className="text-sm font-semibold pt-2" data-testid="section-ad-perf">
+        📣 廣告表現 <span className="text-xs font-normal text-muted-foreground">Meta Ads · 睇投放健康</span>
+      </h2>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <KpiCard title={retailOnly ? 'Meta 支出（零售）' : 'Meta 支出'} subtitle="Spend" value={formatCurrency(totalSpend)} icon={DollarSign} loading={loading} testId="kpi-spend" />
+        <KpiCard title="曝光量" subtitle="Impressions" value={formatNumber(totalImpressions)} icon={Eye} loading={loading} testId="kpi-imp" />
+        <KpiCard title="點擊" subtitle="Clicks" value={formatNumber(totalClicks)} icon={MousePointer} loading={loading} testId="kpi-clicks" />
+        <KpiCard title="CPC" subtitle="Avg" value={`HK$${avgCPC.toFixed(2)}`} icon={BarChart3} loading={loading} testId="kpi-cpc" />
+        <KpiCard title="CTR" subtitle="Rate" value={formatPercent(avgCTR)} icon={Percent} loading={loading} testId="kpi-ctr" />
+        <KpiCard title="線上 ROAS ⚠" subtitle="只算網店 · 估算" value={roas > 100 ? `>​99x` : `${roas.toFixed(1)}x`} icon={TrendingUp} loading={loading} testId="kpi-roas" />
+      </div>
+
+      {/* ═══ 💰 廣告 ↔ 銷售掛勾 Ad ↔ Sales ═══ */}
+      <h2 className="text-sm font-semibold pt-2" data-testid="section-ad-sales">
+        💰 廣告 ↔ 銷售掛勾 <span className="text-xs font-normal text-muted-foreground">Ad ↔ Sales</span>
+      </h2>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <KpiCard title="總銷售" subtitle="Total Sales" value={formatCurrency(totalSales)} icon={DollarSign} loading={loading} testId="kpi-total-sales" />
+        <KpiCard title="門市 POS" subtitle="Shopify POS" value={formatCurrency(totalPosRev)} icon={Store} loading={loading} testId="kpi-retail-sales" />
+        <KpiCard title="線上" subtitle="網店 + 其他銷售渠道" value={formatCurrency(totalOnlineRev)} icon={Globe} loading={loading} testId="kpi-online-sales" />
+        <KpiCard title="廣告費" subtitle="Ad Spend" value={formatCurrency(totalSpend)} icon={DollarSign} loading={loading} testId="kpi-ad-spend" />
+        <KpiCard title="廣告成本佔比" subtitle="Spend/Sales" value={formatPercent(adCostPct)} icon={Percent} loading={loading} testId="kpi-ad-cost-pct" />
+        <KpiCard title="Blended CAC" subtitle="廣告費/新會員" value={blendedCAC > 0 ? formatCurrency(blendedCAC) : '—'} icon={Target} loading={loading} testId="kpi-blended-cac" />
+      </div>
 
       {/* ═══════════════════════════════════════════════════════════════
            Section 1: 📊 廣告活動表現 Campaign Performance
