@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState, useMemo } from 'react';
 import { useDateRange } from '@/lib/date-context';
 import { queryWithDateRange, queryAll } from '@/lib/query-helpers';
 import { supabase } from '@/lib/supabase';
-import { campaignBusiness, isRetailInquiry, type Business } from '@/lib/business-filter';
+import { campaignBusiness, isRetailInquiry, classifyConfidence, hasBusinessOverride, type Business } from '@/lib/business-filter';
 import { CampaignDetailModal } from '@/components/campaign-detail-modal';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
@@ -508,6 +508,31 @@ export default function MarketingPage() {
     return { overallRoas, targetRoas, roasProgress, bestCampaign, worstSpender, top10, top15, shouldRedo, avoid };
   }, [viewCampaigns]);
 
+  /* ── ❓ 未分類但有花費嘅 campaign ──────────────────────────
+     396 條 campaign 一條都未人手分過,關鍵字估唔中就會靜靜當咗零售
+     (例:「8月係時候幫愛車回復最佳狀態」其實係車房保養)。
+     呢度只列「認唔出業務 + 真係有花錢」嗰批,兩粒掣一撳寫入 DB。 */
+  const unclassified = useMemo(
+    () => campaigns
+      .filter(c => !hasBusinessOverride(c) && classifyConfidence(c.campaign_name) === 'unknown' && c.spend > 0)
+      .sort((a, b) => b.spend - a.spend),
+    [campaigns]
+  );
+
+  async function setCampaignBusiness(c: any, biz: Business) {
+    setSavingBizId(String(c.campaign_id));
+    try {
+      const { error } = await supabase.from('meta_campaigns').update({ business: biz }).eq('campaign_id', c.campaign_id);
+      if (error) throw error;
+      setAllCampaignRows(rows => rows.map(r => (r.campaign_id === c.campaign_id ? { ...r, business: biz } : r)));
+      setCampaigns(rows => rows.map(r => (r.campaign_id === c.campaign_id ? { ...r, business: biz } : r)));
+    } catch (e) {
+      console.error('set business error:', e);
+    } finally {
+      setSavingBizId(null);
+    }
+  }
+
   /* ── 🚦 廣告健康警號 ────────────────────────────────────────
      老闆用呢頁嘅目的:監控現有廣告健康。三類警號 + 停投提示,
      全部用手上數據算,唔使多拉 API:
@@ -814,6 +839,46 @@ export default function MarketingPage() {
           </AreaChart>
         </ResponsiveContainer>
       </ChartCard>
+
+      {/* ── ❓ 未分類 campaign — 一撳分好,唔好靜靜當咗零售 ── */}
+      {!campaignsLoading && retailOnly && unclassified.length > 0 && (
+        <Card className="border-amber-500/40 bg-amber-500/5" data-testid="unclassified-panel">
+          <CardContent className="p-4">
+            <div className="flex items-baseline gap-2 flex-wrap mb-2">
+              <span className="text-sm font-semibold text-amber-300">
+                ❓ {unclassified.length} 個活動未分業務,而家暫時當咗零售
+              </span>
+              <span className="text-xs text-muted-foreground">
+                合共 {formatCurrency(unclassified.reduce((s, c) => s + c.spend, 0))} · 撳一下分好,以後就記得
+              </span>
+            </div>
+            <div className="space-y-1.5 max-h-64 overflow-y-auto">
+              {unclassified.map(c => (
+                <div key={c.campaign_id} className="flex items-center gap-2 text-xs bg-background/40 rounded px-2 py-1.5">
+                  <span className="tabular-nums text-muted-foreground w-20 shrink-0 text-right">{formatCurrency(c.spend)}</span>
+                  <span className="truncate flex-1" title={c.campaign_name}>{c.campaign_name || '(冇名)'}</span>
+                  <button
+                    onClick={() => setCampaignBusiness(c, 'retail')}
+                    disabled={savingBizId === String(c.campaign_id)}
+                    className="px-2 py-0.5 rounded border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/15 disabled:opacity-40 shrink-0"
+                    data-testid={`mark-retail-${c.campaign_id}`}
+                  >
+                    零售
+                  </button>
+                  <button
+                    onClick={() => setCampaignBusiness(c, 'nonretail')}
+                    disabled={savingBizId === String(c.campaign_id)}
+                    className="px-2 py-0.5 rounded border border-border text-muted-foreground hover:bg-accent/60 disabled:opacity-40 shrink-0"
+                    data-testid={`mark-nonretail-${c.campaign_id}`}
+                  >
+                    車房/其他
+                  </button>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── ② 廣告表現(次要:睇健康,唔係睇成效)── */}
       <h2 className="text-sm font-semibold pt-2" data-testid="section-ad-perf">
