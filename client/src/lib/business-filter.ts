@@ -26,12 +26,45 @@ const NONRETAIL_PATTERNS: RegExp[] = [
   /MICHELIN|米芝蓮/i,
   // 自駕團/旅行團(老闆確認唔係零售)
   /自駕團|自駕遊|西藏團|蒙古團|旅行團/,
+  // 車房服務(2026-08 老闆:呢類經常俾人當咗零售)——
+  // 「愛車保養/回復狀態」呢種文青寫法冇「車房」二字,一樣係車房 post
+  /愛車|座駕|回復.{0,4}狀態|換油|機油|波箱油|迫力油|逼力油|火咀|散熱|水箱|皮帶|避震|排氣|尾鼓|尾牙|製動|軚|呔(?!帽)/,
+  /維修部|服務部|試業優惠|免人工|工時|師傅/,
+  // 安裝/改裝服務(唔係賣件貨,係賣個安裝)
+  /改裝|加裝|安裝|裝嵌|套餐(?=.{0,6}(安裝|升級|服務))|升級套餐/,
+  /OHLINS|GILLES\s*TOOLING|VENTZ/i,
   // 車款型號(廣告名有呢啲多數係賣車 post;零售裝備廣告名通常係頭盔/品牌)。
   // R1 剔走 — Scorpion EXO-R1 係頭盔,會誤中;R3/R7 保留(Yamaha 熱門現貨車款)。
   /\bGSX\b|GSX-?\d|\bNMAX\b|\bXMAX\b|\bPCX\b|\bADV\s?1\d0\b|\bCBR?\s?\d{3}\b|\bMT-?\d{1,2}\b|\bR[37]\b|\bZ\s?900\b|\bZX-?\d+\b|NINJA|\bREBEL\b|\bCT125\b|\bMSX\b|\bDAX\b|\bMONKEY\b|\bXSR\b|\bTMAX\b|\bNVX\b|\bAEROX\b|\bFORCE\s?155\b|TENERE|VESPA/i,
 ];
 
 export type Business = 'retail' | 'nonretail';
+
+/** 零售正面訊號 — 有品牌名/裝備類字眼,先算「認得出係零售」 */
+const RETAIL_PATTERNS: RegExp[] = [
+  /頭盔|全罩|半罩|頭盔王|電單車服|騎士服|手套|護具|雨衣|風鏡|鏡片|眼鏡|背囊|袋|靴|鞋|對講/,
+  /SHOEI|ARAI|SCORPION|BILMOLA|AGV|NOLAN|SHARK|LS2|CABERG|KUSHITANI|ROUGH\s*(AND|&)\s*ROAD|FURYGAN|ALPINESTARS|GAERNE|ELEVEIT|FIVE|MODER|FETURE|HILX|CARDO|SENA|INSTA360|DJI|FUJIKURABU|NANKAI|KOMINE|RS\s*TAICHI/i,
+  /HELMET|GLOVE|JACKET|BOOT|VISOR|GEAR/i,
+];
+
+/**
+ * 分類信心:
+ *  'nonretail' — 認到係非零售(車房/賣車/租車/團)
+ *  'retail'    — 認到係零售(有品牌或裝備字眼)
+ *  'unknown'   — 兩樣都認唔到 → 頁面會叫老闆自己分,唔好靜靜當零售
+ */
+export function classifyConfidence(name: string | null | undefined): 'retail' | 'nonretail' | 'unknown' {
+  const n = String(name || '');
+  if (NONRETAIL_PATTERNS.some((rx) => rx.test(n))) return 'nonretail';
+  if (RETAIL_PATTERNS.some((rx) => rx.test(n))) return 'retail';
+  return 'unknown';
+}
+
+/** campaign 有冇人手分過類(有 override 就唔使再問老闆) */
+export function hasBusinessOverride(c: { business?: string | null }): boolean {
+  return c.business === 'retail' || c.business === 'nonretail';
+}
+
 
 /** 按 campaign 名稱自動分類(人手 override 由 caller 疊上去) */
 export function classifyCampaignName(name: string | null | undefined): Business {
