@@ -372,6 +372,11 @@ export default function MarketingPage() {
   // 品牌/單品 Top 10 撳行 → 對話彈窗
   const [inquiryDetail, setInquiryDetail] = useState<{ title: string; count: number; msgs: InqMsg[]; subtitle?: string } | null>(null);
   const [showHowTo, setShowHowTo] = useState(false); // 頁頂長說明摺埋,想睇定義先撳開
+  const [showDetails, setShowDetails] = useState(false); // 底部明細(每日貢獻表 + 趨勢圖)預設摺埋
+  // 每查詢成本目標 — 老闆自己改,存 localStorage
+  const [cpiTarget, setCpiTarget] = useState<number>(() => {
+    try { return parseInt(localStorage.getItem('hk_cpi_target') || '') || 25; } catch { return 25; }
+  });
   const costPerInquiry = inquiryStats.total > 0 ? totalSpend / inquiryStats.total : 0;
 
   const salesVsSpend = useMemo(() => {
@@ -1091,27 +1096,53 @@ export default function MarketingPage() {
           {/* Overall ROAS */}
           <Card className="border-border/40">
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground mb-1">整體 ROAS <span className="opacity-70">Overall</span></p>
+              <p className="text-xs text-muted-foreground mb-1">整體 ROAS ⚠ <span className="opacity-70">pixel 估算 · 只算網店</span></p>
               <p className="text-xl font-semibold tabular-nums" data-testid="roas-overall">
                 {roasSection.overallRoas.toFixed(1)}x
               </p>
             </CardContent>
           </Card>
-          {/* Target ROAS with progress */}
+          {/* 每查詢成本 vs 目標(真數對真目標 — 取代舊「目標 ROAS」估算對估算)*/}
           <Card className="border-border/40">
             <CardContent className="p-4">
-              <p className="text-xs text-muted-foreground mb-1">目標 ROAS <span className="opacity-70">Target: {roasSection.targetRoas}x</span></p>
-              <div className="flex items-center gap-3">
-                <div className="flex-1 h-2.5 rounded-full bg-muted overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all ${roasSection.overallRoas >= roasSection.targetRoas ? 'bg-green-500' : 'bg-red-500'}`}
-                    style={{ width: `${roasSection.roasProgress}%` }}
-                  />
+              <p className="text-xs text-muted-foreground mb-1 flex items-center gap-1.5">
+                每查詢成本 <span className="opacity-70">目標</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={cpiTarget}
+                  onChange={e => {
+                    const v = Math.max(1, parseInt(e.target.value) || 1);
+                    setCpiTarget(v);
+                    try { localStorage.setItem('hk_cpi_target', String(v)); } catch { /* ignore */ }
+                  }}
+                  data-testid="cpi-target-input"
+                  className="w-14 px-1 py-0.5 rounded border border-border bg-background text-foreground tabular-nums"
+                />
+                <span className="opacity-70">蚊或以下</span>
+              </p>
+              {costPerInquiry > 0 ? (
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-2.5 rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${costPerInquiry <= cpiTarget ? 'bg-green-500' : 'bg-red-500'}`}
+                      style={{ width: `${Math.min((cpiTarget / costPerInquiry) * 100, 100)}%` }}
+                    />
+                  </div>
+                  <span className={`text-sm font-semibold tabular-nums ${costPerInquiry <= cpiTarget ? 'text-green-400' : 'text-red-400'}`}>
+                    {formatCurrency(costPerInquiry)}
+                  </span>
                 </div>
-                <span className={`text-sm font-semibold tabular-nums ${roasSection.overallRoas >= roasSection.targetRoas ? 'text-green-400' : 'text-red-400'}`}>
-                  {roasSection.roasProgress.toFixed(0)}%
-                </span>
-              </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">未有查詢數據</p>
+              )}
+              <p className="text-[11px] text-muted-foreground mt-1">
+                {costPerInquiry > 0
+                  ? costPerInquiry <= cpiTarget
+                    ? '✅ 喺目標之內'
+                    : `⚠ 超目標 ${formatCurrency(costPerInquiry - cpiTarget)}/查詢`
+                  : ''}
+              </p>
             </CardContent>
           </Card>
           {/* Best campaign */}
@@ -1188,6 +1219,9 @@ export default function MarketingPage() {
         <div>
           <h3 className="text-xs font-semibold text-green-400 mb-2">
             ✅ 值得重做 Should Redo ({roasSection.shouldRedo.length})
+            <span className="font-normal text-muted-foreground ml-2">
+              入榜條件:pixel 記錄 5 單或以上 · 建議照原受眾/創意再投一次
+            </span>
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
             {roasSection.shouldRedo.map((c, i) => (
@@ -1198,7 +1232,10 @@ export default function MarketingPage() {
                       {c.campaign_name?.slice(0, 40) || '—'}
                     </p>
                     <p className="text-[11px] text-muted-foreground tabular-nums mt-0.5">
-                      {c.purchases} purchases · CPA HK${c.cpa?.toFixed(0) || '—'}
+                      {c.purchases} 單 · 每單成本 HK${c.cpa?.toFixed(0) || '—'} · 花咗 HK${c.spend.toLocaleString('en-HK', { maximumFractionDigits: 0 })}
+                    </p>
+                    <p className="text-[11px] text-green-300/80 mt-1">
+                      → {c.cpa != null && c.cpa < 200 ? '成本低,可以加預算再投' : '照原設定再投一次'}
                     </p>
                   </div>
                   <span className="text-green-400 text-xs font-medium whitespace-nowrap">✅ 重做</span>
@@ -1214,6 +1251,9 @@ export default function MarketingPage() {
         <div>
           <h3 className="text-xs font-semibold text-red-400 mb-2">
             ❌ 不建議再做 Avoid ({roasSection.avoid.length})
+            <span className="font-normal text-muted-foreground ml-2">
+              入榜條件:花咗 $500 以上 · 零轉化 · CTR 不足 3% — 即係俾人睇到都唔想撳
+            </span>
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
             {roasSection.avoid.map((c, i) => (
@@ -1224,7 +1264,10 @@ export default function MarketingPage() {
                       {c.campaign_name?.slice(0, 40) || '—'}
                     </p>
                     <p className="text-[11px] text-muted-foreground tabular-nums mt-0.5">
-                      Spent HK${c.spend.toLocaleString('en-HK', { maximumFractionDigits: 0 })}
+                      花咗 HK${c.spend.toLocaleString('en-HK', { maximumFractionDigits: 0 })} · 零轉化 · CTR {c.ctr.toFixed(1)}%
+                    </p>
+                    <p className="text-[11px] text-red-300/80 mt-1">
+                      → {c.ctr < 1 ? '創意冇人撳,換圖換文案先好再投' : '受眾唔啱,收窄目標再試'}
                     </p>
                   </div>
                   <span className="text-red-400 text-xs font-medium whitespace-nowrap">❌ 避免</span>
@@ -1235,7 +1278,18 @@ export default function MarketingPage() {
         </div>
       )}
 
-      {/* ── 明細區(放最底):每日貢獻表 + CTR / CPM / CPC 趨勢 ── */}
+      {/* ── 明細區(放最底,預設摺埋):每日貢獻表 + CTR / CPM / CPC 趨勢 ── */}
+      <button
+        onClick={() => setShowDetails(v => !v)}
+        data-testid="toggle-details"
+        className="w-full rounded-md border border-border/50 bg-card hover:bg-accent/30 px-4 py-2.5 text-left text-sm transition-colors flex items-center gap-2"
+      >
+        <span>{showDetails ? '▾' : '▸'}</span>
+        <span className="font-medium">深入明細</span>
+        <span className="text-xs text-muted-foreground">每日貢獻表 · CTR / CPM / CPC 趨勢圖 — 想拆細睇先撳開</span>
+      </button>
+
+      {showDetails && (<>
       {/* ── P3: 每日貢獻表 Daily Contribution ── */}
       <Card className="border-border/40 overflow-hidden">
         <CardContent className="p-0">
@@ -1314,6 +1368,7 @@ export default function MarketingPage() {
           </ResponsiveContainer>
         </ChartCard>
       </div>
+      </>)}
 
       {/* Campaign drill-down 彈窗 */}
       {detailCampaign && (
