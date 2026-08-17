@@ -336,6 +336,79 @@ export default function MarketingPromoWatchPage() {
     return out;
   }, [promo, items, inventory, orderLines, orders, rangeStart, rangeEnd, rangeValid]);
 
+  // ── 🏆 活動排行榜:所有活動一次過計,跨活動一眼比較 ──────────────────────
+  // 同上面 rows 一樣嘅算法(訂單建立時間喺推廣期內、排除取消單),不過每個
+  // 活動用返自己嘅推廣期(唔跟上面個自訂日期範圍 — 排行榜要 apple-to-apple)。
+  const leaderboard = useMemo(() => {
+    if (promos.length === 0) return [];
+    // sku → product_id(全 inventory 一次過砌,唔使逐個活動再行)
+    const skuToProduct = new Map<string, string>();
+    const invByProduct = new Map<string, InventoryRow[]>();
+    for (const r of inventory) {
+      if (r.product_id == null) continue;
+      const key = String(r.product_id);
+      skuToProduct.set(r.sku, key);
+      const arr = invByProduct.get(key) ?? [];
+      arr.push(r);
+      invByProduct.set(key, arr);
+    }
+    const orderById = new Map<string, OrderRow>();
+    for (const o of orders) {
+      if (o.cancelled_at) continue;
+      orderById.set(String(o.id), o);
+    }
+    // 每張單行一次,按日期併入對應活動(活動少,inner loop 平)
+    const itemsByPromo = new Map<string, Set<string>>();
+    for (const it of items) {
+      const set = itemsByPromo.get(it.promotion_id) ?? new Set<string>();
+      set.add(String(it.product_id));
+      itemsByPromo.set(it.promotion_id, set);
+    }
+
+    return promos.map(p => {
+      const pids = itemsByPromo.get(p.id) ?? new Set<string>();
+      const start = new Date(p.start_date + 'T00:00:00');
+      const end = new Date(p.end_date + 'T23:59:59');
+      const soldByPid = new Map<string, number>();
+      let qty = 0;
+      let rev = 0;
+      for (const line of orderLines) {
+        if (!line.sku) continue;
+        const pid = skuToProduct.get(line.sku);
+        if (!pid || !pids.has(pid)) continue;
+        const order = orderById.get(String(line.order_id));
+        if (!order) continue;
+        const created = new Date(order.created_at);
+        if (created < start || created > end) continue;
+        const q = line.quantity ?? 0;
+        qty += q;
+        rev += q * (line.price ?? 0);
+        soldByPid.set(pid, (soldByPid.get(pid) ?? 0) + q);
+      }
+      const zeroSold = [...pids].filter(pid => !soldByPid.has(pid)).length;
+      const stock = [...pids].reduce(
+        (s, pid) => s + (invByProduct.get(pid) ?? []).reduce((a, r) => a + (r.inventory_quantity ?? 0), 0),
+        0
+      );
+      const days = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
+      return {
+        promo: p,
+        status: effectiveStatus(p),
+        products: pids.size,
+        qty,
+        rev,
+        zeroSold,
+        stock,
+        days,
+        revPerDay: rev / days,
+      };
+    }).sort((a, b) => {
+      // 進行中行先,組內營收高嘅先
+      const rank = (s: string) => (s === 'active' ? 0 : s === 'planned' ? 1 : 2);
+      return rank(a.status) - rank(b.status) || b.rev - a.rev;
+    });
+  }, [promos, items, inventory, orderLines, orders]);
+
   // ── 攞主圖(揀咗活動先攞,module cache 免重覆) ────────────────────────────
   const imgSeqRef = useRef(0);
   useEffect(() => {
@@ -517,6 +590,66 @@ export default function MarketingPromoWatchPage() {
         <div className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-rose-200 text-sm flex items-center gap-2">
           <AlertCircle className="h-4 w-4" />
           {error}
+        </div>
+      )}
+
+      {/* 🏆 活動排行榜 — 跨活動一眼比較,撳行入去睇明細 */}
+      {!loading && leaderboard.length > 0 && (
+        <div className="rounded-md border border-border/60 bg-card overflow-hidden" data-testid="promo-leaderboard">
+          <div className="px-3 py-2.5 flex items-baseline justify-between gap-2 flex-wrap border-b border-border/40">
+            <h2 className="text-sm font-semibold">🏆 活動排行榜 <span className="text-xs font-normal text-muted-foreground">全部推廣一眼睇晒 · 撳行入去睇商品</span></h2>
+            <span className="text-[11px] text-muted-foreground">數字按各自推廣期計(唔跟下面自訂日期)</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-muted/30 text-muted-foreground">
+                <tr>
+                  <th className="text-left px-3 py-2 font-medium">活動</th>
+                  <th className="text-left px-3 py-2 font-medium">狀態</th>
+                  <th className="text-left px-3 py-2 font-medium hidden md:table-cell">推廣期</th>
+                  <th className="text-right px-3 py-2 font-medium">款數</th>
+                  <th className="text-right px-3 py-2 font-medium">已售件數</th>
+                  <th className="text-right px-3 py-2 font-medium">營收</th>
+                  <th className="text-right px-3 py-2 font-medium hidden lg:table-cell">日均營收</th>
+                  <th className="text-right px-3 py-2 font-medium">零銷款數</th>
+                  <th className="text-right px-3 py-2 font-medium hidden lg:table-cell">現有庫存</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leaderboard.map(r => {
+                  const isSel = r.promo.id === selectedPromoId;
+                  return (
+                    <tr
+                      key={r.promo.id}
+                      onClick={() => setSelectedPromoId(r.promo.id)}
+                      className={`border-b border-border/20 cursor-pointer transition-colors ${isSel ? 'bg-primary/10' : 'hover:bg-accent/30'}`}
+                      data-testid={`lb-row-${r.promo.id}`}
+                    >
+                      <td className="px-3 py-2 font-medium max-w-[240px] truncate" title={r.promo.name}>
+                        {isSel && <span className="text-primary mr-1">▸</span>}
+                        {r.promo.name}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className={STATUS_COLOR[r.status] ?? ''}>{STATUS_LABEL[r.status] ?? r.status}</span>
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground tabular-nums hidden md:table-cell">
+                        {r.promo.start_date.slice(5)} → {r.promo.end_date.slice(5)}
+                        <span className="opacity-60 ml-1">({r.days}日)</span>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">{r.products}</td>
+                      <td className="px-3 py-2 text-right tabular-nums font-semibold">{formatNumber(r.qty)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums font-semibold">{formatCurrency(r.rev)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground hidden lg:table-cell">{formatCurrency(r.revPerDay)}</td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${r.zeroSold > 0 && r.products > 0 ? 'text-amber-400' : 'text-muted-foreground'}`}>
+                        {r.zeroSold}{r.products > 0 && <span className="opacity-60">/{r.products}</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-muted-foreground hidden lg:table-cell">{formatNumber(r.stock)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
