@@ -271,17 +271,32 @@ def main() -> None:
     brand_res, model_tokens = build_dictionary()
     biz_map = channel_business_map()
 
-    # 1. 對話(modifiedAt 新→舊;過咗 cutoff 停)
+    # 1. 對話 — ⚠️ 實測 conversation/all 唔係穩定 modifiedAt 新→舊
+    # (120 日 backfill 掃到 202 個就早停,31 個 CTWA 對話漏咗大半;
+    # 夜間 DAYS_BACK=3 之下任何一頁撞到一個舊對話就停晒,一直漏緊)。
+    # 所以唔可以見一個舊就停:要「連續兩頁全部舊過 cutoff」先收工,
+    # 收唔到工就照掃到 MAX_CONV_PAGES(保險絲)。
     convs: list = []
+    old_streak = 0
     for page in range(MAX_CONV_PAGES):
         batch = sf_get(key, "conversation/all", {"offset": page * CONV_PAGE_SIZE, "limit": CONV_PAGE_SIZE})
         if not batch:
             break
         convs.extend(batch)
-        oldest = min(str(c.get("modifiedAt") or c.get("updatedTime") or "9999") for c in batch)
-        if oldest < cutoff_iso:
+        newest = max(str(c.get("modifiedAt") or c.get("updatedTime") or "") for c in batch)
+        old_streak = old_streak + 1 if newest < cutoff_iso else 0
+        if old_streak >= 2:
             break
-    recent = [c for c in convs if str(c.get("modifiedAt") or c.get("updatedTime") or "") >= cutoff_iso]
+    # 分頁準則唔明,防止重覆:同一個 conversationId 只計一次
+    seen_conv: set = set()
+    recent = []
+    for c in convs:
+        cid = c.get("conversationId")
+        if cid in seen_conv:
+            continue
+        seen_conv.add(cid)
+        if str(c.get("modifiedAt") or c.get("updatedTime") or "") >= cutoff_iso:
+            recent.append(c)
     print(f"對話:掃咗 {len(convs)},{DAYS_BACK} 日內有活動 {len(recent)}")
 
     # 2+3. 逐對話拉訊息 → inbound → 對照 + 業務歸屬(邊條線 = 邊盤生意)
