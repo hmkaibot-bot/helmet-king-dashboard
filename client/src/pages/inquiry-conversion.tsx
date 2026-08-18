@@ -201,6 +201,8 @@ export default function InquiryConversionPage() {
   const [syncedAt, setSyncedAt] = useState<string | null>(null);
   // 最後一次收到 CTWA 標記嘅時間(斷流警報用);undefined = 查緊
   const [ctwaLast, setCtwaLast] = useState<string | null | undefined>(undefined);
+  // 查詢客明細預設摺埋(老闆 2026-08-18)— 想逐個客睇先撳開
+  const [showDetails, setShowDetails] = useState(false);
 
   // 廣告 post 牆
   const [wall, setWall] = useState<{ loading: boolean; error: string | null; ads: WallAd[] }>({
@@ -853,12 +855,22 @@ export default function InquiryConversionPage() {
         )}
       </div>
 
-      {/* 明細表 */}
+      {/* 明細表(預設摺埋 — 跟 marketing 頁同一款 toggle) */}
+      <button
+        onClick={() => setShowDetails(v => !v)}
+        data-testid="toggle-conv-details"
+        className="w-full rounded-md border border-border/50 bg-card hover:bg-accent/30 px-4 py-2.5 text-left text-sm transition-colors flex items-center gap-2"
+      >
+        <span>{showDetails ? '▾' : '▸'}</span>
+        <span className="font-medium">查詢客明細</span>
+        <span className="text-xs text-muted-foreground">
+          {loading ? '載入中…' : `${sorted.length} 個查詢客`} · 按首次查詢日新至舊 · 撳一行睇購買紀錄+對話
+        </span>
+      </button>
+
+      {showDetails && (
       <Card className="border-border/40 overflow-hidden">
         <CardContent className="p-0">
-          <div className="px-4 pt-3 pb-2">
-            <h3 className="text-sm font-semibold">查詢客明細 <span className="text-xs font-normal text-muted-foreground">按首次查詢日,新至舊</span></h3>
-          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs" data-testid="conversion-table">
               <thead>
@@ -907,6 +919,7 @@ export default function InquiryConversionPage() {
           </div>
         </CardContent>
       </Card>
+      )}
 
       {detailCampaign && (
         <CampaignDetailModal campaign={detailCampaign} onClose={() => setDetailCampaign(null)} />
