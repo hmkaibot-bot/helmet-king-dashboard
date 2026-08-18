@@ -272,6 +272,9 @@ export default async function handler(req: any, res: any) {
           clicks: g.reduce((s, x) => s + x.clicks, 0),
           inquiries: g.reduce((s, x) => s + x.inquiries, 0),
           adCount: g.length,
+          // 合併前每個 ad 嘅 id — 前端用嚟同 inquiry_conversions.ctwa_ad_ids
+          // (SleekFlow referral 歸因)對數,顯示「呢個 post 追到幾多個電話」
+          adIds: g.map((x) => x.adId),
           // 連結推廣活動用嘅穩定 key(story id 排序取最細,合併點變都認得返)
           postKey: (() => {
             const sids = g.map((x) => x.storyId).filter(Boolean).sort();

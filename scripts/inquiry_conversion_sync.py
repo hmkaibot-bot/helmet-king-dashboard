@@ -2,8 +2,11 @@
 查詢→轉換 每日對數 — 零售 SleekFlow 查詢客 vs Shopify 購買紀錄。
 
 流程:
-1. inquiry_events(business=retail、有電話)→ 每個電話一行:首次/最後查詢、
-   查詢時認到嘅品牌/商品、係咪經廣告(CTWA)
+1. inquiry_events(零售口徑、有電話)→ 每個電話一行:首次/最後查詢、
+   查詢時認到嘅品牌/商品、係咪經廣告(CTWA)+ 邊啲 ad 帶入嚟(ctwa_ad_id)
+   零售口徑 = 經零售 WhatsApp 線入嚟 或 business=retail。淨用 business 唔得:
+   同事 triage 分隊會改寫 business(客問完貨問埋維修 → 轉 garage 隊),
+   零售廣告帶入嚟嘅客會喺零售版面蒸發 — 實測 29 個 CTWA 電話蒸發咗 26 個。
 2. 電話 → Shopify customer(GraphQL customers search,batch OR;需 read_customers)
    ⚠️ token 冇呢個 scope 嘅話呢步會跳過,保留舊 mapping — 唔會成個 job 死
 3. customer 嘅訂單由 Supabase shopify_orders/lines 攞(每日已同步),計:
@@ -31,6 +34,10 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 WINDOW = int(os.environ.get("CONVERT_WINDOW_DAYS", "14"))
 PRIOR_DAYS = 60  # 查詢前幾多日內有單 = 售後查詢
 API_VERSION = "2026-07"
+
+# 零售 WhatsApp 線(entry 口徑)— 同 scripts/sleekflow_sync.py CHANNEL_BUSINESS 一致。
+# IG/FB 冇電話,天然入唔到呢個 cohort,唔使列。
+RETAIL_LINES = ("85263858830",)
 
 
 def fail(msg: str) -> None:
@@ -64,13 +71,27 @@ def sb_get_all(table: str, params: dict) -> list:
         offset += 1000
 
 
-# ── 1. 查詢客(零售、有電話)────────────────────────────────────────────────
-def load_contacts() -> dict:
+# ── 1. 查詢客(零售口徑 = 零售線入口 或 business=retail;有電話)──────────────
+def has_column(table: str, col: str) -> bool:
+    """DB 加咗新欄未(sql/inquiry-ctwa-ad-id.sql 要手動 apply)— 未加就退化。"""
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/{table}",
+        params={"select": col, "limit": "1"},
+        headers=sb_headers(),
+        timeout=30,
+    )
+    return r.status_code == 200
+
+
+def load_contacts(with_ad_id: bool) -> dict:
+    select = "contact_phone,business,occurred_at,conversation_id,matched_brand,matched_product_id,source"
+    if with_ad_id:
+        select += ",ctwa_ad_id"
     rows = sb_get_all(
         "inquiry_events",
         {
-            "select": "contact_phone,business,occurred_at,conversation_id,matched_brand,matched_product_id,source",
-            "business": "eq.retail",
+            "select": select,
+            "or": f"(business.eq.retail,channel_identity_id.in.({','.join(RETAIL_LINES)}))",
             "contact_phone": "not.is.null",
         },
     )
@@ -81,7 +102,7 @@ def load_contacts() -> dict:
             continue
         c = contacts.setdefault(
             ph,
-            {"first": None, "last": None, "convs": set(), "brands": set(), "pids": set(), "via_ad": False},
+            {"first": None, "last": None, "convs": set(), "brands": set(), "pids": set(), "via_ad": False, "ad_ids": set()},
         )
         d = str(r["occurred_at"])[:10]
         c["first"] = d if c["first"] is None or d < c["first"] else c["first"]
@@ -92,9 +113,11 @@ def load_contacts() -> dict:
             c["brands"].add(str(r["matched_brand"]).upper())
         if r.get("matched_product_id"):
             c["pids"].add(str(r["matched_product_id"]))
-        if r.get("source") == "ctwa":
+        if r.get("source") == "ctwa" or r.get("ctwa_ad_id"):
             c["via_ad"] = True
-    print(f"零售查詢客(有電話):{len(contacts)}")
+        if r.get("ctwa_ad_id"):
+            c["ad_ids"].add(str(r["ctwa_ad_id"]))
+    print(f"零售查詢客(有電話):{len(contacts)}(當中經廣告 {sum(1 for c in contacts.values() if c['via_ad'])})")
     return contacts
 
 
@@ -140,7 +163,12 @@ def main() -> None:
         fail("SUPABASE_URL / SUPABASE_SERVICE_KEY 未設定")
     today = datetime.now(timezone.utc).date()
 
-    contacts = load_contacts()
+    ev_has_ad = has_column("inquiry_events", "ctwa_ad_id")
+    conv_has_ad = has_column("inquiry_conversions", "ctwa_ad_ids")
+    if not (ev_has_ad and conv_has_ad):
+        print("WARN: ctwa ad id 欄未加齊(要 apply sql/inquiry-ctwa-ad-id.sql)— 廣告歸因暫時得 boolean")
+
+    contacts = load_contacts(ev_has_ad)
     if not contacts:
         print("冇嘢做")
         return
@@ -232,6 +260,8 @@ def main() -> None:
             "classification": "unmatched",
             "synced_at": datetime.now(timezone.utc).isoformat(),
         }
+        if conv_has_ad:
+            row["ctwa_ad_ids"] = ",".join(sorted(c["ad_ids"])) or None
         if cust:
             row.update(
                 customer_id=cust["id"],
@@ -285,6 +315,19 @@ def main() -> None:
         )
         if r.status_code not in (200, 201):
             fail(f"upsert HTTP {r.status_code}: {r.text[:300]}")
+
+    # 清 stale:口徑變咗之後唔再屬零售 cohort 嘅電話,upsert 唔會再掂佢哋,
+    # 舊行嘅 via_ad/分類會永遠僵喺度 — 直接剷,聽晚要返嚟自然會重新入返
+    stale = sorted({str(e["contact_phone"]) for e in existing} - set(contacts.keys()))
+    for i in range(0, len(stale), 40):
+        requests.delete(
+            f"{SUPABASE_URL}/rest/v1/inquiry_conversions",
+            params={"contact_phone": f"in.({','.join(stale[i : i + 40])})"},
+            headers=sb_headers(),
+            timeout=60,
+        )
+    if stale:
+        print(f"清走 {len(stale)} 行唔再屬零售口徑嘅舊行")
 
     from collections import Counter
     print("classification:", dict(Counter(r["classification"] for r in out_rows)))
