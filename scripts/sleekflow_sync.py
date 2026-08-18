@@ -226,6 +226,31 @@ def match_text(text: str, brand_res, model_tokens):
     return brand, pid, title, ptype
 
 
+def ctwa_referral(m: dict):
+    """CTWA 入口訊息:Meta referral 原封不動喺 SleekFlow payload 入面 —
+    source_id = 帶個客入嚟嗰個 ad 嘅 id(廣告歸因就靠佢,唔使靠 webhook 估)。"""
+    ref = (
+        ((m.get("extendedMessagePayload") or {}).get("extendedMessagePayloadDetail") or {}).get(
+            "whatsappCloudApiReferral"
+        )
+        or {}
+    )
+    if str(ref.get("source_type") or "").lower() == "ad" and ref.get("source_id"):
+        return str(ref["source_id"])
+    return None
+
+
+def has_column(table: str, col: str) -> bool:
+    """DB 加咗新欄未(sql/ 檔要手動 apply)— 未加就退化,唔好炒成個 job。"""
+    r = requests.get(
+        f"{SUPABASE_URL}/rest/v1/{table}",
+        params={"select": col, "limit": "1"},
+        headers=sb_headers(),
+        timeout=30,
+    )
+    return r.status_code == 200
+
+
 def norm_channel(ch: str) -> str:
     c = str(ch or "").lower()
     if "whatsapp" in c:
@@ -273,7 +298,10 @@ def main() -> None:
         msgs = sf_get(key, f"conversation/message/{conv_id}", {"offset": 0, "limit": MSG_PAGE_SIZE})
         for m in msgs:
             created = str(m.get("createdAt") or "")
-            if not created or created < cutoff_iso:
+            ad_id = ctwa_referral(m)
+            # referral 訊息(CTWA 入口)舊過 cutoff 都照入 — 對話今日先再郁,
+            # 但個客係 N 日前撳廣告入嚟,廣告歸因唔可以漏咗佢
+            if not created or (created < cutoff_iso and not ad_id):
                 continue
             if m.get("isSentFromSleekflow") is True:
                 continue  # 店方覆,唔計
@@ -290,25 +318,29 @@ def main() -> None:
             business = team_biz or biz_map.get(ident)
             if ident and not business:
                 unknown_idents[ident] = unknown_idents.get(ident, 0) + 1
-            rows.append(
-                {
-                    "message_id": str(m.get("messageUniqueID") or m.get("id") or ""),
-                    "conversation_id": str(conv_id),
-                    "contact_id": str(up.get("id") or "") or None,
-                    "contact_phone": up.get("phoneNumber") or None,
-                    "channel": norm_channel(m.get("channel")),
-                    "team": team_name or None,
-                    "occurred_at": created,
-                    "matched_brand": brand,
-                    "matched_product_id": pid,
-                    "matched_title": title,
-                    "matched_product_type": ptype,
-                    # 認到商品先存原文(dashboard 品牌 Top 10 撳入去睇對話用)
-                    "message_text": text[:200] if (brand or pid) else None,
-                    "channel_identity_id": ident or None,
-                    "business": business,
-                }
-            )
+            row = {
+                "message_id": str(m.get("messageUniqueID") or m.get("id") or ""),
+                "conversation_id": str(conv_id),
+                "contact_id": str(up.get("id") or "") or None,
+                "contact_phone": up.get("phoneNumber") or None,
+                "channel": norm_channel(m.get("channel")),
+                "team": team_name or None,
+                "occurred_at": created,
+                "matched_brand": brand,
+                "matched_product_id": pid,
+                "matched_title": title,
+                "matched_product_type": ptype,
+                # 認到商品先存原文(dashboard 品牌 Top 10 撳入去睇對話用)
+                "message_text": text[:200] if (brand or pid) else None,
+                "channel_identity_id": ident or None,
+                "business": business,
+            }
+            # CTWA 入口訊息:記低邊個 ad 帶入嚟(source 唔好喺普通行 send —
+            # 免得 merge upsert 冚走 webhook 打落嘅 ctwa 標記)
+            if ad_id:
+                row["source"] = "ctwa"
+                row["ctwa_ad_id"] = ad_id
+            rows.append(row)
     rows = [r for r in rows if r["message_id"]]
     biz_n = {}
     for r_ in rows:
@@ -317,17 +349,26 @@ def main() -> None:
     if unknown_idents:
         print(f"WARN: 未識別 channel 線(要加入對照/app_config SLEEKFLOW_CHANNEL_BUSINESS):{unknown_idents}")
 
-    # 4. upsert(batch 500)
-    for i in range(0, len(rows), 500):
-        r = requests.post(
-            f"{SUPABASE_URL}/rest/v1/inquiry_events",
-            params={"on_conflict": "message_id"},
-            headers={**sb_headers(), "Prefer": "resolution=merge-duplicates"},
-            data=json.dumps(rows[i : i + 500]),
-            timeout=120,
-        )
-        if r.status_code not in (200, 201):
-            fail(f"upsert HTTP {r.status_code}: {r.text[:300]}")
+    # 4. upsert(batch 500)— CTWA 行帶多兩個欄(source/ctwa_ad_id),PostgREST bulk
+    # 要求同一批行 keys 一致,所以分兩批寄;DB 未加新欄就退返淨 source(唔炒 job)
+    ctwa_rows = [r_ for r_ in rows if "ctwa_ad_id" in r_]
+    plain_rows = [r_ for r_ in rows if "ctwa_ad_id" not in r_]
+    if ctwa_rows and not has_column("inquiry_events", "ctwa_ad_id"):
+        print("WARN: inquiry_events 未有 ctwa_ad_id 欄(要 apply sql/inquiry-ctwa-ad-id.sql)— ad id 今次唔存")
+        for r_ in ctwa_rows:
+            r_.pop("ctwa_ad_id")
+    print(f"CTWA referral:{len(ctwa_rows)} 條入口訊息認到 ad id")
+    for batch in (plain_rows, ctwa_rows):
+        for i in range(0, len(batch), 500):
+            r = requests.post(
+                f"{SUPABASE_URL}/rest/v1/inquiry_events",
+                params={"on_conflict": "message_id"},
+                headers={**sb_headers(), "Prefer": "resolution=merge-duplicates"},
+                data=json.dumps(batch[i : i + 500]),
+                timeout=120,
+            )
+            if r.status_code not in (200, 201):
+                fail(f"upsert HTTP {r.status_code}: {r.text[:300]}")
     print(f"upsert OK({len(rows)} 行)")
 
     # 5. 對賬:synth(webhook 即時行)→ 過戶 ctwa 標記 → 刪走

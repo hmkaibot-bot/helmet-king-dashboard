@@ -14,7 +14,16 @@ import { MessageCircle, Users, Target, DollarSign, Store, Megaphone, Sparkles } 
  * 查詢與轉換 — SleekFlow 查詢客 ↔ Shopify 購買紀錄 對數(零售)。
  *
  * 數據:inquiry_conversions(每晚 GitHub Actions 對數;電話做 join key)。
+ * 零售口徑 = 經零售 WhatsApp 線入嚟(唔跟同事分隊 — triage 轉咗去車房隊嘅客
+ * 依然係零售線/零售廣告帶入嚟)。
  * 轉換定義:首次查詢後 14 日內有購買。查詢前 60 日內有單 = 售後查詢。
+ * 轉化率係「下限」:對唔到 Shopify 客嗰批照計落分母當冇買(部分其實係電話格式對唔中)。
+ *
+ * 廣告歸因兩個口徑,唔好撈亂:
+ *  - 「Meta 對話」= Meta 自己歸因嘅開始對話數(post 同 post 之間比較用);
+ *  - 「追到電話」= SleekFlow referral(whatsappCloudApiReferral.source_id = ad id)
+ *    對返 conversions.ctwa_ad_ids — 電話級,可以一路追到轉化同消費(講錢用)。
+ *
  * 日期範圍用右上角全站選擇器(撳日歷 icon 即自訂)— 查詢按「首次查詢日」過濾,
  * post 牆就直接攞該範圍嘅 Meta time_range 數據(唔再用 preset 近似)。
  * post 牆全部門都攞,用 chips 分開睇(零售/車房/賣車/旅行團/租車/尻片/通告/工作坊/其他)。
@@ -40,6 +49,7 @@ interface ConvRow {
   after_orders_14d: number;
   after_pos_orders_14d: number;
   classification: string;
+  ctwa_ad_ids: string | null; // 邊啲 Meta ad 帶過呢個電話入嚟(逗號串;SleekFlow referral)
   synced_at: string;
 }
 
@@ -59,6 +69,7 @@ interface WallAd {
   end: string | null;   // 投放結束;null = 冇設結束日
   adCount: number;      // 同一個 post 合併咗幾多個 ad(server 端 dedup)
   parts: WallAdPart[];  // 每個 ad 自己嘅一行(類型/投放期/數字分開睇)
+  adIds?: string[];     // 合併前每個 ad 嘅 id — 對 conversions.ctwa_ad_ids 做電話級歸因
   postKey: string;      // 連結推廣活動用嘅穩定 key(server 生成)
   dept: Dept; // client 端按 campaign 名+廣告名分部門
 }
@@ -188,6 +199,8 @@ export default function InquiryConversionPage() {
   const [rows, setRows] = useState<ConvRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncedAt, setSyncedAt] = useState<string | null>(null);
+  // 最後一次收到 CTWA 標記嘅時間(斷流警報用);undefined = 查緊
+  const [ctwaLast, setCtwaLast] = useState<string | null | undefined>(undefined);
 
   // 廣告 post 牆
   const [wall, setWall] = useState<{ loading: boolean; error: string | null; ads: WallAd[] }>({
@@ -344,6 +357,19 @@ export default function InquiryConversionPage() {
     return () => { cancelled = true; };
   }, []);
 
+  // CTWA 標記最後幾時收過 — webhook/同步靜靜雞死咗,「經廣告」數會無聲歸零,呢度做個哨兵
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from('inquiry_events')
+        .select('occurred_at')
+        .eq('source', 'ctwa')
+        .order('occurred_at', { ascending: false })
+        .limit(1);
+      setCtwaLast(((data?.[0] as any)?.occurred_at as string | undefined) ?? null);
+    })().catch(() => setCtwaLast(null));
+  }, []);
+
   // post 牆:精確跟日期範圍攞 Meta 數據,再按 campaign 名+廣告名分部門。
   // debounce 500ms — 老闆用日歷揀緊日期嗰陣唔好連環問 Meta(帳戶有 rate limit)。
   useEffect(() => {
@@ -462,6 +488,48 @@ export default function InquiryConversionPage() {
     [inRange]
   );
 
+  // ── 每個 post「追到電話」:conversions.ctwa_ad_ids ↔ wall adIds(電話級歸因)──
+  const postPhones = useMemo(() => {
+    const byAd = new Map<string, ConvRow[]>();
+    for (const r of inRange) {
+      if (!r.ctwa_ad_ids) continue;
+      for (const id of r.ctwa_ad_ids.split(',')) {
+        if (!id) continue;
+        const arr = byAd.get(id) ?? [];
+        arr.push(r);
+        byAd.set(id, arr);
+      }
+    }
+    const out = new Map<string, { phones: number; converted: number; spend: number }>();
+    for (const a of wall.ads) {
+      const seen = new Set<string>();
+      let converted = 0;
+      let spend = 0;
+      for (const id of a.adIds ?? []) {
+        for (const r of byAd.get(id) ?? []) {
+          if (seen.has(r.contact_phone)) continue;
+          seen.add(r.contact_phone);
+          if (r.classification === 'converted') {
+            converted++;
+            spend += Number(r.after_spend_14d || 0);
+          }
+        }
+      }
+      if (seen.size > 0) out.set(a.postKey || a.adId, { phones: seen.size, converted, spend });
+    }
+    return out;
+  }, [inRange, wall.ads]);
+
+  // CTWA 斷流警報:Meta 話零售廣告有對話,但我哋 10 日以上冇收過 CTWA 標記
+  const ctwaAlert = useMemo(() => {
+    if (ctwaLast === undefined) return null;
+    const metaConv = wall.ads.filter(a => a.dept === 'retail').reduce((s, a) => s + a.inquiries, 0);
+    if (metaConv === 0) return null;
+    const days = ctwaLast ? Math.floor((Date.now() - new Date(ctwaLast).getTime()) / 864e5) : null;
+    if (days !== null && days <= 10) return null;
+    return { days, metaConv };
+  }, [ctwaLast, wall.ads]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-baseline justify-between flex-wrap gap-2">
@@ -469,7 +537,7 @@ export default function InquiryConversionPage() {
           💬→🛒 查詢與轉換 <span className="text-xs font-normal text-muted-foreground">Inquiries & Conversion(零售)</span>
         </h2>
         <span className="text-[11px] text-muted-foreground">
-          轉換窗 14 日 · 電話對數(IG/FB 查詢冇電話追唔到)· 每晚自動更新
+          零售 WhatsApp 線口徑(唔跟同事分隊)· 轉換窗 14 日 · 電話對數(IG/FB 冇電話追唔到)· 每晚自動更新
           {syncedAt ? ` · 上次對數 ${new Date(syncedAt).toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })}` : ''}
         </span>
       </div>
@@ -478,11 +546,20 @@ export default function InquiryConversionPage() {
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <KpiCard title="查詢客" subtitle="有電話可追蹤" value={formatNumber(stats.total)} icon={MessageCircle} loading={loading} testId="kpi-conv-total" />
         <KpiCard title="對到 Shopify 客" subtitle={stats.total > 0 ? formatPercent((stats.matched.length / stats.total) * 100) : '—'} value={formatNumber(stats.matched.length)} icon={Users} loading={loading} testId="kpi-conv-matched" />
-        <KpiCard title="14 日內轉化" subtitle={stats.denom > 0 ? `轉化率 ${formatPercent((stats.converted.length / stats.denom) * 100)}` : '未夠數計'} value={formatNumber(stats.converted.length)} icon={Target} loading={loading} testId="kpi-conv-converted" />
+        <KpiCard title="14 日內轉化" subtitle={stats.denom > 0 ? `轉化率(下限)${formatPercent((stats.converted.length / stats.denom) * 100)}` : '未夠數計'} value={formatNumber(stats.converted.length)} icon={Target} loading={loading} testId="kpi-conv-converted" />
         <KpiCard title="轉化消費" subtitle="14 日內" value={formatCurrency(stats.convSpend)} icon={DollarSign} loading={loading} testId="kpi-conv-spend" />
         <KpiCard title="查詢後到店" subtitle="有門市 POS 單" value={formatNumber(stats.storeVisits)} icon={Store} loading={loading} testId="kpi-conv-store" />
-        <KpiCard title="經廣告查詢" subtitle="CTWA 標記" value={formatNumber(stats.viaAd.length)} icon={Megaphone} loading={loading} testId="kpi-conv-ad" />
+        <KpiCard title="經廣告查詢" subtitle="CTWA 電話(唔係 Meta 數)" value={formatNumber(stats.viaAd.length)} icon={Megaphone} loading={loading} testId="kpi-conv-ad" />
       </div>
+
+      {/* CTWA 斷流警報 — pipe 死咗會無聲歸零,唔出聲先係最傷 */}
+      {ctwaAlert && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs text-amber-300" data-testid="ctwa-stale-alert">
+          ⚠️ CTWA 廣告標記可能斷咗流:Meta 話呢個時段零售廣告開咗 {formatNumber(ctwaAlert.metaConv)} 個對話,但系統
+          {ctwaAlert.days === null ? '從未收過' : `已經 ${ctwaAlert.days} 日冇收過`} CTWA 入口標記 —
+          「經廣告查詢」會偏低。檢查 SleekFlow webhook 同每晚同步。
+        </div>
+      )}
 
       {/* 漏斗 + 分類拆解 */}
       {!loading && stats.total > 0 && (
@@ -504,7 +581,8 @@ export default function InquiryConversionPage() {
               </div>
             ))}
             <p className="text-[10px] text-muted-foreground pt-1">
-              轉化 = 首次查詢後 14 日內有購買;「問完就買埋嗰件」{stats.boughtMatched} 個。轉化率分母剔走仲喺窗口內嗰批。
+              轉化 = 首次查詢後 14 日內有購買;「問完就買埋嗰件」{stats.boughtMatched} 個。轉化率分母剔走仲喺窗口內嗰批;
+              對唔到 Shopify 客嗰啲照計落分母當冇買(部分其實係電話格式對唔中)— 所以個率係<span className="text-foreground">下限</span>,真實率喺呢個數同「淨計對到嗰批」之間。
             </p>
           </CardContent>
         </Card>
@@ -538,7 +616,7 @@ export default function InquiryConversionPage() {
       {/* 廣告 post 牆:左圖+文案,右數據,撳入睇 detail;部門 chips 分開睇 */}
       <div>
         <div className="flex items-center gap-2 flex-wrap mb-2">
-          <h3 className="text-xs font-semibold">📣 廣告 Post 一覽 <span className="font-normal text-muted-foreground">左邊係個 post,右邊係數據 · 撳一行睇深度數據</span></h3>
+          <h3 className="text-xs font-semibold">📣 廣告 Post 一覽 <span className="font-normal text-muted-foreground">左邊係個 post,右邊係數據 · 撳一行睇深度數據 · 「Meta 對話」係 Meta 自己歸因;「追到電話」先係我哋對到 SleekFlow 嘅</span></h3>
           <div className="flex gap-1 flex-wrap ml-auto">
             <button
               onClick={() => setDeptFilter('all')}
@@ -640,7 +718,7 @@ export default function InquiryConversionPage() {
                           >
                             <p className="text-xs text-muted-foreground pb-1">類型</p>
                             <p className="text-xs text-muted-foreground pb-1">{'\u00A0'}</p>
-                            {['投放期', '花費', '曝光', '點擊', '查詢'].map((h) => (
+                            {['投放期', '花費', '曝光', '點擊', 'Meta 對話'].map((h) => (
                               <p key={h} className={`text-xs text-muted-foreground pb-1 ${cell}`}>{h}</p>
                             ))}
                             {parts.map((p, i) => (
@@ -667,6 +745,26 @@ export default function InquiryConversionPage() {
                             )}
                           </div>
                         </div>
+                      );
+                    })()}
+
+                    {/* 我方追到嘅電話(SleekFlow referral 歸因)— 同 Meta 對話數分開兩行講,唔打交 */}
+                    {(() => {
+                      const t = postPhones.get(a.postKey || a.adId);
+                      if (!t) return null;
+                      return (
+                        <p className="text-xs text-right" data-testid={`post-phones-${a.adId}`}>
+                          📞 追到 <span className="font-bold tabular-nums">{t.phones}</span> 個查詢電話
+                          {t.converted > 0 ? (
+                            <>
+                              {' '}· <span className="text-emerald-300 font-bold tabular-nums">{t.converted}</span> 個 14 日內轉化
+                              {t.spend > 0 && <> · 消費 <span className="font-bold tabular-nums">{formatCurrency(t.spend)}</span></>}
+                            </>
+                          ) : (
+                            ' · 未有轉化'
+                          )}{' '}
+                          <span className="text-muted-foreground">(referral 實數,唔係 Meta 估)</span>
+                        </p>
                       );
                     })()}
 
