@@ -116,11 +116,29 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
   const [showPicker, setShowPicker] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
-  // ── MTD date range ─────────────────────────────────────────
+  // ── 月份範圍:平日 = 當月 MTD;每月 1 號 = 自動切上月全月 ──────────────
+  // 1 號當日 MTD 得今日一日,朝早成柱 0 擺喺昨日數隔籬好似壞咗(2026-09-01
+  // 老闆實試);而且月初正正係想睇上月總結。跟月報「MTD/完整月自動切」先例。
+  // Date 月份 rollover 處理跨年:1 月 1 號自動變上年 12 月。
   const mtdRange = useMemo(() => {
     const hkt = getHKNow();
+    if (hkt.getDate() === 1) {
+      const from = new Date(hkt.getFullYear(), hkt.getMonth() - 1, 1);
+      const to = new Date(hkt.getFullYear(), hkt.getMonth(), 0); // 上月最後一日
+      return {
+        from: toDateStr(from), to: toDateStr(to),
+        label: `${from.getFullYear()}年${from.getMonth() + 1}月(上月全月 — 本月今日先開始)`,
+        colPrefix: `${from.getMonth() + 1}月`,
+        isMtd: false,
+      };
+    }
     const firstOfMonth = new Date(hkt.getFullYear(), hkt.getMonth(), 1);
-    return { from: toDateStr(firstOfMonth), to: toDateStr(hkt) };
+    return {
+      from: toDateStr(firstOfMonth), to: toDateStr(hkt),
+      label: `${hkt.getFullYear()}年${hkt.getMonth() + 1}月`,
+      colPrefix: '當月',
+      isMtd: true,
+    };
   }, []);
 
   // ── Compute MTD orders ─────────────────────────────────────
@@ -268,11 +286,8 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
     return available.filter(v => v.includes(term)).slice(0, 20);
   }, [allVendorsInData, selectedBrands, searchTerm]);
 
-  // ── Month label ────────────────────────────────────────────
-  const monthLabel = useMemo(() => {
-    const hkt = getHKNow();
-    return `${hkt.getFullYear()}年${hkt.getMonth() + 1}月`;
-  }, []);
+  // ── Month label(跟 mtdRange 走 — 1 號顯示上月)──────────────
+  const monthLabel = mtdRange.label;
 
   const marginOf = (profit: number, coveredRev: number) =>
     coveredRev > 0 ? (profit / coveredRev) * 100 : null;
@@ -286,7 +301,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
             <BarChart3 className="h-3.5 w-3.5 text-primary shrink-0" />
             品牌銷售
             <span className="text-[13px] font-normal text-muted-foreground">
-              昨日 / 本週 / 當月MTD — {monthLabel} ({mtdRange.from} ~ {mtdRange.to})
+              昨日 / 本週 / {mtdRange.isMtd ? '當月MTD' : '上月全月'} — {monthLabel} ({mtdRange.from} ~ {mtdRange.to})
             </span>
           </CardTitle>
           <button
@@ -388,7 +403,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                       onClick={() => toggleSort('qty')}
                       className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
                     >
-                      當月件數 <SortIcon field="qty" />
+                      {mtdRange.colPrefix}件數 <SortIcon field="qty" />
                     </button>
                   </th>
                   <th className="py-2.5 text-right font-medium">
@@ -396,10 +411,10 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                       onClick={() => toggleSort('revenue')}
                       className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
                     >
-                      當月營收 <SortIcon field="revenue" />
+                      {mtdRange.colPrefix}營收 <SortIcon field="revenue" />
                     </button>
                   </th>
-                  <th className="py-2.5 text-right font-medium">當月毛利</th>
+                  <th className="py-2.5 text-right font-medium">{mtdRange.colPrefix}毛利</th>
                   <th className="py-2.5 text-right font-medium">占比</th>
                   <th className="py-2.5 text-center font-medium w-8"></th>
                 </tr>
@@ -487,7 +502,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                           <td colSpan={8} className="p-0">
                             <div className="bg-accent/10 px-4 py-3 border-b border-border/20 space-y-4">
                               {b.items.length === 0 && (
-                                <p className="text-[13px] text-muted-foreground/50 py-1">本月無銷售記錄</p>
+                                <p className="text-[13px] text-muted-foreground/50 py-1">{mtdRange.isMtd ? '本月' : mtdRange.colPrefix}無銷售記錄</p>
                               )}
 
                               {/* 昨日售出 — 行先 */}
@@ -508,10 +523,10 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
                               {b.items.length > 0 && (
                                 <div>
                                   <p className="text-[13px] font-semibold text-muted-foreground mb-1.5">
-                                    當月排名{b.items.length > 10 ? ' Top 10' : ''} · 共 {b.items.length} 款
+                                    {mtdRange.colPrefix}排名{b.items.length > 10 ? ' Top 10' : ''} · 共 {b.items.length} 款
                                   </p>
                                   <ProductItemList
-                                    items={monthItems} qtyLabel="當月售出" topN={10} showRank
+                                    items={monthItems} qtyLabel={`${mtdRange.colPrefix}售出`} topN={10} showRank
                                     imageMap={imageMap} handleMap={handleMap}
                                     productStockMap={productStockMap} velocityMap={velocityMap}
                                   />
@@ -556,7 +571,7 @@ export function BrandMonthlySales({ allOrders, allOrderLines, loading, yOrderIds
         {/* ── Hint ────────────────────────────────────────── */}
         <p className="text-[11px] text-muted-foreground/50 mt-2 flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0 inline-block" />
-          點擊品牌行展開當月明細　|　毛利按有成本價之貨品計{totalCoverage > 0 && totalCoverage < 95 ? `(而家覆蓋 ${totalCoverage.toFixed(0)}% 營收,想準啲去 Shopify 補返 cost)` : ''}　|　「管理品牌」增減品牌
+          點擊品牌行展開{mtdRange.colPrefix}明細　|　毛利按有成本價之貨品計{totalCoverage > 0 && totalCoverage < 95 ? `(而家覆蓋 ${totalCoverage.toFixed(0)}% 營收,想準啲去 Shopify 補返 cost)` : ''}　|　「管理品牌」增減品牌
         </p>
       </CardContent>
 
