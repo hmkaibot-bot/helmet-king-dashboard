@@ -342,12 +342,13 @@ export default function DailyWeeklyPage() {
     async function load() {
       setLoading(true);
       try {
-        // Load from 1st of current month OR 45 days ago, whichever is earlier
-        // (ensures full MTD coverage even in late month)
+        // Load from 1st of current month OR 45 days ago, whichever is EARLIER —
+        // 45 日永遠涵蓋昨日/本週/上週/30日統計,月頭幾日「昨日/上週」先唔會跌出窗口。
+        // (舊寫法三元反咗,永遠得 MTD:9 月 1 號「昨日」= 8 月 31 成版變 0)
         const hktNow    = getHKNow();
         const firstOfMo = new Date(hktNow.getFullYear(), hktNow.getMonth(), 1);
         const fortyFiveAgo = new Date(hktNow); fortyFiveAgo.setDate(hktNow.getDate() - 45);
-        const fromDate  = toDateStr(firstOfMo < fortyFiveAgo ? fortyFiveAgo : firstOfMo);
+        const fromDate  = toDateStr(fortyFiveAgo < firstOfMo ? fortyFiveAgo : firstOfMo);
 
         // Order lines 只需要近 60 日 (velocityMap 用 60 日,其餘 join 45 日內嘅 orders)
         // — 全表拉嘅話係幾十萬行,呢個 filter 係本頁載入速度嘅關鍵
