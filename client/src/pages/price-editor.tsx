@@ -51,6 +51,15 @@ interface Change {
 const priceStr = (v: number | null) => (v != null ? String(v) : '');
 const PAGE = 200; // 母項列表每次 render 幾多行(幾千件貨一次過 render 會卡)
 
+// variant_title 一般係「顏色 / SIZE」(Shopify 用 " / " 駁選項)—
+// 拆開兩欄:顏色全名一欄、SIZE 一欄(老闆:唔要截字,SIZE 分開睇)
+const splitVariant = (t: string | null): [string | null, string | null] => {
+  if (!t || t === 'Default Title') return [null, null];
+  const i = t.indexOf(' / ');
+  if (i < 0) return [t, null];
+  return [t.slice(0, i), t.slice(i + 3)];
+};
+
 // modal 內每個 variant 嘅顏色/圖(/api/shopify-product action:variants 回嘅)
 interface ProductDetail {
   pid: number;
@@ -571,12 +580,13 @@ export default function PriceEditorPage() {
             <div className="overflow-x-auto">
               {/* min-w:塞唔落就橫向 scroll — 唔好俾瀏覽器壓縮啲欄(壓縮會令圖同
                   狀態文字變晒幼條;Tailwind preflight img max-width:100% 係幫兇) */}
-              <table className="w-full min-w-[1000px] text-sm">
+              <table className="w-full min-w-[1080px] text-sm">
                 <thead>
                   <tr className="border-b border-border/40 bg-muted/30">
                     <th className="text-left px-3 py-2 font-medium text-muted-foreground w-16">圖</th>
                     <th className="text-left px-3 py-2 font-medium text-muted-foreground">SKU</th>
-                    <th className="text-left px-3 py-2 font-medium text-muted-foreground">Variant</th>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground">顏色</th>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground w-20">SIZE</th>
                     <th className="text-right px-3 py-2 font-medium text-muted-foreground">庫存</th>
                     <th className="text-right px-3 py-2 font-medium text-muted-foreground">成本</th>
                     <th className="text-right px-3 py-2 font-medium text-muted-foreground">售價 HK$</th>
@@ -615,9 +625,15 @@ export default function PriceEditorPage() {
                           )}
                         </td>
                         <td className="px-3 py-2 tabular-nums whitespace-nowrap">{r.sku ?? '—'}</td>
-                        <td className="px-3 py-2 max-w-[160px] truncate" title={r.variant_title ?? ''}>
-                          {r.variant_title && r.variant_title !== 'Default Title' ? r.variant_title : '—'}
-                        </td>
+                        {(() => {
+                          const [colour, size] = splitVariant(r.variant_title);
+                          return (
+                            <>
+                              <td className="px-3 py-2 whitespace-nowrap">{colour ?? '—'}</td>
+                              <td className="px-3 py-2 whitespace-nowrap font-medium">{size ?? '—'}</td>
+                            </>
+                          );
+                        })()}
                         <td className="px-3 py-2 text-right tabular-nums">{r.inventory_quantity ?? '—'}</td>
                         <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{r.cost != null && r.cost > 0 ? formatCurrency(r.cost) : '—'}</td>
                         <td className="px-3 py-2 text-right">
