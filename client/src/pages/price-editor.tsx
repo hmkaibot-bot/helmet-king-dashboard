@@ -163,6 +163,11 @@ export default function PriceEditorPage() {
   useEffect(() => { setShown(PAGE); }, [q, vendorF, typeF]);
 
   // ── 產品主圖:顯示緊嗰批 lazy 攞(featuredImages 批量,每批 200)──────
+  // ⚠️ 特登冇「取消」邏輯:imgMap 係 append-only cache,遲返嚟嘅 response
+  // 照入 cache 冇壞處。舊版打搜尋每一下鍵盤都 cancel 上一次請求,但啲 id
+  // 已經標咗「攞過」,最後一下見「全部攞過」就唔再攞 → 灰格永遠唔上圖
+  // (老闆 2026-09-09 實試中招)。攞唔成功(401/500/網絡死)一律解除標記,
+  // 下次 render 自動重試。
   useEffect(() => {
     const pids = products
       .slice(0, shown)
@@ -170,11 +175,13 @@ export default function PriceEditorPage() {
       .filter((id) => !requestedImgs.current.has(id));
     if (pids.length === 0) return;
     pids.forEach((id) => requestedImgs.current.add(id));
-    let cancelled = false;
     (async () => {
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token;
-      if (!token) return;
+      if (!token) {
+        pids.forEach((id) => requestedImgs.current.delete(id));
+        return;
+      }
       for (let i = 0; i < pids.length; i += 200) {
         const chunk = pids.slice(i, i + 200);
         try {
@@ -184,16 +191,17 @@ export default function PriceEditorPage() {
             body: JSON.stringify({ action: 'featuredImages', productIds: chunk }),
           });
           const j: any = await resp.json().catch(() => null);
-          if (cancelled) return;
-          const images = resp.ok && j?.images && typeof j.images === 'object' ? j.images : {};
-          setImgMap((m) => ({ ...m, ...Object.fromEntries(chunk.map((id) => [id, images[id] ?? null])) }));
+          if (resp.ok && j?.images && typeof j.images === 'object') {
+            const images = j.images;
+            setImgMap((m) => ({ ...m, ...Object.fromEntries(chunk.map((id) => [id, images[id] ?? null])) }));
+          } else {
+            chunk.forEach((id) => requestedImgs.current.delete(id));
+          }
         } catch {
-          // 網絡失敗:唔好標成「攞過」— 下次 filter/搜尋轉一轉會自動重試
           chunk.forEach((id) => requestedImgs.current.delete(id));
         }
       }
     })();
-    return () => { cancelled = true; };
   }, [products, shown]);
 
   // ── modal 顏色/variant 圖:開 modal 先問(action:variants,有 cache)──
