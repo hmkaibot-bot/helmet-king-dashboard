@@ -91,6 +91,9 @@ export default function PriceEditorPage() {
   const [detail, setDetail] = useState<ProductDetail | null>(null);
   const detailCache = useRef(new Map<number, ProductDetail>());
   const [lightbox, setLightbox] = useState<string | null>(null);
+  // 「一次過改晒」列(老闆:正常所有色/SIZE 改同一個價)— 留空嘅欄唔郁
+  const [bulkP, setBulkP] = useState('');
+  const [bulkC, setBulkC] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -214,6 +217,9 @@ export default function PriceEditorPage() {
   }, [products, shown]);
 
   // ── modal 顏色/variant 圖:開 modal 先問(action:variants,有 cache)──
+  // 換咗件貨,一次過改晒嘅輸入清返空
+  useEffect(() => { setBulkP(''); setBulkC(''); }, [openPid]);
+
   useEffect(() => {
     if (openPid == null) { setDetail(null); return; }
     const cached = detailCache.current.get(openPid);
@@ -417,6 +423,38 @@ export default function PriceEditorPage() {
   // 呢個母項自己嘅未儲存改動(modal 儲存掣用)
   const openChanges = openPid != null ? dirty.changes.filter((c) => c.productId === openPid) : [];
 
+  // 「套用落全部」— 將頂欄嘅價填晒落呢件貨全部 SKU(留空欄唔郁),之後照舊逐行執
+  const applyBulk = () => {
+    if (!openProduct) return;
+    const p = bulkP.trim();
+    const c = bulkC.trim();
+    if (p === '' && c === '') return;
+    const vids = openProduct.variants.map((r) => r.variant_id);
+    setEdits((m) => {
+      const n = { ...m };
+      for (const r of openProduct.variants) {
+        const cur = n[r.variant_id] ?? { price: priceStr(r.price), compare: priceStr(r.compare_at_price) };
+        n[r.variant_id] = { price: p !== '' ? p : cur.price, compare: c !== '' ? c : cur.compare };
+      }
+      return n;
+    });
+    setRowErrors((m) => { const n = { ...m }; for (const v of vids) delete n[v]; return n; });
+    setSavedIds((s) => { const n = new Set(s); for (const v of vids) n.delete(v); return n; });
+  };
+
+  // confirm 對照:一模一樣嘅改動摺埋一行(統一改 18 個 SKU 唔使彈 18 張卡)
+  const confirmGroups = useMemo(() => {
+    if (!confirmChanges) return [];
+    const map = new Map<string, Change[]>();
+    for (const c of confirmChanges) {
+      const key = `${c.oldP}|${c.newP ?? 'x'}|${c.oldC ?? 'x'}|${c.newC === undefined ? 'keep' : c.newC}`;
+      const arr = map.get(key) ?? [];
+      arr.push(c);
+      map.set(key, arr);
+    }
+    return [...map.values()];
+  }, [confirmChanges]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-baseline justify-between flex-wrap gap-2">
@@ -577,6 +615,41 @@ export default function PriceEditorPage() {
                 <X className="h-4 w-4" />
               </button>
             </div>
+            {/* 一次過改晒:正常全部色/SIZE 同一個價 — 打一次,套用晒,例外先逐行執 */}
+            <div className="px-4 py-3 border-b border-border/40 bg-muted/20 flex items-center gap-3 flex-wrap">
+              <span className="text-sm font-medium">一次過改晒({openProduct.variants.length} 個 SKU)</span>
+              <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                售價
+                <input
+                  value={bulkP}
+                  onChange={(ev) => setBulkP(ev.target.value)}
+                  inputMode="decimal"
+                  placeholder="唔改"
+                  className="w-28 px-2.5 py-1.5 rounded border border-border bg-background text-right tabular-nums text-foreground"
+                  data-testid="bulk-price-input"
+                />
+              </label>
+              <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                劃線價
+                <input
+                  value={bulkC}
+                  onChange={(ev) => setBulkC(ev.target.value)}
+                  inputMode="decimal"
+                  placeholder="唔改"
+                  className="w-28 px-2.5 py-1.5 rounded border border-border bg-background text-right tabular-nums text-foreground"
+                  data-testid="bulk-compare-input"
+                />
+              </label>
+              <button
+                onClick={applyBulk}
+                disabled={bulkP.trim() === '' && bulkC.trim() === ''}
+                className="px-4 py-1.5 rounded bg-primary/15 border border-primary/40 text-primary text-sm font-semibold hover:bg-primary/25 disabled:opacity-40"
+                data-testid="bulk-apply"
+              >
+                套用落全部
+              </button>
+              <span className="text-xs text-muted-foreground">留空嘅欄唔會郁 · 套用完照舊逐行微調(例:SINGLE/DUO 唔同價)</span>
+            </div>
             <div className="overflow-x-auto">
               {/* min-w:塞唔落就橫向 scroll — 唔好俾瀏覽器壓縮啲欄(壓縮會令圖同
                   狀態文字變晒幼條;Tailwind preflight img max-width:100% 係幫兇) */}
@@ -699,22 +772,44 @@ export default function PriceEditorPage() {
           <div className="bg-card border border-border rounded-lg max-w-2xl w-full max-h-[80vh] overflow-y-auto p-4 space-y-3" onClick={(ev) => ev.stopPropagation()}>
             <h3 className="text-base font-semibold">確認改價({confirmChanges.length} 個 SKU)— 一撳即生效落網店 + POS</h3>
             <div className="space-y-2">
-              {confirmChanges.map((c) => (
-                <div key={c.variantId} className="rounded border border-border/50 px-3 py-2 text-sm space-y-1">
-                  <p className="font-medium">{c.label}</p>
+              {/* 一模一樣嘅改動摺埋一張卡(統一改 18 個 SKU 唔使彈 18 張);唔同嘅照逐張列 */}
+              {confirmGroups.map((g, gi) => {
+                const c0 = g[0];
+                const changeLine = (
                   <p className="tabular-nums text-muted-foreground">
-                    {c.newP != null && (
-                      <>售價 {formatCurrency(c.oldP)} → <span className="text-foreground font-semibold">{formatCurrency(c.newP)}</span>　</>
+                    {c0.newP != null && (
+                      <>售價 {formatCurrency(c0.oldP)} → <span className="text-foreground font-semibold">{formatCurrency(c0.newP)}</span>　</>
                     )}
-                    {c.newC !== undefined && (
-                      <>劃線價 {c.oldC != null ? formatCurrency(c.oldC) : '冇'} → <span className="text-foreground font-semibold">{c.newC != null ? formatCurrency(c.newC) : '清走'}</span></>
+                    {c0.newC !== undefined && (
+                      <>劃線價 {c0.oldC != null ? formatCurrency(c0.oldC) : '冇'} → <span className="text-foreground font-semibold">{c0.newC != null ? formatCurrency(c0.newC) : '清走'}</span></>
                     )}
                   </p>
-                  {c.warnings.map((w, i) => (
-                    <p key={i} className="text-amber-300">⚠️ {w}</p>
-                  ))}
-                </div>
-              ))}
+                );
+                if (g.length === 1) {
+                  return (
+                    <div key={c0.variantId} className="rounded border border-border/50 px-3 py-2 text-sm space-y-1">
+                      <p className="font-medium">{c0.label}</p>
+                      {changeLine}
+                      {c0.warnings.map((w, i) => (
+                        <p key={i} className="text-amber-300">⚠️ {w}</p>
+                      ))}
+                    </div>
+                  );
+                }
+                const names = g.map((c) => c.label.split(' — ')[1] ?? c.label);
+                const warnCount = new Map<string, number>();
+                for (const c of g) for (const w of c.warnings) warnCount.set(w, (warnCount.get(w) ?? 0) + 1);
+                return (
+                  <div key={gi} className="rounded border border-border/50 px-3 py-2 text-sm space-y-1">
+                    <p className="font-medium">{c0.label.split(' — ')[0]} — <span className="text-primary">{g.length} 個 SKU 同一改動</span></p>
+                    <p className="text-xs text-muted-foreground">{names.slice(0, 8).join('、')}{names.length > 8 ? ` …等共 ${names.length} 個` : ''}</p>
+                    {changeLine}
+                    {[...warnCount.entries()].map(([w, n], i) => (
+                      <p key={i} className="text-amber-300">⚠️ {w}{n < g.length ? `(${n} 個 SKU)` : ''}</p>
+                    ))}
+                  </div>
+                );
+              })}
             </div>
             <div className="flex justify-end gap-2 pt-1">
               <button onClick={() => setConfirmChanges(null)} disabled={saving} className="px-3 py-1.5 rounded border border-border text-xs hover:text-foreground">取消</button>
