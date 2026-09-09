@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { queryAllPages } from '@/lib/query-helpers';
 import { Card, CardContent } from '@/components/ui/card';
@@ -51,6 +51,16 @@ interface Change {
 const priceStr = (v: number | null) => (v != null ? String(v) : '');
 const PAGE = 200; // 母項列表每次 render 幾多行(幾千件貨一次過 render 會卡)
 
+// modal 內每個 variant 嘅顏色/圖(/api/shopify-product action:variants 回嘅)
+interface ProductDetail {
+  pid: number;
+  loading: boolean;
+  featured: string | null;
+  optionSummary: Array<{ name: string; values: string[] }>; // 例:顏色 → [BLACK, WHITE]
+  byVid: Record<number, { imageUrl: string | null; options: Record<string, string> }>;
+  truncated?: boolean;
+}
+
 export default function PriceEditorPage() {
   const [rows, setRows] = useState<InvRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -65,6 +75,13 @@ export default function PriceEditorPage() {
   const [confirmChanges, setConfirmChanges] = useState<Change[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  // 產品主圖(列表左邊)— 顯示緊嗰批先攞,requestedImgs 防重覆問
+  const [imgMap, setImgMap] = useState<Record<string, string | null>>({});
+  const requestedImgs = useRef(new Set<string>());
+  // modal 顏色/variant 圖(cache 免重覆問 Shopify)
+  const [detail, setDetail] = useState<ProductDetail | null>(null);
+  const detailCache = useRef(new Map<number, ProductDetail>());
+  const [lightbox, setLightbox] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -84,13 +101,17 @@ export default function PriceEditorPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // Esc 閂 modal(confirm 開緊嗰陣唔好搶)
+  // Esc 逐層閂:大圖 → modal(confirm 開緊嗰陣唔好搶)
   useEffect(() => {
-    if (openPid == null) return;
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !confirmChanges) setOpenPid(null); };
+    if (openPid == null && lightbox == null) return;
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (lightbox) { setLightbox(null); return; }
+      if (!confirmChanges) setOpenPid(null);
+    };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [openPid, confirmChanges]);
+  }, [openPid, confirmChanges, lightbox]);
 
   // ── filter 選項(由數據嚟,帶母項數)────────────────────────────────
   const { vendors, types } = useMemo(() => {
@@ -140,6 +161,87 @@ export default function PriceEditorPage() {
   }, [rows, q, vendorF, typeF]);
 
   useEffect(() => { setShown(PAGE); }, [q, vendorF, typeF]);
+
+  // ── 產品主圖:顯示緊嗰批 lazy 攞(featuredImages 批量,每批 200)──────
+  useEffect(() => {
+    const pids = products
+      .slice(0, shown)
+      .map((p) => String(p.pid))
+      .filter((id) => !requestedImgs.current.has(id));
+    if (pids.length === 0) return;
+    pids.forEach((id) => requestedImgs.current.add(id));
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) return;
+      for (let i = 0; i < pids.length; i += 200) {
+        const chunk = pids.slice(i, i + 200);
+        try {
+          const resp = await fetch('/api/shopify-product', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ action: 'featuredImages', productIds: chunk }),
+          });
+          const j: any = await resp.json().catch(() => null);
+          if (cancelled) return;
+          const images = resp.ok && j?.images && typeof j.images === 'object' ? j.images : {};
+          setImgMap((m) => ({ ...m, ...Object.fromEntries(chunk.map((id) => [id, images[id] ?? null])) }));
+        } catch {
+          if (!cancelled) setImgMap((m) => ({ ...m, ...Object.fromEntries(chunk.map((id) => [id, null])) }));
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [products, shown]);
+
+  // ── modal 顏色/variant 圖:開 modal 先問(action:variants,有 cache)──
+  useEffect(() => {
+    if (openPid == null) { setDetail(null); return; }
+    const cached = detailCache.current.get(openPid);
+    if (cached) { setDetail(cached); return; }
+    setDetail({ pid: openPid, loading: true, featured: imgMap[String(openPid)] ?? null, optionSummary: [], byVid: {} });
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        if (!token) throw new Error('no session');
+        const resp = await fetch('/api/shopify-product', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: 'variants', productId: String(openPid) }),
+        });
+        const j: any = await resp.json().catch(() => null);
+        if (!resp.ok || !j?.product) throw new Error(j?.error || 'variants fetch failed');
+        const byVid: ProductDetail['byVid'] = {};
+        for (const v of j.product.variants ?? []) {
+          const num = Number(String(v.id ?? '').split('/').pop());
+          if (num) byVid[num] = { imageUrl: v.imageUrl ?? null, options: v.options ?? {} };
+        }
+        const names: string[] = (j.product.optionNames ?? []).filter((n: string) => n && n !== 'Title');
+        const optionSummary = names.map((name) => ({
+          name,
+          values: [...new Set((j.product.variants ?? []).map((v: any) => String(v.options?.[name] ?? '')).filter(Boolean))] as string[],
+        }));
+        const d: ProductDetail = {
+          pid: openPid,
+          loading: false,
+          featured: j.product.featuredImage ?? imgMap[String(openPid)] ?? null,
+          optionSummary,
+          byVid,
+          truncated: !!j.product.truncated,
+        };
+        detailCache.current.set(openPid, d);
+        if (!cancelled) setDetail((cur) => (cur && cur.pid === openPid ? d : cur));
+      } catch {
+        // 攞唔到顏色/圖唔算致命 — modal 改價功能照用
+        if (!cancelled) setDetail((cur) => (cur && cur.pid === openPid ? { ...cur, loading: false } : cur));
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openPid]);
 
   const openProduct = openPid != null ? products.find((p) => p.pid === openPid) ?? null : null;
 
@@ -389,9 +491,14 @@ export default function PriceEditorPage() {
                 <button
                   key={p.pid}
                   onClick={() => setOpenPid(p.pid)}
-                  className="w-full px-4 py-2.5 flex items-center gap-3 text-left hover:bg-muted/20 transition-colors"
+                  className="w-full px-4 py-2 flex items-center gap-3 text-left hover:bg-muted/20 transition-colors"
                   data-testid={`price-product-${p.pid}`}
                 >
+                  {imgMap[String(p.pid)] ? (
+                    <img src={imgMap[String(p.pid)]!} alt="" loading="lazy" className="w-10 h-10 object-cover rounded border border-border/40 shrink-0 bg-white" />
+                  ) : (
+                    <div className="w-10 h-10 rounded bg-muted/40 border border-border/40 shrink-0" />
+                  )}
                   <div className="min-w-0 flex-1">
                     <p className="text-sm truncate">
                       {dirtyPids.has(p.pid) && <span className="text-amber-300 mr-1" title="有未儲存改動">●</span>}
@@ -421,10 +528,32 @@ export default function PriceEditorPage() {
       {openProduct && (
         <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onClick={() => !saving && setOpenPid(null)}>
           <div className="bg-card border border-border rounded-lg max-w-3xl w-full max-h-[85vh] overflow-y-auto" onClick={(ev) => ev.stopPropagation()}>
-            <div className="sticky top-0 bg-card border-b border-border/40 px-4 py-3 flex items-start gap-2 z-10">
+            <div className="sticky top-0 bg-card border-b border-border/40 px-4 py-3 flex items-start gap-3 z-10">
+              {(detail?.featured ?? imgMap[String(openProduct.pid)]) ? (
+                <img
+                  src={(detail?.featured ?? imgMap[String(openProduct.pid)])!}
+                  alt=""
+                  className="w-14 h-14 object-cover rounded border border-border/40 shrink-0 bg-white cursor-zoom-in"
+                  title="撳嚟睇大圖"
+                  onClick={() => setLightbox((detail?.featured ?? imgMap[String(openProduct.pid)])!)}
+                />
+              ) : (
+                <div className="w-14 h-14 rounded bg-muted/40 border border-border/40 shrink-0" />
+              )}
               <div className="min-w-0 flex-1">
                 <h3 className="text-sm font-semibold truncate">{openProduct.title}</h3>
                 <p className="text-[11px] text-muted-foreground">{openProduct.vendor}{openProduct.ptype ? ` · ${openProduct.ptype}` : ''} · 改完撳「儲存」先會郁 Shopify</p>
+                {detail?.loading ? (
+                  <p className="text-[11px] text-muted-foreground animate-pulse mt-0.5">攞緊顏色/圖…</p>
+                ) : detail && detail.optionSummary.length > 0 ? (
+                  <p className="text-[11px] mt-0.5 flex flex-wrap gap-x-4 gap-y-0.5">
+                    {detail.optionSummary.map((o) => (
+                      <span key={o.name} className="text-muted-foreground">
+                        {o.name}:<span className="text-foreground">{o.values.join(' · ')}</span>
+                      </span>
+                    ))}
+                  </p>
+                ) : null}
               </div>
               <button onClick={() => setOpenPid(null)} className="p-1 rounded hover:bg-muted/40 shrink-0" title="閂(Esc)" data-testid="price-modal-close">
                 <X className="h-4 w-4" />
@@ -434,6 +563,7 @@ export default function PriceEditorPage() {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border/40 bg-muted/30">
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground w-11">圖</th>
                     <th className="text-left px-3 py-2 font-medium text-muted-foreground">SKU</th>
                     <th className="text-left px-3 py-2 font-medium text-muted-foreground">Variant</th>
                     <th className="text-right px-3 py-2 font-medium text-muted-foreground">庫存</th>
@@ -456,8 +586,23 @@ export default function PriceEditorPage() {
                     const m = marginPct(isFinite(newP) && newP > 0 ? newP : r.price, r.cost);
                     const cmpNum = compareVal.trim() === '' ? null : Number(compareVal);
                     const cmpWeird = cmpNum != null && isFinite(cmpNum) && cmpNum > 0 && isFinite(newP) && cmpNum <= newP;
+                    const vImg = detail?.byVid[vid]?.imageUrl ?? detail?.featured ?? null;
                     return (
                       <tr key={vid} className={`border-b border-border/20 ${touched ? 'bg-amber-500/10' : ''}`} data-testid={`price-row-${vid}`}>
+                        <td className="px-3 py-1.5">
+                          {vImg ? (
+                            <img
+                              src={vImg}
+                              alt=""
+                              loading="lazy"
+                              className="w-9 h-9 object-cover rounded border border-border/40 bg-white cursor-zoom-in"
+                              title="撳嚟睇大圖"
+                              onClick={() => setLightbox(vImg)}
+                            />
+                          ) : (
+                            <div className="w-9 h-9 rounded bg-muted/40 border border-border/40" />
+                          )}
+                        </td>
                         <td className="px-3 py-2 tabular-nums whitespace-nowrap">{r.sku ?? '—'}</td>
                         <td className="px-3 py-2 max-w-[160px] truncate" title={r.variant_title ?? ''}>
                           {r.variant_title && r.variant_title !== 'Default Title' ? r.variant_title : '—'}
@@ -551,6 +696,17 @@ export default function PriceEditorPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 產品/variant 大圖 lightbox — 撳任何地方或 Esc 閂 */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[130] bg-black/85 flex items-center justify-center p-6 cursor-zoom-out"
+          onClick={() => setLightbox(null)}
+          data-testid="price-image-lightbox"
+        >
+          <img src={lightbox} alt="" className="max-w-[92vw] max-h-[92vh] object-contain rounded-lg shadow-2xl bg-white" />
         </div>
       )}
     </div>
