@@ -536,26 +536,26 @@ export default function PriceEditorPage() {
       {/* 改價 modal — 撳咗件貨先見到 SKU 同輸入欄 */}
       {openProduct && (
         <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onClick={() => !saving && setOpenPid(null)}>
-          <div className="bg-card border border-border rounded-lg max-w-4xl w-full max-h-[85vh] overflow-y-auto" onClick={(ev) => ev.stopPropagation()}>
+          <div className="bg-card border border-border rounded-lg max-w-6xl w-full max-h-[90vh] overflow-y-auto" onClick={(ev) => ev.stopPropagation()}>
             <div className="sticky top-0 bg-card border-b border-border/40 px-4 py-3 flex items-start gap-3 z-10">
               {(detail?.featured ?? imgMap[String(openProduct.pid)]) ? (
                 <img
                   src={(detail?.featured ?? imgMap[String(openProduct.pid)])!}
                   alt=""
-                  className="w-14 h-14 max-w-none object-cover rounded border border-border/40 shrink-0 bg-white cursor-zoom-in"
+                  className="w-20 h-20 max-w-none object-cover rounded border border-border/40 shrink-0 bg-white cursor-zoom-in"
                   title="撳嚟睇大圖"
                   onClick={() => setLightbox((detail?.featured ?? imgMap[String(openProduct.pid)])!)}
                 />
               ) : (
-                <div className="w-14 h-14 rounded bg-muted/40 border border-border/40 shrink-0" />
+                <div className="w-20 h-20 rounded bg-muted/40 border border-border/40 shrink-0" />
               )}
               <div className="min-w-0 flex-1">
-                <h3 className="text-sm font-semibold truncate">{openProduct.title}</h3>
-                <p className="text-[11px] text-muted-foreground">{openProduct.vendor}{openProduct.ptype ? ` · ${openProduct.ptype}` : ''} · 改完撳「儲存」先會郁 Shopify</p>
+                <h3 className="text-lg font-semibold truncate">{openProduct.title}</h3>
+                <p className="text-sm text-muted-foreground">{openProduct.vendor}{openProduct.ptype ? ` · ${openProduct.ptype}` : ''} · 改完撳「儲存」先會郁 Shopify</p>
                 {detail?.loading ? (
-                  <p className="text-[11px] text-muted-foreground animate-pulse mt-0.5">攞緊顏色/圖…</p>
+                  <p className="text-sm text-muted-foreground animate-pulse mt-1">攞緊顏色/圖…</p>
                 ) : detail && detail.optionSummary.length > 0 ? (
-                  <p className="text-[11px] mt-0.5 flex flex-wrap gap-x-4 gap-y-0.5">
+                  <p className="text-sm mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
                     {detail.optionSummary.map((o) => (
                       <span key={o.name} className="text-muted-foreground">
                         {o.name}:<span className="text-foreground">{o.values.join(' · ')}</span>
@@ -571,10 +571,10 @@ export default function PriceEditorPage() {
             <div className="overflow-x-auto">
               {/* min-w:塞唔落就橫向 scroll — 唔好俾瀏覽器壓縮啲欄(壓縮會令圖同
                   狀態文字變晒幼條;Tailwind preflight img max-width:100% 係幫兇) */}
-              <table className="w-full min-w-[880px] text-xs">
+              <table className="w-full min-w-[1000px] text-sm">
                 <thead>
                   <tr className="border-b border-border/40 bg-muted/30">
-                    <th className="text-left px-3 py-2 font-medium text-muted-foreground w-11">圖</th>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground w-16">圖</th>
                     <th className="text-left px-3 py-2 font-medium text-muted-foreground">SKU</th>
                     <th className="text-left px-3 py-2 font-medium text-muted-foreground">Variant</th>
                     <th className="text-right px-3 py-2 font-medium text-muted-foreground">庫存</th>
@@ -582,7 +582,7 @@ export default function PriceEditorPage() {
                     <th className="text-right px-3 py-2 font-medium text-muted-foreground">售價 HK$</th>
                     <th className="text-right px-3 py-2 font-medium text-muted-foreground" title="Compare-at price — 高過售價先會顯示做劃線原價/折扣">劃線價 HK$</th>
                     <th className="text-right px-3 py-2 font-medium text-muted-foreground">毛利率</th>
-                    <th className="text-left px-3 py-2 font-medium text-muted-foreground w-52">狀態</th>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground w-56">狀態</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -600,18 +600,18 @@ export default function PriceEditorPage() {
                     const vImg = detail?.byVid[vid]?.imageUrl ?? detail?.featured ?? null;
                     return (
                       <tr key={vid} className={`border-b border-border/20 ${touched ? 'bg-amber-500/10' : ''}`} data-testid={`price-row-${vid}`}>
-                        <td className="px-3 py-1.5">
+                        <td className="px-3 py-2">
                           {vImg ? (
                             <img
                               src={vImg}
                               alt=""
                               loading="lazy"
-                              className="w-9 h-9 max-w-none object-cover rounded border border-border/40 bg-white cursor-zoom-in"
+                              className="w-12 h-12 max-w-none object-cover rounded border border-border/40 bg-white cursor-zoom-in"
                               title="撳嚟睇大圖"
                               onClick={() => setLightbox(vImg)}
                             />
                           ) : (
-                            <div className="w-9 h-9 rounded bg-muted/40 border border-border/40" />
+                            <div className="w-12 h-12 rounded bg-muted/40 border border-border/40" />
                           )}
                         </td>
                         <td className="px-3 py-2 tabular-nums whitespace-nowrap">{r.sku ?? '—'}</td>
@@ -625,7 +625,7 @@ export default function PriceEditorPage() {
                             value={priceVal}
                             onChange={(ev) => setEdit(vid, 'price', ev.target.value, r)}
                             inputMode="decimal"
-                            className="w-24 px-2 py-1 rounded border border-border bg-background text-right tabular-nums"
+                            className="w-28 px-2.5 py-1.5 rounded border border-border bg-background text-right tabular-nums"
                             data-testid={`price-input-${vid}`}
                           />
                         </td>
@@ -635,7 +635,7 @@ export default function PriceEditorPage() {
                             onChange={(ev) => setEdit(vid, 'compare', ev.target.value, r)}
                             inputMode="decimal"
                             placeholder="冇"
-                            className="w-24 px-2 py-1 rounded border border-border bg-background text-right tabular-nums"
+                            className="w-28 px-2.5 py-1.5 rounded border border-border bg-background text-right tabular-nums"
                             data-testid={`compare-input-${vid}`}
                           />
                         </td>
@@ -658,15 +658,15 @@ export default function PriceEditorPage() {
               </table>
             </div>
             <div className="sticky bottom-0 bg-card border-t border-border/40 px-4 py-3 flex items-center gap-2">
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-sm text-muted-foreground">
                 {openChanges.length > 0 ? `呢件貨 ${openChanges.length} 項未儲存` : '未有改動'}
               </span>
               <div className="ml-auto flex gap-2">
-                <button onClick={() => setOpenPid(null)} className="px-3 py-1.5 rounded border border-border text-xs hover:text-foreground">閂</button>
+                <button onClick={() => setOpenPid(null)} className="px-4 py-2 rounded border border-border text-sm hover:text-foreground">閂</button>
                 <button
                   onClick={() => openChanges.length > 0 && setConfirmChanges(openChanges)}
                   disabled={openChanges.length === 0 || saving}
-                  className="px-4 py-1.5 rounded bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-50"
+                  className="px-5 py-2 rounded bg-primary text-primary-foreground text-sm font-semibold disabled:opacity-50"
                   data-testid="price-modal-save"
                 >
                   儲存改價…
@@ -681,10 +681,10 @@ export default function PriceEditorPage() {
       {confirmChanges && (
         <div className="fixed inset-0 z-[110] bg-black/70 flex items-center justify-center p-4" onClick={() => !saving && setConfirmChanges(null)}>
           <div className="bg-card border border-border rounded-lg max-w-2xl w-full max-h-[80vh] overflow-y-auto p-4 space-y-3" onClick={(ev) => ev.stopPropagation()}>
-            <h3 className="text-sm font-semibold">確認改價({confirmChanges.length} 個 SKU)— 一撳即生效落網店 + POS</h3>
+            <h3 className="text-base font-semibold">確認改價({confirmChanges.length} 個 SKU)— 一撳即生效落網店 + POS</h3>
             <div className="space-y-2">
               {confirmChanges.map((c) => (
-                <div key={c.variantId} className="rounded border border-border/50 px-3 py-2 text-xs space-y-1">
+                <div key={c.variantId} className="rounded border border-border/50 px-3 py-2 text-sm space-y-1">
                   <p className="font-medium">{c.label}</p>
                   <p className="tabular-nums text-muted-foreground">
                     {c.newP != null && (
