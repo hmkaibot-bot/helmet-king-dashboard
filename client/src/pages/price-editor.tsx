@@ -188,7 +188,8 @@ export default function PriceEditorPage() {
           const images = resp.ok && j?.images && typeof j.images === 'object' ? j.images : {};
           setImgMap((m) => ({ ...m, ...Object.fromEntries(chunk.map((id) => [id, images[id] ?? null])) }));
         } catch {
-          if (!cancelled) setImgMap((m) => ({ ...m, ...Object.fromEntries(chunk.map((id) => [id, null])) }));
+          // 網絡失敗:唔好標成「攞過」— 下次 filter/搜尋轉一轉會自動重試
+          chunk.forEach((id) => requestedImgs.current.delete(id));
         }
       }
     })();
@@ -495,7 +496,7 @@ export default function PriceEditorPage() {
                   data-testid={`price-product-${p.pid}`}
                 >
                   {imgMap[String(p.pid)] ? (
-                    <img src={imgMap[String(p.pid)]!} alt="" loading="lazy" className="w-10 h-10 object-cover rounded border border-border/40 shrink-0 bg-white" />
+                    <img src={imgMap[String(p.pid)]!} alt="" loading="lazy" className="w-10 h-10 max-w-none object-cover rounded border border-border/40 shrink-0 bg-white" />
                   ) : (
                     <div className="w-10 h-10 rounded bg-muted/40 border border-border/40 shrink-0" />
                   )}
@@ -527,13 +528,13 @@ export default function PriceEditorPage() {
       {/* 改價 modal — 撳咗件貨先見到 SKU 同輸入欄 */}
       {openProduct && (
         <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onClick={() => !saving && setOpenPid(null)}>
-          <div className="bg-card border border-border rounded-lg max-w-3xl w-full max-h-[85vh] overflow-y-auto" onClick={(ev) => ev.stopPropagation()}>
+          <div className="bg-card border border-border rounded-lg max-w-4xl w-full max-h-[85vh] overflow-y-auto" onClick={(ev) => ev.stopPropagation()}>
             <div className="sticky top-0 bg-card border-b border-border/40 px-4 py-3 flex items-start gap-3 z-10">
               {(detail?.featured ?? imgMap[String(openProduct.pid)]) ? (
                 <img
                   src={(detail?.featured ?? imgMap[String(openProduct.pid)])!}
                   alt=""
-                  className="w-14 h-14 object-cover rounded border border-border/40 shrink-0 bg-white cursor-zoom-in"
+                  className="w-14 h-14 max-w-none object-cover rounded border border-border/40 shrink-0 bg-white cursor-zoom-in"
                   title="撳嚟睇大圖"
                   onClick={() => setLightbox((detail?.featured ?? imgMap[String(openProduct.pid)])!)}
                 />
@@ -560,7 +561,9 @@ export default function PriceEditorPage() {
               </button>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+              {/* min-w:塞唔落就橫向 scroll — 唔好俾瀏覽器壓縮啲欄(壓縮會令圖同
+                  狀態文字變晒幼條;Tailwind preflight img max-width:100% 係幫兇) */}
+              <table className="w-full min-w-[880px] text-xs">
                 <thead>
                   <tr className="border-b border-border/40 bg-muted/30">
                     <th className="text-left px-3 py-2 font-medium text-muted-foreground w-11">圖</th>
@@ -595,7 +598,7 @@ export default function PriceEditorPage() {
                               src={vImg}
                               alt=""
                               loading="lazy"
-                              className="w-9 h-9 object-cover rounded border border-border/40 bg-white cursor-zoom-in"
+                              className="w-9 h-9 max-w-none object-cover rounded border border-border/40 bg-white cursor-zoom-in"
                               title="撳嚟睇大圖"
                               onClick={() => setLightbox(vImg)}
                             />
