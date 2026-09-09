@@ -1,24 +1,23 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { queryAllPages } from '@/lib/query-helpers';
 import { Card, CardContent } from '@/components/ui/card';
 import { formatCurrency } from '@/lib/format';
-import { CircleDollarSign, Search, Undo2, TriangleAlert } from 'lucide-react';
+import { CircleDollarSign, Search, Undo2, TriangleAlert, X } from 'lucide-react';
 
 /**
  * 改價 Price Editor — 逐個 SKU 改「正價」(售價 + 劃線價),即改即生效。
  *
- * 同推廣活動嗰套嘅分工(grilling 2026-09-09 老闆定案):
- *  - 呢頁改嘅係正價(例如加價),唔搞活動、唔寫 snapshot、冇還原機制
- *  - 推廣減價照舊行推廣活動頁(有自動劃線價 + snapshot + 一撳還原)
- *  - 推廣中(Shopify 有 hk_promo.snapshot)嘅 SKU 呢頁拒改 —— API 層把關,
- *    唔係嘅話活動「還原原價」會用舊 snapshot 冚走啱啱改嘅新正價
+ * UX(老闆 2026-09-09 第二輪):品牌 + Product Type filter;預設 list 晒
+ * 母項(product)出嚟,每行極簡(貨名/牌子/價錢範圍/SKU 數);撳一行先
+ * 彈 modal 改價 — 所有輸入/警告/儲存都收埋入 modal,列表唔好嘈。
  *
- * 真相邊個:Shopify 係價格唯一真相。寫成功先至鏡返落本地 shopify_inventory
- * (RLS authenticated 可寫),全 dashboard 即改即見,唔使等夜間 sync。
+ * 分工(grilling 定案):呢頁改正價(例如加價),唔搞活動、唔寫 snapshot;
+ * 推廣減價行推廣活動頁。推廣中(Shopify 有 hk_promo.snapshot)嘅 SKU
+ * API 層拒改 — 唔係活動「還原原價」會冚走新正價。
  *
- * 保險絲:改價前 confirm 對照(舊→新);劃線價唔高過售價會黃字警告;
- * 同原價差 >40% 當疑似打錯,confirm 入面紅字提醒。
+ * 真相:Shopify 係唯一真相;寫成功先鏡返本地 shopify_inventory(RLS
+ * authenticated 可寫),全 dashboard 即改即見,唔使等夜間 sync。
  */
 
 interface InvRow {
@@ -36,26 +35,30 @@ interface InvRow {
   cost: number | null;
 }
 
-// 每個 variant 嘅未儲存輸入(raw string,俾人打緊字唔好搶格式)
 interface EditInput { price: string; compare: string; }
 
 interface Change {
   productId: number;
   variantId: number;
-  label: string;       // 「產品名 — variant/SKU」
+  label: string;
   oldP: number;
-  newP: number | null;      // null = 冇改售價
+  newP: number | null;             // null = 冇改售價
   oldC: number | null;
   newC: number | null | undefined; // undefined = 冇改;null = 清走劃線價
   warnings: string[];
 }
 
 const priceStr = (v: number | null) => (v != null ? String(v) : '');
+const PAGE = 200; // 母項列表每次 render 幾多行(幾千件貨一次過 render 會卡)
 
 export default function PriceEditorPage() {
   const [rows, setRows] = useState<InvRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
+  const [vendorF, setVendorF] = useState('');
+  const [typeF, setTypeF] = useState('');
+  const [shown, setShown] = useState(PAGE);
+  const [openPid, setOpenPid] = useState<number | null>(null);
   const [edits, setEdits] = useState<Record<number, EditInput>>({});
   const [rowErrors, setRowErrors] = useState<Record<number, string>>({});
   const [savedIds, setSavedIds] = useState<Set<number>>(new Set());
@@ -81,30 +84,64 @@ export default function PriceEditorPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // ── 搜尋 → 商品分組(要打至少 2 個字先出結果,免一開頁 render 幾千行)──
+  // Esc 閂 modal(confirm 開緊嗰陣唔好搶)
+  useEffect(() => {
+    if (openPid == null) return;
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !confirmChanges) setOpenPid(null); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [openPid, confirmChanges]);
+
+  // ── filter 選項(由數據嚟,帶母項數)────────────────────────────────
+  const { vendors, types } = useMemo(() => {
+    const vSet = new Map<string, Set<number>>();
+    const tSet = new Map<string, Set<number>>();
+    for (const r of rows) {
+      const v = (r.vendor ?? '').trim();
+      const t = (r.product_type ?? '').trim();
+      if (v) { const s = vSet.get(v) ?? new Set(); s.add(r.product_id); vSet.set(v, s); }
+      if (t) { const s = tSet.get(t) ?? new Set(); s.add(r.product_id); tSet.set(t, s); }
+    }
+    const toList = (m: Map<string, Set<number>>) =>
+      [...m.entries()].map(([name, s]) => ({ name, n: s.size })).sort((a, b) => a.name.localeCompare(b.name));
+    return { vendors: toList(vSet), types: toList(tSet) };
+  }, [rows]);
+
+  // ── 母項列表(filter + 搜尋;預設全部 list 晒)──────────────────────
   const products = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    if (needle.length < 2) return { list: [] as Array<{ pid: number; title: string; vendor: string; ptype: string; variants: InvRow[] }>, more: 0 };
     const byPid = new Map<number, InvRow[]>();
     for (const r of rows) {
       if (r.variant_id == null) continue;
-      const hay = `${r.product_title ?? ''} ${r.vendor ?? ''} ${r.sku ?? ''} ${r.product_type ?? ''}`.toLowerCase();
-      if (!hay.includes(needle)) continue;
+      if (vendorF && (r.vendor ?? '').trim() !== vendorF) continue;
+      if (typeF && (r.product_type ?? '').trim() !== typeF) continue;
+      if (needle) {
+        const hay = `${r.product_title ?? ''} ${r.vendor ?? ''} ${r.sku ?? ''}`.toLowerCase();
+        if (!hay.includes(needle)) continue;
+      }
       const arr = byPid.get(r.product_id) ?? [];
       arr.push(r);
       byPid.set(r.product_id, arr);
     }
-    const all = [...byPid.entries()]
-      .map(([pid, variants]) => ({
-        pid,
-        title: variants[0]?.product_title ?? `#${pid}`,
-        vendor: variants[0]?.vendor ?? '',
-        ptype: variants[0]?.product_type ?? '',
-        variants: [...variants].sort((a, b) => String(a.sku ?? '').localeCompare(String(b.sku ?? ''))),
-      }))
+    return [...byPid.entries()]
+      .map(([pid, variants]) => {
+        const prices = variants.map((v) => v.price).filter((p): p is number => p != null && p > 0);
+        return {
+          pid,
+          title: variants[0]?.product_title ?? `#${pid}`,
+          vendor: (variants[0]?.vendor ?? '').trim(),
+          ptype: (variants[0]?.product_type ?? '').trim(),
+          minP: prices.length ? Math.min(...prices) : null,
+          maxP: prices.length ? Math.max(...prices) : null,
+          variants: [...variants].sort((a, b) => String(a.sku ?? '').localeCompare(String(b.sku ?? ''))),
+        };
+      })
       .sort((a, b) => a.title.localeCompare(b.title));
-    return { list: all.slice(0, 40), more: Math.max(0, all.length - 40) };
-  }, [rows, q]);
+  }, [rows, q, vendorF, typeF]);
+
+  useEffect(() => { setShown(PAGE); }, [q, vendorF, typeF]);
+
+  const openProduct = openPid != null ? products.find((p) => p.pid === openPid) ?? null : null;
 
   const setEdit = (vid: number, field: keyof EditInput, value: string, original: InvRow) => {
     setEdits((m) => {
@@ -115,7 +152,7 @@ export default function PriceEditorPage() {
     setSavedIds((s) => { if (!s.has(vid)) return s; const n = new Set(s); n.delete(vid); return n; });
   };
 
-  // ── 未儲存改動(逐行對比輸入 vs 原值)────────────────────────────────
+  // ── 未儲存改動(全域計,行為同舊版一致)────────────────────────────
   const dirty = useMemo((): { changes: Change[]; invalid: string[] } => {
     const changes: Change[] = [];
     const invalid: string[] = [];
@@ -164,6 +201,8 @@ export default function PriceEditorPage() {
     return { changes, invalid };
   }, [edits, rows]);
 
+  const dirtyPids = useMemo(() => new Set(dirty.changes.map((c) => c.productId)), [dirty.changes]);
+
   const resetEdits = () => { setEdits({}); setRowErrors({}); };
 
   // ── 儲存:寫 Shopify → 成功先鏡返本地 DB + state ─────────────────────
@@ -209,7 +248,6 @@ export default function PriceEditorPage() {
         if (pr.error) for (const c of byProduct.get(Number(pr.productId)) ?? []) errs[c.variantId] = pr.error;
       }
 
-      // 成功嗰批:鏡返落本地 shopify_inventory(即改即見,唔等夜間 sync)+ 更新 state
       const okChanges = changes.filter((c) => okVids.has(c.variantId));
       for (const c of okChanges) {
         const patch: Record<string, number | null> = {};
@@ -251,6 +289,14 @@ export default function PriceEditorPage() {
     return ((price - cost) / price) * 100;
   };
 
+  const fmtRange = (minP: number | null, maxP: number | null) => {
+    if (minP == null) return '—';
+    return minP === maxP ? formatCurrency(minP) : `${formatCurrency(minP)} – ${formatCurrency(maxP!)}`;
+  };
+
+  // 呢個母項自己嘅未儲存改動(modal 儲存掣用)
+  const openChanges = openPid != null ? dirty.changes.filter((c) => c.productId === openPid) : [];
+
   return (
     <div className="space-y-4">
       <div className="flex items-baseline justify-between flex-wrap gap-2">
@@ -258,27 +304,52 @@ export default function PriceEditorPage() {
           <CircleDollarSign className="h-4 w-4 text-primary" /> 改價 <span className="text-xs font-normal text-muted-foreground">Price Editor(正價,逐個 SKU)</span>
         </h2>
         <span className="text-[11px] text-muted-foreground">
-          即改即生效(網店 + 門市 POS + dashboard)· 推廣減價去「推廣活動」頁 · 推廣中嘅 SKU 要先還原先改得
+          撳件貨先彈出嚟改 · 即改即生效(網店 + POS + dashboard)· 推廣中嘅 SKU 要先還原先改得
         </span>
       </div>
 
-      {/* 搜尋 */}
-      <div className="relative max-w-md">
-        <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="搜貨名 / SKU / 品牌 / 類別(至少 2 個字)"
-          className="w-full pl-8 pr-3 py-2 rounded-md border border-border bg-card text-sm"
-          data-testid="price-editor-search"
-        />
+      {/* filter 列:品牌 / Product Type / 搜尋 */}
+      <div className="flex gap-2 flex-wrap items-center">
+        <select
+          value={vendorF}
+          onChange={(e) => setVendorF(e.target.value)}
+          className="px-2 py-2 rounded-md border border-border bg-card text-xs max-w-[180px]"
+          data-testid="price-filter-vendor"
+        >
+          <option value="">全部品牌</option>
+          {vendors.map((v) => (
+            <option key={v.name} value={v.name}>{v.name}({v.n})</option>
+          ))}
+        </select>
+        <select
+          value={typeF}
+          onChange={(e) => setTypeF(e.target.value)}
+          className="px-2 py-2 rounded-md border border-border bg-card text-xs max-w-[220px]"
+          data-testid="price-filter-type"
+        >
+          <option value="">全部類別</option>
+          {types.map((t) => (
+            <option key={t.name} value={t.name}>{t.name}({t.n})</option>
+          ))}
+        </select>
+        <div className="relative flex-1 min-w-[200px] max-w-md">
+          <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="搜貨名 / SKU"
+            className="w-full pl-8 pr-3 py-2 rounded-md border border-border bg-card text-xs"
+            data-testid="price-editor-search"
+          />
+        </div>
+        <span className="text-[11px] text-muted-foreground tabular-nums">{products.length} 件商品</span>
       </div>
 
       {toast && (
         <div className="rounded-md border border-border/60 bg-card px-3 py-2 text-xs" data-testid="price-editor-toast">{toast}</div>
       )}
 
-      {/* 未儲存改動列 */}
+      {/* 全域未儲存提示(可以幾件貨改埋一齊先儲存)*/}
       {(dirty.changes.length > 0 || dirty.invalid.length > 0) && (
         <div className="sticky top-0 z-20 rounded-md border border-amber-500/40 bg-amber-950/60 backdrop-blur px-3 py-2 flex items-center gap-3 flex-wrap text-xs">
           <span className="text-amber-300 font-semibold">{dirty.changes.length} 項未儲存改動</span>
@@ -299,132 +370,178 @@ export default function PriceEditorPage() {
               className="px-3 py-1 rounded bg-primary text-primary-foreground font-semibold disabled:opacity-50"
               data-testid="price-editor-save"
             >
-              儲存改價…
+              儲存全部改價…
             </button>
           </div>
         </div>
       )}
 
+      {/* 母項列表 — 極簡:貨名 + 牌子/類別細字 + 價錢範圍 + SKU 數 */}
       {loading ? (
         <p className="text-xs text-muted-foreground py-8 text-center animate-pulse">載入緊 SKU 價目…</p>
-      ) : q.trim().length < 2 ? (
-        <p className="text-xs text-muted-foreground py-10 text-center">
-          🔍 打貨名 / SKU / 品牌搜尋(例:CARDO、S00049899、SHOEI)— 搵到先逐個 SKU 改
-        </p>
-      ) : products.list.length === 0 ? (
-        <p className="text-xs text-muted-foreground py-10 text-center">搵唔到「{q}」— 試下貨名其他寫法或 SKU</p>
+      ) : products.length === 0 ? (
+        <p className="text-xs text-muted-foreground py-10 text-center">呢個 filter 組合冇貨 — 試下放寬啲</p>
       ) : (
-        <div className="space-y-3">
-          {products.more > 0 && (
-            <p className="text-[11px] text-muted-foreground">結果太多,只顯示頭 40 件商品(仲有 {products.more} 件)— 打精確啲</p>
-          )}
-          {products.list.map((p) => (
-            <Card key={p.pid} className="border-border/40 overflow-hidden">
-              <CardContent className="p-0">
-                <div className="px-4 pt-3 pb-2 flex items-baseline gap-2 flex-wrap">
-                  <h3 className="text-sm font-semibold">{p.title}</h3>
-                  <span className="text-[11px] text-muted-foreground">{p.vendor}{p.ptype ? ` · ${p.ptype}` : ''}</span>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-border/40 bg-muted/30">
-                        <th className="text-left px-3 py-2 font-medium text-muted-foreground">SKU</th>
-                        <th className="text-left px-3 py-2 font-medium text-muted-foreground">Variant</th>
-                        <th className="text-right px-3 py-2 font-medium text-muted-foreground">庫存</th>
-                        <th className="text-right px-3 py-2 font-medium text-muted-foreground">成本</th>
-                        <th className="text-right px-3 py-2 font-medium text-muted-foreground">售價 HK$</th>
-                        <th className="text-right px-3 py-2 font-medium text-muted-foreground" title="Compare-at price — 高過售價先會顯示做劃線原價/折扣">劃線價 HK$</th>
-                        <th className="text-right px-3 py-2 font-medium text-muted-foreground">毛利率</th>
-                        <th className="text-left px-3 py-2 font-medium text-muted-foreground w-56">狀態</th>
+        <Card className="border-border/40 overflow-hidden">
+          <CardContent className="p-0">
+            <div className="divide-y divide-border/20">
+              {products.slice(0, shown).map((p) => (
+                <button
+                  key={p.pid}
+                  onClick={() => setOpenPid(p.pid)}
+                  className="w-full px-4 py-2.5 flex items-center gap-3 text-left hover:bg-muted/20 transition-colors"
+                  data-testid={`price-product-${p.pid}`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm truncate">
+                      {dirtyPids.has(p.pid) && <span className="text-amber-300 mr-1" title="有未儲存改動">●</span>}
+                      {p.title}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground truncate">{p.vendor}{p.ptype ? ` · ${p.ptype}` : ''}</p>
+                  </div>
+                  <span className="text-sm tabular-nums whitespace-nowrap">{fmtRange(p.minP, p.maxP)}</span>
+                  <span className="text-[11px] text-muted-foreground tabular-nums w-14 text-right shrink-0">{p.variants.length} SKU</span>
+                </button>
+              ))}
+            </div>
+            {products.length > shown && (
+              <button
+                onClick={() => setShown((n) => n + PAGE)}
+                className="w-full py-2.5 text-xs text-muted-foreground hover:text-foreground border-t border-border/40"
+                data-testid="price-editor-more"
+              >
+                顯示更多(仲有 {products.length - shown} 件)
+              </button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 改價 modal — 撳咗件貨先見到 SKU 同輸入欄 */}
+      {openProduct && (
+        <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onClick={() => !saving && setOpenPid(null)}>
+          <div className="bg-card border border-border rounded-lg max-w-3xl w-full max-h-[85vh] overflow-y-auto" onClick={(ev) => ev.stopPropagation()}>
+            <div className="sticky top-0 bg-card border-b border-border/40 px-4 py-3 flex items-start gap-2 z-10">
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold truncate">{openProduct.title}</h3>
+                <p className="text-[11px] text-muted-foreground">{openProduct.vendor}{openProduct.ptype ? ` · ${openProduct.ptype}` : ''} · 改完撳「儲存」先會郁 Shopify</p>
+              </div>
+              <button onClick={() => setOpenPid(null)} className="p-1 rounded hover:bg-muted/40 shrink-0" title="閂(Esc)" data-testid="price-modal-close">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border/40 bg-muted/30">
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground">SKU</th>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground">Variant</th>
+                    <th className="text-right px-3 py-2 font-medium text-muted-foreground">庫存</th>
+                    <th className="text-right px-3 py-2 font-medium text-muted-foreground">成本</th>
+                    <th className="text-right px-3 py-2 font-medium text-muted-foreground">售價 HK$</th>
+                    <th className="text-right px-3 py-2 font-medium text-muted-foreground" title="Compare-at price — 高過售價先會顯示做劃線原價/折扣">劃線價 HK$</th>
+                    <th className="text-right px-3 py-2 font-medium text-muted-foreground">毛利率</th>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground w-52">狀態</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {openProduct.variants.map((r) => {
+                    const vid = r.variant_id;
+                    const e = edits[vid];
+                    const priceVal = e ? e.price : priceStr(r.price);
+                    const compareVal = e ? e.compare : priceStr(r.compare_at_price);
+                    const newP = Number(priceVal);
+                    const touched =
+                      e != null && (e.price !== priceStr(r.price) || e.compare !== priceStr(r.compare_at_price));
+                    const m = marginPct(isFinite(newP) && newP > 0 ? newP : r.price, r.cost);
+                    const cmpNum = compareVal.trim() === '' ? null : Number(compareVal);
+                    const cmpWeird = cmpNum != null && isFinite(cmpNum) && cmpNum > 0 && isFinite(newP) && cmpNum <= newP;
+                    return (
+                      <tr key={vid} className={`border-b border-border/20 ${touched ? 'bg-amber-500/10' : ''}`} data-testid={`price-row-${vid}`}>
+                        <td className="px-3 py-2 tabular-nums whitespace-nowrap">{r.sku ?? '—'}</td>
+                        <td className="px-3 py-2 max-w-[160px] truncate" title={r.variant_title ?? ''}>
+                          {r.variant_title && r.variant_title !== 'Default Title' ? r.variant_title : '—'}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">{r.inventory_quantity ?? '—'}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{r.cost != null && r.cost > 0 ? formatCurrency(r.cost) : '—'}</td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            value={priceVal}
+                            onChange={(ev) => setEdit(vid, 'price', ev.target.value, r)}
+                            inputMode="decimal"
+                            className="w-24 px-2 py-1 rounded border border-border bg-background text-right tabular-nums"
+                            data-testid={`price-input-${vid}`}
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            value={compareVal}
+                            onChange={(ev) => setEdit(vid, 'compare', ev.target.value, r)}
+                            inputMode="decimal"
+                            placeholder="冇"
+                            className="w-24 px-2 py-1 rounded border border-border bg-background text-right tabular-nums"
+                            data-testid={`compare-input-${vid}`}
+                          />
+                        </td>
+                        <td className={`px-3 py-2 text-right tabular-nums ${m != null && m < 20 ? 'text-red-300' : ''}`}>{m != null ? `${m.toFixed(0)}%` : '—'}</td>
+                        <td className="px-3 py-2">
+                          {rowErrors[vid] ? (
+                            <span className="text-red-300">{rowErrors[vid]}</span>
+                          ) : savedIds.has(vid) ? (
+                            <span className="text-emerald-300">✅ 已同步</span>
+                          ) : cmpWeird ? (
+                            <span className="text-amber-300 inline-flex items-center gap-1"><TriangleAlert className="h-3 w-3" /> 劃線價唔高過售價</span>
+                          ) : touched ? (
+                            <span className="text-amber-300">未儲存</span>
+                          ) : null}
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {p.variants.map((r) => {
-                        const vid = r.variant_id;
-                        const e = edits[vid];
-                        const priceVal = e ? e.price : priceStr(r.price);
-                        const compareVal = e ? e.compare : priceStr(r.compare_at_price);
-                        const newP = Number(priceVal);
-                        const touched =
-                          e != null && (e.price !== priceStr(r.price) || e.compare !== priceStr(r.compare_at_price));
-                        const m = marginPct(isFinite(newP) && newP > 0 ? newP : r.price, r.cost);
-                        const cmpNum = compareVal.trim() === '' ? null : Number(compareVal);
-                        const cmpWeird = cmpNum != null && isFinite(cmpNum) && cmpNum > 0 && isFinite(newP) && cmpNum <= newP;
-                        return (
-                          <tr key={vid} className={`border-b border-border/20 ${touched ? 'bg-amber-500/10' : ''}`} data-testid={`price-row-${vid}`}>
-                            <td className="px-3 py-2 tabular-nums whitespace-nowrap">{r.sku ?? '—'}</td>
-                            <td className="px-3 py-2 max-w-[180px] truncate" title={r.variant_title ?? ''}>
-                              {r.variant_title && r.variant_title !== 'Default Title' ? r.variant_title : '—'}
-                            </td>
-                            <td className="px-3 py-2 text-right tabular-nums">{r.inventory_quantity ?? '—'}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{r.cost != null && r.cost > 0 ? formatCurrency(r.cost) : '—'}</td>
-                            <td className="px-3 py-2 text-right">
-                              <input
-                                value={priceVal}
-                                onChange={(ev) => setEdit(vid, 'price', ev.target.value, r)}
-                                inputMode="decimal"
-                                className="w-24 px-2 py-1 rounded border border-border bg-background text-right tabular-nums"
-                                data-testid={`price-input-${vid}`}
-                              />
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <input
-                                value={compareVal}
-                                onChange={(ev) => setEdit(vid, 'compare', ev.target.value, r)}
-                                inputMode="decimal"
-                                placeholder="冇"
-                                className="w-24 px-2 py-1 rounded border border-border bg-background text-right tabular-nums"
-                                data-testid={`compare-input-${vid}`}
-                              />
-                            </td>
-                            <td className={`px-3 py-2 text-right tabular-nums ${m != null && m < 20 ? 'text-red-300' : ''}`}>{m != null ? `${m.toFixed(0)}%` : '—'}</td>
-                            <td className="px-3 py-2">
-                              {rowErrors[vid] ? (
-                                <span className="text-red-300">{rowErrors[vid]}</span>
-                              ) : savedIds.has(vid) ? (
-                                <span className="text-emerald-300">✅ 已同步</span>
-                              ) : cmpWeird ? (
-                                <span className="text-amber-300 inline-flex items-center gap-1"><TriangleAlert className="h-3 w-3" /> 劃線價唔高過售價</span>
-                              ) : touched ? (
-                                <span className="text-amber-300">未儲存</span>
-                              ) : null}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="sticky bottom-0 bg-card border-t border-border/40 px-4 py-3 flex items-center gap-2">
+              <span className="text-[11px] text-muted-foreground">
+                {openChanges.length > 0 ? `呢件貨 ${openChanges.length} 項未儲存` : '未有改動'}
+              </span>
+              <div className="ml-auto flex gap-2">
+                <button onClick={() => setOpenPid(null)} className="px-3 py-1.5 rounded border border-border text-xs hover:text-foreground">閂</button>
+                <button
+                  onClick={() => openChanges.length > 0 && setConfirmChanges(openChanges)}
+                  disabled={openChanges.length === 0 || saving}
+                  className="px-4 py-1.5 rounded bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-50"
+                  data-testid="price-modal-save"
+                >
+                  儲存改價…
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
       {/* 改價 confirm — 舊→新 對照 + 警告,睇清楚先出手 */}
       {confirmChanges && (
-        <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onClick={() => !saving && setConfirmChanges(null)}>
+        <div className="fixed inset-0 z-[110] bg-black/70 flex items-center justify-center p-4" onClick={() => !saving && setConfirmChanges(null)}>
           <div className="bg-card border border-border rounded-lg max-w-2xl w-full max-h-[80vh] overflow-y-auto p-4 space-y-3" onClick={(ev) => ev.stopPropagation()}>
             <h3 className="text-sm font-semibold">確認改價({confirmChanges.length} 個 SKU)— 一撳即生效落網店 + POS</h3>
             <div className="space-y-2">
               {confirmChanges.map((c) => (
-                <Fragment key={c.variantId}>
-                  <div className="rounded border border-border/50 px-3 py-2 text-xs space-y-1">
-                    <p className="font-medium">{c.label}</p>
-                    <p className="tabular-nums text-muted-foreground">
-                      {c.newP != null && (
-                        <>售價 {formatCurrency(c.oldP)} → <span className="text-foreground font-semibold">{formatCurrency(c.newP)}</span>　</>
-                      )}
-                      {c.newC !== undefined && (
-                        <>劃線價 {c.oldC != null ? formatCurrency(c.oldC) : '冇'} → <span className="text-foreground font-semibold">{c.newC != null ? formatCurrency(c.newC) : '清走'}</span></>
-                      )}
-                    </p>
-                    {c.warnings.map((w, i) => (
-                      <p key={i} className="text-amber-300">⚠️ {w}</p>
-                    ))}
-                  </div>
-                </Fragment>
+                <div key={c.variantId} className="rounded border border-border/50 px-3 py-2 text-xs space-y-1">
+                  <p className="font-medium">{c.label}</p>
+                  <p className="tabular-nums text-muted-foreground">
+                    {c.newP != null && (
+                      <>售價 {formatCurrency(c.oldP)} → <span className="text-foreground font-semibold">{formatCurrency(c.newP)}</span>　</>
+                    )}
+                    {c.newC !== undefined && (
+                      <>劃線價 {c.oldC != null ? formatCurrency(c.oldC) : '冇'} → <span className="text-foreground font-semibold">{c.newC != null ? formatCurrency(c.newC) : '清走'}</span></>
+                    )}
+                  </p>
+                  {c.warnings.map((w, i) => (
+                    <p key={i} className="text-amber-300">⚠️ {w}</p>
+                  ))}
+                </div>
               ))}
             </div>
             <div className="flex justify-end gap-2 pt-1">
