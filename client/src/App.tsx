@@ -48,6 +48,7 @@ const ForecastPage = lazy(() => import("@/pages/forecast"));
 const CategoryQcPage = lazy(() => import("@/pages/category-qc"));
 const ProductEditorPage = lazy(() => import("@/pages/product-editor"));
 const PriceEditorPage = lazy(() => import("@/pages/price-editor"));
+const PreordersPage = lazy(() => import("@/pages/preorders"));
 const PriceWatchPage = lazy(() => import("@/pages/price-watch"));
 const SyncStatusPage = lazy(() => import("@/pages/sync-status"));
 const NotFound = lazy(() => import("@/pages/not-found"));
@@ -90,6 +91,7 @@ function AppRouter() {
         <Route path="/retail/category-qc" component={CategoryQcPage} />
         <Route path="/retail/product-editor" component={ProductEditorPage} />
         <Route path="/retail/price-editor" component={PriceEditorPage} />
+        <Route path="/retail/preorders" component={PreordersPage} />
         <Route path="/retail/price-watch" component={PriceWatchPage} />
         <Route path="/procurement/vendors" component={VendorsPage} />
         <Route path="/performance/daily" component={DailyWeeklyPage} />
