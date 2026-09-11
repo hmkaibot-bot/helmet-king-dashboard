@@ -38,6 +38,12 @@ const API_VERSION = '2026-01';
 const SHOPIFY_READY =
   !!SHOPIFY_SHOP && (!!SHOPIFY_TOKEN || (!!SHOPIFY_CLIENT_ID && !!SHOPIFY_CLIENT_SECRET));
 
+// 主倉 location — Vercel 個 token 冇 read_locations scope(2026-09-11 老闆實試
+// ACCESS_DENIED),而間舖啲倉 ID 係固定嘅,所以寫死 + env 可覆蓋。
+// Helmet King Shop = 53757935778(主倉);Warehouse 2 = 71914356989
+const LOCATION_ID =
+  process.env.SHOPIFY_LOCATION_ID || 'gid://shopify/Location/53757935778';
+
 export const config = { maxDuration: 60 };
 
 async function verifyUser(token: string): Promise<boolean> {
@@ -136,11 +142,7 @@ async function createPreorder(body: any) {
   }
 
   const warnings: string[] = [];
-
-  // 1) 攞主倉 location(variant 庫存 = 接訂上限,要指定倉)
-  const locData = await gql(`{ locations(first: 1) { nodes { id } } }`, {});
-  const locationId: string | undefined = locData?.locations?.nodes?.[0]?.id;
-  if (!locationId) throw new Error('搵唔到 Shopify location');
+  const locationId = LOCATION_ID; // 唔問 Shopify(token 冇 read_locations)— 見頂部註釋
 
   // 2) 開商品(vendor/product_type 特登用預訂專屬值 — 統計頁靠呢個剔走佢)
   const createData = await gql(
@@ -169,26 +171,53 @@ async function createPreorder(body: any) {
   const numericId = Number(productGid.split('/').pop());
 
   // 3) 開 variants:價=訂金、SKU、庫存=上限、DENY 超賣(訂滿自動買唔到)
-  const varData = await gql(
-    `mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!, $strategy: ProductVariantsBulkCreateStrategy) {
-      productVariantsBulkCreate(productId: $productId, variants: $variants, strategy: $strategy) {
-        productVariants { id sku }
-        userErrors { field message }
-      }
-    }`,
-    {
+  const BULK_CREATE = `mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!, $strategy: ProductVariantsBulkCreateStrategy) {
+    productVariantsBulkCreate(productId: $productId, variants: $variants, strategy: $strategy) {
+      productVariants { id sku }
+      userErrors { field message }
+    }
+  }`;
+  const mkVariants = (withInv: boolean) =>
+    variants.map((v) => ({
+      optionValues: [{ optionName: '款式', name: v.label }],
+      price: deposit.toFixed(2),
+      inventoryPolicy: 'DENY',
+      inventoryItem: { sku: v.sku, tracked: true },
+      ...(withInv
+        ? { inventoryQuantities: [{ availableQuantity: Math.floor(Number(v.limit)), locationId }] }
+        : {}),
+    }));
+  const isScopeErr = (m: string) => /access.?denied|access scope|write_inventory|read_locations/i.test(m);
+
+  let varData: any = null;
+  let vErr = '';
+  try {
+    varData = await gql(BULK_CREATE, {
       productId: productGid,
       strategy: 'REMOVE_STANDALONE_VARIANT',
-      variants: variants.map((v) => ({
-        optionValues: [{ optionName: '款式', name: v.label }],
-        price: deposit.toFixed(2),
-        inventoryPolicy: 'DENY',
-        inventoryItem: { sku: v.sku, tracked: true },
-        inventoryQuantities: [{ availableQuantity: Math.floor(Number(v.limit)), locationId }],
-      })),
+      variants: mkVariants(true),
+    });
+    vErr = errText(varData?.productVariantsBulkCreate?.userErrors);
+  } catch (e: any) {
+    vErr = String(e?.message || e);
+  }
+  if (vErr && isScopeErr(vErr)) {
+    // token 冇 write_inventory — 照開 variants(冇初始庫存),提老闆去 admin 入返上限
+    warnings.push(
+      '接訂上限入唔到(token 冇 write_inventory 權限)— 而家全部款式庫存 0,客人暫時買唔到:去 Shopify 商品度逐個款式將庫存改做上限即可。想以後全自動,喺 Shopify app 設定加返 write_inventory scope。'
+    );
+    vErr = '';
+    try {
+      varData = await gql(BULK_CREATE, {
+        productId: productGid,
+        strategy: 'REMOVE_STANDALONE_VARIANT',
+        variants: mkVariants(false),
+      });
+      vErr = errText(varData?.productVariantsBulkCreate?.userErrors);
+    } catch (e: any) {
+      vErr = String(e?.message || e);
     }
-  );
-  const vErr = errText(varData?.productVariantsBulkCreate?.userErrors);
+  }
   if (vErr) {
     // variants 開唔成,件商品冇用 — 熄咗佢免變孤兒
     await gql(
