@@ -278,13 +278,19 @@ async function createPreorder(body: any) {
     );
   }
 
-  // 網址(publish 之後即刻攞;攞唔到唔阻上架流程)
+  // 網址(publish 之後即刻攞;攞唔到唔阻上架流程)。
+  // ⚠️ url 同 previewUrl 特登唔可以 `||` 塌埋一齊:未上架時 onlineStoreUrl 係
+  // null,fallback 落 preview url 就會派一條老闆自己撳得開、但客人 404 嘅
+  // 連結俾佢,直情抵消咗「未上架」個警告(2026-09-14 code review 兩個獨立
+  // 鏡頭都捉到)。分開回,由前端決定邊條可以當「客人網址」出。
   let url: string | null = null;
+  let previewUrl: string | null = null;
   try {
     const u = await gql(`query($id: ID!) { product(id: $id) { onlineStoreUrl onlineStorePreviewUrl } }`, {
       id: productGid,
     });
-    url = u?.product?.onlineStoreUrl || u?.product?.onlineStorePreviewUrl || null;
+    url = u?.product?.onlineStoreUrl || null;
+    previewUrl = u?.product?.onlineStorePreviewUrl || null;
   } catch {
     /* 攞唔到網址唔緊要 — 預訂頁個 live 會再攞一次 */
   }
@@ -294,6 +300,7 @@ async function createPreorder(body: any) {
     handle: createData.productCreate.product.handle,
     published,
     url,
+    previewUrl,
     warnings,
   };
 }
@@ -346,7 +353,9 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({
         ok: true,
         status: d.product.status,
-        url: d.product.onlineStoreUrl || d.product.onlineStorePreviewUrl || null,
+        // 見 create 嗰邊註釋:兩條 URL 唔可以塌埋
+        url: d.product.onlineStoreUrl || null,
+        previewUrl: d.product.onlineStorePreviewUrl || null,
         publishedToOnlineStore: !!d.product.onlineStoreUrl,
         variants: (d.product.variants?.nodes ?? []).map((v: any) => ({
           sku: v.sku || '',
