@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase';
 import { queryAllPages } from '@/lib/query-helpers';
 import { Card, CardContent } from '@/components/ui/card';
 import { formatCurrency } from '@/lib/format';
-import { CalendarClock, Plus, Search, X } from 'lucide-react';
+import { CalendarClock, Eye, ExternalLink, Plus, Search, X } from 'lucide-react';
 
 /**
  * 預訂 Pre-orders — 訂金商品模式(飛 PreProduct,grilling 2026-09-10 定案)。
@@ -79,6 +79,11 @@ export default function PreordersPage() {
   const [orders, setOrders] = useState<Record<number, OrderInfo>>({});
   const [orderStatus, setOrderStatus] = useState<Record<string, string>>({}); // `${orderId}:${pid}` → status
   const [live, setLive] = useState<Record<number, LiveVariant[]>>({});
+  // 網站連結 + 有冇真係上架到 Online Store(2026-09-14:自動上架一度靜靜雞
+  // 失敗,商品開咗但客人入唔到 — 所以呢度要一眼睇得到)
+  const [liveUrl, setLiveUrl] = useState<
+    Record<number, { url: string | null; previewUrl: string | null; published: boolean }>
+  >({});
   const [imgMap, setImgMap] = useState<Record<string, string | null>>({});
   const requestedImgs = useRef(new Set<string>());
   const [toast, setToast] = useState<string | null>(null);
@@ -175,7 +180,17 @@ export default function PreordersPage() {
             body: JSON.stringify({ action: 'live', productId: String(c.preorder_product_id) }),
           });
           const j: any = await resp.json().catch(() => null);
-          if (resp.ok && j?.ok) setLive((m) => ({ ...m, [c.preorder_product_id]: j.variants ?? [] }));
+          if (resp.ok && j?.ok) {
+            setLive((m) => ({ ...m, [c.preorder_product_id]: j.variants ?? [] }));
+            setLiveUrl((m) => ({
+              ...m,
+              [c.preorder_product_id]: {
+                url: j.url ?? null,
+                previewUrl: j.previewUrl ?? null,
+                published: !!j.publishedToOnlineStore,
+              },
+            }));
+          }
         } catch { /* 攞唔到實時數就淨顯示本地 */ }
       }
     })();
@@ -224,6 +239,10 @@ export default function PreordersPage() {
   }, [inv, q]);
 
   const pickProduct = (pid: number, title: string, variants: InvRow[]) => {
+    // campaign 唯一碼 — 同一件正貨開第二批預訂(訂滿/到咗貨再開)如果重用同一組
+    // PRE- SKU,campaignOrders() 靠 SKU 對單,第一批嘅訂單會成堆倒灌落第二批張卡,
+    // 應收尾數計多(2026-09-14 code review confirmed)。加個碼令兩批 SKU 唔會撞。
+    const code = Date.now().toString(36).slice(-4).toUpperCase();
     setPickedPid(pid);
     setFTitle(title);
     const maxP = Math.max(0, ...variants.map((v) => v.price ?? 0));
@@ -233,7 +252,7 @@ export default function PreordersPage() {
         .sort((a, b) => String(a.sku ?? '').localeCompare(String(b.sku ?? '')))
         .map((v, i) => ({
           label: v.variant_title && v.variant_title !== 'Default Title' ? v.variant_title : (v.sku ?? `款式${i + 1}`),
-          sku: `PRE-${v.sku ?? `${pid}-${i + 1}`}`,
+          sku: `PRE-${code}-${v.sku ?? `${pid}-${i + 1}`}`,
           limit: '3',
           checked: true,
         }))
@@ -284,8 +303,18 @@ export default function PreordersPage() {
         status: 'open',
         variants: rows.map((r) => ({ sku: r.sku, label: r.label, limit: Number(r.limit) })),
       });
-      if (error) throw new Error(`Shopify 開咗但本地記錄失敗:${error.message}`);
-      setToast(`✅ 上架咗【預訂】${fTitle.trim()}${(j.warnings ?? []).length ? ` · ⚠️ ${j.warnings.join(';')}` : ''}`);
+      if (error)
+        throw new Error(
+          `Shopify 已經開咗件商品(product id ${j.productId})但本地記錄寫唔入:${error.message}` +
+            ` — 去 Shopify 將佢轉做 Draft(或者刪咗),再喺呢度開過`
+        );
+      setToast(
+        `✅ 上架咗【預訂】${fTitle.trim()}${j.published ? '(已喺網店同 POS 開賣)' : ''}` +
+          // 未上架就唔可以叫「網址」—— 條 preview link 老闆撳得開但客人 404
+          `${j.published && j.url ? ` · 網址:${j.url}` : ''}` +
+          `${!j.published && j.previewUrl ? ` · 預覽連結(客人開唔到):${j.previewUrl}` : ''}` +
+          `${(j.warnings ?? []).length ? ` · ${j.warnings.join(';')}` : ''}`
+      );
       setShowForm(false);
       setPickedPid(null); setFTitle(''); setFDeposit('1000'); setFFull(''); setFEta(''); setFRows([]);
       await reloadCampaigns();
@@ -347,6 +376,9 @@ export default function PreordersPage() {
       if (!skuSet.has(l.sku)) continue;
       const o = orders[l.order_id];
       if (!o || o.cancelled_at) continue;
+      // campaign 開之前落嘅單一定唔屬於佢 — 防舊格式 SKU(冇 campaign 碼嗰批)
+      // 嘅歷史訂單倒灌入新 campaign
+      if (c.created_at && String(o.created_at) < String(c.created_at)) continue;
       const cur = byOrder.get(l.order_id) ?? { qty: 0, labels: [] };
       cur.qty += l.quantity || 0;
       const label = c.variants.find((v) => v.sku === l.sku)?.label ?? l.sku;
@@ -502,7 +534,44 @@ export default function PreordersPage() {
                         {c.eta ? ` · 預計到貨 ${c.eta}` : ''}
                       </p>
                     </div>
-                    <span className={`px-2 py-0.5 rounded border text-xs whitespace-nowrap ${chip.cls}`}>{chip.label}</span>
+                    <div className="flex items-center gap-2 flex-wrap shrink-0">
+                      {/* 上咗架先可以叫「睇網站頁」—— 未上架嗰條係 preview link,
+                          老闆撳得開但客人 404,當成客人網址出會抵消咗隔籬個警告 */}
+                      {liveUrl[c.preorder_product_id]?.published && liveUrl[c.preorder_product_id]?.url && (
+                        <a
+                          href={liveUrl[c.preorder_product_id]!.url!}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 text-sky-300 text-xs whitespace-nowrap hover:bg-sky-500/20"
+                          data-testid={`preorder-url-${c.preorder_product_id}`}
+                        >
+                          <ExternalLink className="h-3 w-3" /> 睇網站頁
+                        </a>
+                      )}
+                      {liveUrl[c.preorder_product_id] &&
+                        !liveUrl[c.preorder_product_id]!.published &&
+                        liveUrl[c.preorder_product_id]!.previewUrl && (
+                          <a
+                            href={liveUrl[c.preorder_product_id]!.previewUrl!}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-border bg-muted/30 text-muted-foreground text-xs whitespace-nowrap hover:text-foreground"
+                            title="只係你自己睇到嘅預覽 — 客人入唔到"
+                            data-testid={`preorder-preview-${c.preorder_product_id}`}
+                          >
+                            <Eye className="h-3 w-3" /> 預覽(客人睇唔到)
+                          </a>
+                        )}
+                      {liveUrl[c.preorder_product_id] && !liveUrl[c.preorder_product_id]!.published && c.status === 'open' && (
+                        <span
+                          className="px-2 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 text-xs whitespace-nowrap"
+                          title="件商品開咗但未上架到 Online Store,客人買唔到 — 去 Shopify 商品頁剔返「Online Store」"
+                        >
+                          ⚠️ 未上架網店
+                        </span>
+                      )}
+                      <span className={`px-2 py-0.5 rounded border text-xs whitespace-nowrap ${chip.cls}`}>{chip.label}</span>
+                    </div>
                   </div>
 
                   {/* 每款式進度:訂咗 = 上限 − Shopify 實時剩餘 */}
