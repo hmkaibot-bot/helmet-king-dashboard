@@ -44,6 +44,34 @@ const SHOPIFY_READY =
 const LOCATION_ID =
   process.env.SHOPIFY_LOCATION_ID || 'gid://shopify/Location/53757935778';
 
+// 上架邊幾條線 — 同樣唔查 publications(token 冇 read_publications,2026-09-11
+// 實試:開咗商品但靜靜雞冇上架,老闆問「點解冇網址」先發現)。呢兩個 id 係
+// 2026-09-14 由正貨(CARDO)resourcePublicationsV2 實查返嚟:
+//   Online Store = 63778717858;Point of Sale = 78920909053
+// 其餘 channel(FB/IG、Google)預訂商品唔想推,所以特登唔落。
+const PUBLICATION_IDS = (
+  process.env.SHOPIFY_PUBLICATION_IDS ||
+  'gid://shopify/Publication/63778717858,gid://shopify/Publication/78920909053'
+)
+  .split(',')
+  .map((x) => x.trim())
+  .filter(Boolean);
+
+/**
+ * 英文 handle — 唔俾 Shopify 用中文 title 生成 handle,否則條網址成段
+ * %E9%A0%90%E8%A8%82…(2026-09-14 實試)客人見到好怪。尾綴時間戳保證唯一。
+ */
+function preorderHandle(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/g, '');
+  const stamp = Date.now().toString(36).slice(-6);
+  return `preorder-${slug ? `${slug}-` : ''}${stamp}`;
+}
+
 export const config = { maxDuration: 60 };
 
 async function verifyUser(token: string): Promise<boolean> {
@@ -155,6 +183,7 @@ async function createPreorder(body: any) {
     {
       product: {
         title: `【預訂】${title}(訂金)`,
+        handle: preorderHandle(title),
         descriptionHtml: descriptionHtml(deposit, full, eta),
         productType: 'PRE-ORDER DEPOSIT',
         vendor: 'PREORDER',
@@ -227,25 +256,46 @@ async function createPreorder(body: any) {
     throw new Error(`開款式失敗:${vErr}`);
   }
 
-  // 4) 上架 sales channels(冇 read_publications scope 就出 warning,唔炒)
+  // 4) 上架 Online Store + POS — 寫死 publication id(見頂部註釋),唔再 query
+  //    publications。上唔到架就大聲講:客人根本入唔到個預訂頁面。
+  let published = false;
   try {
-    const pubData = await gql(`{ publications(first: 10) { nodes { id } } }`, {});
-    const pubs: Array<{ id: string }> = pubData?.publications?.nodes ?? [];
-    if (pubs.length > 0) {
-      const pubRes = await gql(
-        `mutation($id: ID!, $input: [PublicationInput!]!) {
-          publishablePublish(id: $id, input: $input) { userErrors { field message } }
-        }`,
-        { id: productGid, input: pubs.map((p) => ({ publicationId: p.id })) }
-      );
-      const pubErr = errText(pubRes?.publishablePublish?.userErrors);
-      if (pubErr) warnings.push(`上架 sales channel 出錯:${pubErr} — 去 Shopify 商品頁人手剔返`);
+    const pubRes = await gql(
+      `mutation($id: ID!, $input: [PublicationInput!]!) {
+        publishablePublish(id: $id, input: $input) { userErrors { field message } }
+      }`,
+      { id: productGid, input: PUBLICATION_IDS.map((pid) => ({ publicationId: pid })) }
+    );
+    const pubErr = errText(pubRes?.publishablePublish?.userErrors);
+    if (pubErr) {
+      warnings.push(`⚠️ 未上架到網店(${pubErr})— 客人而家入唔到,去 Shopify 商品頁剔返「Online Store」`);
+    } else {
+      published = true;
     }
   } catch (e: any) {
-    warnings.push(`未能自動上架 sales channel(${String(e?.message || e).slice(0, 80)})— 去 Shopify 商品頁人手剔「Online Store」`);
+    warnings.push(
+      `⚠️ 未上架到網店(${String(e?.message || e).slice(0, 80)})— 客人而家入唔到,去 Shopify 商品頁剔返「Online Store」`
+    );
   }
 
-  return { productId: numericId, handle: createData.productCreate.product.handle, warnings };
+  // 網址(publish 之後即刻攞;攞唔到唔阻上架流程)
+  let url: string | null = null;
+  try {
+    const u = await gql(`query($id: ID!) { product(id: $id) { onlineStoreUrl onlineStorePreviewUrl } }`, {
+      id: productGid,
+    });
+    url = u?.product?.onlineStoreUrl || u?.product?.onlineStorePreviewUrl || null;
+  } catch {
+    /* 攞唔到網址唔緊要 — 預訂頁個 live 會再攞一次 */
+  }
+
+  return {
+    productId: numericId,
+    handle: createData.productCreate.product.handle,
+    published,
+    url,
+    warnings,
+  };
 }
 
 export default async function handler(req: any, res: any) {
@@ -288,7 +338,7 @@ export default async function handler(req: any, res: any) {
     if (action === 'live') {
       const gid = `gid://shopify/Product/${body.productId}`;
       const d = await gql(
-        `query($id: ID!) { product(id: $id) { status onlineStorePreviewUrl
+        `query($id: ID!) { product(id: $id) { status onlineStoreUrl onlineStorePreviewUrl
           variants(first: 100) { nodes { sku title inventoryQuantity price } } } }`,
         { id: gid }
       );
@@ -296,7 +346,8 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({
         ok: true,
         status: d.product.status,
-        url: d.product.onlineStorePreviewUrl || null,
+        url: d.product.onlineStoreUrl || d.product.onlineStorePreviewUrl || null,
+        publishedToOnlineStore: !!d.product.onlineStoreUrl,
         variants: (d.product.variants?.nodes ?? []).map((v: any) => ({
           sku: v.sku || '',
           title: v.title || '',

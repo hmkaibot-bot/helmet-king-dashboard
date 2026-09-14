@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase';
 import { queryAllPages } from '@/lib/query-helpers';
 import { Card, CardContent } from '@/components/ui/card';
 import { formatCurrency } from '@/lib/format';
-import { CalendarClock, Plus, Search, X } from 'lucide-react';
+import { CalendarClock, ExternalLink, Plus, Search, X } from 'lucide-react';
 
 /**
  * 預訂 Pre-orders — 訂金商品模式(飛 PreProduct,grilling 2026-09-10 定案)。
@@ -79,6 +79,9 @@ export default function PreordersPage() {
   const [orders, setOrders] = useState<Record<number, OrderInfo>>({});
   const [orderStatus, setOrderStatus] = useState<Record<string, string>>({}); // `${orderId}:${pid}` → status
   const [live, setLive] = useState<Record<number, LiveVariant[]>>({});
+  // 網站連結 + 有冇真係上架到 Online Store(2026-09-14:自動上架一度靜靜雞
+  // 失敗,商品開咗但客人入唔到 — 所以呢度要一眼睇得到)
+  const [liveUrl, setLiveUrl] = useState<Record<number, { url: string | null; published: boolean }>>({});
   const [imgMap, setImgMap] = useState<Record<string, string | null>>({});
   const requestedImgs = useRef(new Set<string>());
   const [toast, setToast] = useState<string | null>(null);
@@ -175,7 +178,13 @@ export default function PreordersPage() {
             body: JSON.stringify({ action: 'live', productId: String(c.preorder_product_id) }),
           });
           const j: any = await resp.json().catch(() => null);
-          if (resp.ok && j?.ok) setLive((m) => ({ ...m, [c.preorder_product_id]: j.variants ?? [] }));
+          if (resp.ok && j?.ok) {
+            setLive((m) => ({ ...m, [c.preorder_product_id]: j.variants ?? [] }));
+            setLiveUrl((m) => ({
+              ...m,
+              [c.preorder_product_id]: { url: j.url ?? null, published: !!j.publishedToOnlineStore },
+            }));
+          }
         } catch { /* 攞唔到實時數就淨顯示本地 */ }
       }
     })();
@@ -285,7 +294,11 @@ export default function PreordersPage() {
         variants: rows.map((r) => ({ sku: r.sku, label: r.label, limit: Number(r.limit) })),
       });
       if (error) throw new Error(`Shopify 開咗但本地記錄失敗:${error.message}`);
-      setToast(`✅ 上架咗【預訂】${fTitle.trim()}${(j.warnings ?? []).length ? ` · ⚠️ ${j.warnings.join(';')}` : ''}`);
+      setToast(
+        `✅ 上架咗【預訂】${fTitle.trim()}${j.published ? '(已喺網店同 POS 開賣)' : ''}` +
+          `${j.url ? ` · 網址:${j.url}` : ''}` +
+          `${(j.warnings ?? []).length ? ` · ${j.warnings.join(';')}` : ''}`
+      );
       setShowForm(false);
       setPickedPid(null); setFTitle(''); setFDeposit('1000'); setFFull(''); setFEta(''); setFRows([]);
       await reloadCampaigns();
@@ -502,7 +515,28 @@ export default function PreordersPage() {
                         {c.eta ? ` · 預計到貨 ${c.eta}` : ''}
                       </p>
                     </div>
-                    <span className={`px-2 py-0.5 rounded border text-xs whitespace-nowrap ${chip.cls}`}>{chip.label}</span>
+                    <div className="flex items-center gap-2 flex-wrap shrink-0">
+                      {liveUrl[c.preorder_product_id]?.url && (
+                        <a
+                          href={liveUrl[c.preorder_product_id]!.url!}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 text-sky-300 text-xs whitespace-nowrap hover:bg-sky-500/20"
+                          data-testid={`preorder-url-${c.preorder_product_id}`}
+                        >
+                          <ExternalLink className="h-3 w-3" /> 睇網站頁
+                        </a>
+                      )}
+                      {liveUrl[c.preorder_product_id] && !liveUrl[c.preorder_product_id]!.published && c.status === 'open' && (
+                        <span
+                          className="px-2 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 text-xs whitespace-nowrap"
+                          title="件商品開咗但未上架到 Online Store,客人買唔到 — 去 Shopify 商品頁剔返「Online Store」"
+                        >
+                          ⚠️ 未上架網店
+                        </span>
+                      )}
+                      <span className={`px-2 py-0.5 rounded border text-xs whitespace-nowrap ${chip.cls}`}>{chip.label}</span>
+                    </div>
                   </div>
 
                   {/* 每款式進度:訂咗 = 上限 − Shopify 實時剩餘 */}
