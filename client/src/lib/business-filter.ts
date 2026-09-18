@@ -29,7 +29,8 @@ const NONRETAIL_PATTERNS: RegExp[] = [
   /自駕團|自駕遊|西藏團|蒙古團|旅行團/,
   // 車房服務(2026-08 老闆:呢類經常俾人當咗零售)——
   // 「愛車保養/回復狀態」呢種文青寫法冇「車房」二字,一樣係車房 post
-  /愛車|座駕|回復.{0,4}狀態|換油|機油|波箱油|迫力油|逼力油|火咀|散熱|水箱|皮帶|避震|排氣|尾鼓|尾牙|製動|軚|呔(?!帽)/,
+  // 「胎」係「呔」嘅另一種寫法(2026-09-18「換胎免費換油」三個 post 走咗入零售)
+  /愛車|座駕|回復.{0,4}狀態|換油|機油|波箱油|迫力油|逼力油|火咀|散熱|水箱|皮帶|避震|排氣|死氣喉|尾鼓|尾牙|製動|軚|呔(?!帽)|換胎|補胎|輪胎|車胎/,
   /維修部|服務部|試業優惠|免人工|工時|師傅/,
   // 安裝/改裝服務(唔係賣件貨,係賣個安裝)
   /改裝|加裝|安裝|裝嵌|套餐(?=.{0,6}(安裝|升級|服務))|升級套餐/,
@@ -135,7 +136,9 @@ const DEPT_PATTERNS: Array<[RegExp, Dept]> = [
   [/自駕團|自駕遊|旅行團|導賞團|白川鄉|昇龍道|西藏團|蒙古團/i, 'tour'],
   // 偈油/換呔呢啲係車房服務 promo(老闆 2026-08-04:「仲有車房POST係零售」)
   // Check 車/泊車:老闆 2026-08-18 確認(「半價 Check 車➕免費室內泊車」係車房 post)
-  [/車房|維修|保養|驗車|CHECK\s*車|泊車|洗車(?!用品)|鏈條|EK\s*鏈|預約|MICHELIN|米芝蓮|偈油|機油|波箱油|換呔|補呔|輪呔|BEL-?RAY|愛車回復|回復最佳狀態/i, 'garage'],
+  // 換胎:老闆 2026-09-18 —「🛞換胎免費換油」三個 post 走咗入零售。「胎」同「呔」
+  // 兩種寫法都要認(以前淨係有換呔/補呔/輪呔)
+  [/車房|維修|保養|驗車|CHECK\s*車|泊車|洗車(?!用品)|鏈條|EK\s*鏈|預約|MICHELIN|米芝蓮|偈油|機油|波箱油|換呔|補呔|輪呔|車呔|換胎|補胎|輪胎|車胎|BEL-?RAY|愛車回復|回復最佳狀態/i, 'garage'],
   // 26Pack 套票係 26King 嗰邊嘅產品(老闆確認)→ 跟賣車部門
   [/26\s*KING|26\s*PACK/i, 'bikesale'],
   [/現貨車|新車|舊車|二手車|易手車|賣車|寄賣|回收|換車|銀行按揭|上會|電單車出售|車行/, 'bikesale'],
@@ -143,6 +146,10 @@ const DEPT_PATTERNS: Array<[RegExp, Dept]> = [
   // 車款型號(同 NONRETAIL_PATTERNS 同一套;R1 剔走 — Scorpion EXO-R1 係頭盔)
   [/\bGSX\b|GSX-?\d|\bNMAX\b|\bXMAX\b|\bPCX\b|\bADV\s?1\d0\b|\bCBR?\s?\d{3}\b|\bMT-?\d{1,2}\b|\bR[37]\b|\bZ\s?900\b|\bZX-?\d+\b|NINJA|\bREBEL\b|\bCT125\b|\bMSX\b|\bDAX\b|\bMONKEY\b|\bXSR\b|\bTMAX\b|\bNVX\b|\bAEROX\b|\bFORCE\s?155\b|TENERE|VESPA/i, 'bikesale'],
   [/租車|租借|RENTAL|RENT\s*A?\s*BIKE/i, 'rental'],
+  // 車房服務/零件字眼(換油/避震/排氣/安裝…)— 同 NONRETAIL_PATTERNS 一套。以前淨係
+  // 嗰邊有、呢度冇 → 營銷頁話「非零售」、廣告牆卻標「零售」,兩邊唔一致。
+  // 排喺賣車/租車之後:「新車免費安裝」呢類仍然跟賣車
+  [/換油|迫力油|逼力油|火咀|散熱|水箱|皮帶|避震|排氣|死氣喉|尾鼓|尾牙|製動|維修部|服務部|免人工|工時|師傅|改裝|加裝|安裝|裝嵌|升級套餐|OHLINS|GILLES\s*TOOLING|VENTZ/i, 'garage'],
   [/招聘|請人|HIRING|JOIN\s*US/i, 'other'],
 ];
 
@@ -154,7 +161,11 @@ export function adDepartment(name: string | null | undefined, override?: string 
   if (override === 'retail') return 'retail';
   const n = String(name || '');
   const hit = DEPT_PATTERNS.find(([rx]) => rx.test(n));
-  const dept = hit ? hit[1] : 'retail';
+  let dept: Dept = hit ? hit[1] : 'retail';
+  // 保險網(2026-09-18):部門 pattern 認唔出、但零售/非零售分類器話係非零售 →
+  // 落「其他」,唔好靜靜當零售。兩套 pattern 以前各自為政 — 營銷頁已經剔走嘅
+  // post,廣告牆仲會標「零售」。老闆:「下次都唔會 show 喺零售個 part」
+  if (dept === 'retail' && classifyCampaignName(n) === 'nonretail') dept = 'other';
   if (override === 'nonretail' && dept === 'retail') return 'other';
   return dept;
 }

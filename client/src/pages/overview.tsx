@@ -5,11 +5,10 @@ import { supabase } from '@/lib/supabase';
 import { KpiCard } from '@/components/kpi-card';
 import { ChartCard } from '@/components/chart-card';
 import { formatCurrency, formatNumber } from '@/lib/format';
-import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE, DONUT_PALETTE } from '@/lib/chart-theme';
-import { DollarSign, ShoppingCart, TrendingUp, Users, Store, Wrench, Ticket, Package, Target } from 'lucide-react';
+import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chart-theme';
+import { DollarSign, ShoppingCart, TrendingUp, Users, Ticket, Package, Target } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -60,13 +59,10 @@ export default function OverviewPage() {
   const { bounds } = useDateRange();
   const [loading, setLoading] = useState(true);
   const [shopifyRevenue, setShopifyRevenue] = useState(0);
-  const [bcCarshopRevenue, setBcCarshopRevenue] = useState(0);
-  const [bcGarageRevenue, setBcGarageRevenue] = useState(0);
   const [totalOrders, setTotalOrders] = useState(0);
   const [aov, setAov] = useState(0);
   const [marselloCount, setMarselloCount] = useState(0);
   const [trendData, setTrendData] = useState<any[]>([]);
-  const [splitData, setSplitData] = useState<any[]>([]);
   const [adVsRevData, setAdVsRevData] = useState<any[]>([]);
   const [promoCodes, setPromoCodes] = useState<any[]>([]);
   const [yesterdayProducts, setYesterdayProducts] = useState<any[]>([]);
@@ -82,7 +78,6 @@ export default function OverviewPage() {
     async function load() {
       setLoading(true);
       try {
-        const bcBounds = { from: '2023-01-01', to: '2099-12-31' };
         const ranges = getDateRanges();
 
         // Promo / 昨日商品嘅日期係預先計到,一齊併入同一輪 parallel —
@@ -95,10 +90,11 @@ export default function OverviewPage() {
         hkt.setDate(hkt.getDate() - 1);
         const yesterdayStr = hkt.toISOString().slice(0, 10);
 
-        const [orders, carshop, garage, adData, mtdOrdersData, bcInv, marselloAll, promoOrders, yOrders, gpRows] = await Promise.all([
+        // BC 門店(CARSHOP)/車房(GARAGE)營收 2026-09-18 老闆叫刪:CARSHOP 條 feed
+        // 2026-02 之後已經冇新單,而且兩個數係 2023 年至今全期累計、唔跟日期選擇器,
+        // 擺喺度只會誤導。呢頁而家淨係 Shopify(網店 + POS)。
+        const [orders, adData, mtdOrdersData, bcInv, marselloAll, promoOrders, yOrders, gpRows] = await Promise.all([
           queryWithDateRange('shopify_orders', 'created_at,total_price,financial_status,cancelled_at', 'created_at', bounds),
-          queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bcBounds, [{ column: 'dimension1_code', op: 'eq', value: 'CARSHOP' }]),
-          queryWithDateRange('bc_sales_invoices', 'invoice_date,total_amount_incl_tax', 'invoice_date', bcBounds, [{ column: 'dimension1_code', op: 'eq', value: 'GARAGE' }]),
           queryWithDateRange('meta_ad_insights', 'date,spend', 'date', bounds),
           queryWithDateRange('shopify_orders', 'id,total_price,financial_status,cancelled_at', 'created_at', { from: ranges.mtd.start, to: ranges.mtd.end }),
           queryAll('bc_inventory', 'number,unit_price,unit_cost', undefined, 50000),
@@ -117,12 +113,6 @@ export default function OverviewPage() {
         setShopifyRevenue(rev);
         setTotalOrders(count);
         setAov(count > 0 ? rev / count : 0);
-
-        const carRev = carshop.reduce((s: number, o: any) => s + (parseFloat(o.total_amount_incl_tax) || 0), 0);
-        setBcCarshopRevenue(carRev);
-
-        const garRev = garage.reduce((s: number, o: any) => s + (parseFloat(o.total_amount_incl_tax) || 0), 0);
-        setBcGarageRevenue(garRev);
 
         setMarselloCount(marselloAll.length);
 
@@ -155,30 +145,18 @@ export default function OverviewPage() {
         const newMembers = marselloAll.filter((m: any) => m.created_at && m.created_at >= monthStart);
         setNewMembersThisMonth(newMembers.length);
 
-        // Revenue trend by day
-        const dayMap: Record<string, { shopify: number; bc: number }> = {};
+        // Revenue trend by day(以前夾埋 BC 三年全期日數,x 軸由 2023 拉到而家 — 而家淨係揀咗嘅日期範圍)
+        const dayMap: Record<string, number> = {};
         validOrders.forEach((o: any) => {
           const day = o.created_at?.slice(0, 10);
           if (!day) return;
-          if (!dayMap[day]) dayMap[day] = { shopify: 0, bc: 0 };
-          dayMap[day].shopify += parseFloat(o.total_price) || 0;
-        });
-        [...carshop, ...garage].forEach((o: any) => {
-          const day = o.invoice_date?.slice(0, 10);
-          if (!day) return;
-          if (!dayMap[day]) dayMap[day] = { shopify: 0, bc: 0 };
-          dayMap[day].bc += parseFloat(o.total_amount_incl_tax) || 0;
+          dayMap[day] = (dayMap[day] || 0) + (parseFloat(o.total_price) || 0);
         });
         setTrendData(
           Object.entries(dayMap)
             .sort(([a], [b]) => a.localeCompare(b))
-            .map(([date, val]) => ({ date: date.slice(5), shopify: val.shopify, bc: val.bc, total: val.shopify + val.bc }))
+            .map(([date, val]) => ({ date: date.slice(5), shopify: val }))
         );
-
-        setSplitData([
-          { name: '零售 Retail', value: rev + carRev },
-          { name: '車房 Garage', value: garRev },
-        ]);
 
         // Ad spend vs revenue
         const adMap: Record<string, number> = {};
@@ -190,7 +168,7 @@ export default function OverviewPage() {
         setAdVsRevData(
           Array.from(allDays).sort().map((d) => ({
             date: d.slice(5),
-            revenue: dayMap[d]?.shopify || 0,
+            revenue: dayMap[d] || 0,
             spend: adMap[d] || 0,
           }))
         );
@@ -245,10 +223,8 @@ export default function OverviewPage() {
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <KpiCard title="Shopify 營收" subtitle="Revenue" value={formatCurrency(shopifyRevenue)} icon={DollarSign} loading={loading} testId="kpi-shopify-rev" />
-        <KpiCard title="BC 門店" subtitle="CARSHOP" value={formatCurrency(bcCarshopRevenue)} icon={Store} loading={loading} testId="kpi-carshop-rev" />
-        <KpiCard title="BC 車房" subtitle="GARAGE" value={formatCurrency(bcGarageRevenue)} icon={Wrench} loading={loading} testId="kpi-garage-rev" />
         <KpiCard title="總訂單" subtitle="Orders" value={formatNumber(totalOrders)} icon={ShoppingCart} loading={loading} testId="kpi-orders" />
         <KpiCard title="平均單價" subtitle="AOV" value={formatCurrency(aov)} icon={TrendingUp} loading={loading} testId="kpi-aov" />
         <KpiCard title="Marsello 會員" subtitle="Members" value={formatNumber(marselloCount)} icon={Users} loading={loading} testId="kpi-marsello" />
@@ -272,30 +248,16 @@ export default function OverviewPage() {
         </CardContent>
       </Card>
 
-      <ChartCard title="綜合營收趨勢" subtitle="Combined Revenue Trend" loading={loading}>
-        <ResponsiveContainer width="100%" height={280}>
-          <LineChart data={trendData}>
-            <CartesianGrid {...GRID_STYLE} />
-            <XAxis dataKey="date" tick={AXIS_STYLE} />
-            <YAxis tick={AXIS_STYLE} tickFormatter={(v) => `${(v / 1000).toFixed(0)}K`} />
-            <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => formatCurrency(v)} />
-            <Line type="monotone" dataKey="shopify" name="Shopify" stroke={CHART_COLORS.primary} strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="bc" name="BC" stroke={CHART_COLORS.secondary} strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="total" name="Total" stroke={CHART_COLORS.tertiary} strokeWidth={2} dot={false} strokeDasharray="5 5" />
-          </LineChart>
-        </ResponsiveContainer>
-      </ChartCard>
-
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="零售 vs 車房" subtitle="Retail vs Garage Split" loading={loading}>
+        <ChartCard title="Shopify 營收趨勢" subtitle="Daily Revenue" loading={loading}>
           <ResponsiveContainer width="100%" height={250}>
-            <PieChart>
-              <Pie data={splitData} cx="50%" cy="50%" innerRadius={60} outerRadius={90} dataKey="value" nameKey="name" paddingAngle={2}>
-                {splitData.map((_, i) => <Cell key={i} fill={DONUT_PALETTE[i]} />)}
-              </Pie>
+            <LineChart data={trendData}>
+              <CartesianGrid {...GRID_STYLE} />
+              <XAxis dataKey="date" tick={AXIS_STYLE} />
+              <YAxis tick={AXIS_STYLE} tickFormatter={(v) => `${(v / 1000).toFixed(0)}K`} />
               <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => formatCurrency(v)} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-            </PieChart>
+              <Line type="monotone" dataKey="shopify" name="Shopify 營收" stroke={CHART_COLORS.primary} strokeWidth={2} dot={false} />
+            </LineChart>
           </ResponsiveContainer>
         </ChartCard>
 
