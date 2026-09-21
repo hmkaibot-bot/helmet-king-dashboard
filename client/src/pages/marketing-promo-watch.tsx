@@ -223,7 +223,14 @@ export default function MarketingPromoWatchPage() {
         (a, b) => stOrder(a) - stOrder(b) || b.start_date.localeCompare(a.start_date)
       );
       setPromos(sorted);
-      setItems(its.filter(i => !i.is_archived));
+      // 唔好剔走 is_archived —— DB cron finalize_ended_promotions() 幫活動收尾
+      // 嗰陣會將成個活動嘅 promotion_items 封存,所以「已結束」活動必然係 100%
+      // 封存。以前喺呢度 filter 走咗,結果排行榜每個已結束活動都係 0 款 / 0 件 /
+      // $0,撳入去仲寫住「未有分派商品」—— 但老闆想睇返推廣期內嘅成績
+      // (2026-09-21 提出)。呢一頁本身就係按「各自推廣期」計數,所以照計就啱。
+      // 核對過:七個已結束活動連封存行計出嚟嘅件數/營收,同 promotions.final_*
+      // 嗰份 freeze 落嚟嘅最終成績完全一致。
+      setItems(its);
       setInventory(inv);
       setOrderLines(ol);
       setOrders(os);
