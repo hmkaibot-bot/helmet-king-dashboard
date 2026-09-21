@@ -140,9 +140,13 @@ export default function PromotionsListPage() {
         const newStatus = editingPromo.status === 'cancelled'
           ? 'cancelled'
           : deriveStatusFromDates(data.start_date, data.end_date);
-        // 改日期令已 freeze 嘅活動「復活」(ended → active/planned)→ 重置快照,
-        // 令佢喺新結束日之後重新 freeze;唔清就會永遠釘住舊數。
-        const resetSnapshot = editingPromo.snapshotted_at != null && newStatus !== 'ended'
+        // 改日期令已結束嘅活動「復活」(ended → active/planned)。
+        // 舊日期已經過咗身,或者已經 freeze 咗,而新日期令佢唔再 ended = 復活。
+        const wasEnded =
+          editingPromo.snapshotted_at != null || effectiveStatus(editingPromo) === 'ended';
+        const isRevive = wasEnded && newStatus !== 'ended';
+        // 復活 → 重置快照,令佢喺新結束日之後重新 freeze;唔清就會永遠釘住舊數。
+        const resetSnapshot = isRevive && editingPromo.snapshotted_at != null
           ? {
               snapshotted_at: null,
               final_qty_sold: null,
@@ -168,6 +172,25 @@ export default function PromotionsListPage() {
           })
           .eq('id', editingPromo.id);
         if (error) throw error;
+
+        // 復活仲要解封啲商品 —— 以前漏咗呢步。
+        // DB cron finalize_ended_promotions()(每日 08:05 HKT)幫過期活動收尾嗰陣,
+        // 會 `UPDATE promotion_items SET is_archived = TRUE WHERE promotion_id = …`,
+        // 成個活動嘅貨一次過封存。復活時只清快照、唔解封,個活動就會「進行中但
+        // 0 款、0 件、$0」—— 2026-09-21 FETURE MODER 全系列 85 折就係中咗呢個。
+        // 老闆亦冇得自救:推廣商品池見唔到封存行(當未分派),想重新剔返落去
+        // 又會俾 upsert 嘅 ignoreDuplicates 靜靜跳過(下面 promotions-items.tsx 一併修好)。
+        if (isRevive) {
+          const { error: unarchiveErr } = await supabase
+            .from('promotion_items')
+            .update({ is_archived: false })
+            .eq('promotion_id', editingPromo.id)
+            .eq('is_archived', true);
+          // 解封失敗一定要嘈 —— 靜靜失敗就會變返「復活咗但數字全 0」嗰個狀態
+          if (unarchiveErr) {
+            throw new Error(`活動已更新,但解封商品失敗(數字會顯示 0):${unarchiveErr.message}`);
+          }
+        }
       } else {
         const { error } = await supabase.from('promotions').insert({
           name: data.name,
