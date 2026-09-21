@@ -235,7 +235,13 @@ export default function PromotionsItemsPage() {
 
   // ── 低階 DB 操作（無 confirm、無 reload；俾單行同批次共用）──────────────────
   const insertAssignment = async (productIdNum: number, promoId: string) => {
-    // upsert + ignoreDuplicates：若該 (活動,商品) 已存在就當無事,唔會撞 PK error
+    // upsert：若該 (活動,商品) 已存在就更新返佢,唔會撞 PK error。
+    // 以前用 ignoreDuplicates: true(= ON CONFLICT DO NOTHING),撞到一行
+    // 「已封存」嘅舊分派會靜靜跳過 —— 而封存行喺呢一頁係當「未分派」顯示嘅,
+    // 所以老闆撳幾多次都係加唔返,亦冇任何錯誤提示。活動復活之後想重新加貨
+    // 就係死喺呢度。而家改成 DO UPDATE:重新分派會將 is_archived 揦返 false。
+    // (payload 冇 promo_price,所以舊推廣價唔會俾覆蓋;assigned_at 有 default,
+    //  只喺真正 insert 嗰陣寫,更新唔會郁佢。)
     const { error: insErr } = await supabase.from('promotion_items').upsert(
       {
         promotion_id: promoId,
@@ -243,7 +249,7 @@ export default function PromotionsItemsPage() {
         previous_manual_status: 'dead',
         is_archived: false,
       },
-      { onConflict: 'promotion_id,product_id', ignoreDuplicates: true }
+      { onConflict: 'promotion_id,product_id', ignoreDuplicates: false }
     );
     if (insErr) throw insErr;
   };
