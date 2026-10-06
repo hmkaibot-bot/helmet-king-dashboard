@@ -51,6 +51,32 @@ interface Change {
 const priceStr = (v: number | null) => (v != null ? String(v) : '');
 const PAGE = 200; // 母項列表每次 render 幾多行(幾千件貨一次過 render 會卡)
 
+// 排序(老闆 2026-10-06:改價要見埋庫存,仲要排得)。
+// 冇庫存資料(null)一律排最後,唔跟方向反轉 — 否則「少→多」會俾一堆
+// 未 sync 嘅貨霸晒頭位。同分再用貨名 tie-break,次序先至穩定唔會跳。
+type SortKey = 'title' | 'stock-desc' | 'stock-asc' | 'price-desc' | 'price-asc';
+const SORTS: Array<{ key: SortKey; label: string }> = [
+  { key: 'title', label: '貨名 A→Z' },
+  { key: 'stock-desc', label: '庫存 多→少' },
+  { key: 'stock-asc', label: '庫存 少→多' },
+  { key: 'price-desc', label: '售價 高→低' },
+  { key: 'price-asc', label: '售價 低→高' },
+];
+const cmpNullable = (a: number | null, b: number | null, dir: 1 | -1) => {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return (a - b) * dir;
+};
+// 庫存上色。實測 7352 件入面 5101 件(69%)係 0 — 0 係常態,標紅就成版紅、
+// 反而冇咗重點,所以 0 同冇資料一律暗色收聲。真正要望嘅係負數(超賣,
+// 實測最低 -237),嗰啲先標紅。
+const stockTone = (v: number | null) => {
+  if (v == null || v === 0) return 'text-muted-foreground';
+  if (v < 0) return 'text-rose-400';
+  return 'text-foreground';
+};
+
 // variant_title 一般係「顏色 / SIZE」(Shopify 用 " / " 駁選項)—
 // 拆開兩欄:顏色全名一欄、SIZE 一欄(老闆:唔要截字,SIZE 分開睇)
 const splitVariant = (t: string | null): [string | null, string | null] => {
@@ -76,6 +102,7 @@ export default function PriceEditorPage() {
   const [q, setQ] = useState('');
   const [vendorF, setVendorF] = useState('');
   const [typeF, setTypeF] = useState('');
+  const [sort, setSort] = useState<SortKey>('title');
   const [shown, setShown] = useState(PAGE);
   const [openPid, setOpenPid] = useState<number | null>(null);
   const [edits, setEdits] = useState<Record<number, EditInput>>({});
@@ -156,23 +183,33 @@ export default function PriceEditorPage() {
       arr.push(r);
       byPid.set(r.product_id, arr);
     }
-    return [...byPid.entries()]
-      .map(([pid, variants]) => {
-        const prices = variants.map((v) => v.price).filter((p): p is number => p != null && p > 0);
-        return {
-          pid,
-          title: variants[0]?.product_title ?? `#${pid}`,
-          vendor: (variants[0]?.vendor ?? '').trim(),
-          ptype: (variants[0]?.product_type ?? '').trim(),
-          minP: prices.length ? Math.min(...prices) : null,
-          maxP: prices.length ? Math.max(...prices) : null,
-          variants: [...variants].sort((a, b) => String(a.sku ?? '').localeCompare(String(b.sku ?? ''))),
-        };
-      })
-      .sort((a, b) => a.title.localeCompare(b.title));
-  }, [rows, q, vendorF, typeF]);
+    const list = [...byPid.entries()].map(([pid, variants]) => {
+      const prices = variants.map((v) => v.price).filter((p): p is number => p != null && p > 0);
+      // 庫存 = 母項下面所有 SKU 加埋。全部 SKU 都冇數先當「冇資料」(null → 顯示 —),
+      // 唔好當 0 — 未 sync 同真係賣晒係兩件事,撈埋一齊排序會呃人。
+      const qtys = variants.map((v) => v.inventory_quantity).filter((x): x is number => x != null);
+      return {
+        pid,
+        title: variants[0]?.product_title ?? `#${pid}`,
+        vendor: (variants[0]?.vendor ?? '').trim(),
+        ptype: (variants[0]?.product_type ?? '').trim(),
+        minP: prices.length ? Math.min(...prices) : null,
+        maxP: prices.length ? Math.max(...prices) : null,
+        stock: qtys.length ? qtys.reduce((acc, x) => acc + x, 0) : null,
+        variants: [...variants].sort((a, b) => String(a.sku ?? '').localeCompare(String(b.sku ?? ''))),
+      };
+    });
+    const byTitle = (a: { title: string }, b: { title: string }) => a.title.localeCompare(b.title);
+    switch (sort) {
+      case 'stock-desc': return list.sort((a, b) => cmpNullable(a.stock, b.stock, -1) || byTitle(a, b));
+      case 'stock-asc': return list.sort((a, b) => cmpNullable(a.stock, b.stock, 1) || byTitle(a, b));
+      case 'price-desc': return list.sort((a, b) => cmpNullable(a.minP, b.minP, -1) || byTitle(a, b));
+      case 'price-asc': return list.sort((a, b) => cmpNullable(a.minP, b.minP, 1) || byTitle(a, b));
+      default: return list.sort(byTitle);
+    }
+  }, [rows, q, vendorF, typeF, sort]);
 
-  useEffect(() => { setShown(PAGE); }, [q, vendorF, typeF]);
+  useEffect(() => { setShown(PAGE); }, [q, vendorF, typeF, sort]);
 
   // ── 產品主圖:顯示緊嗰批 lazy 攞(featuredImages 批量,每批 200)──────
   // ⚠️ 特登冇「取消」邏輯:imgMap 係 append-only cache,遲返嚟嘅 response
@@ -490,6 +527,17 @@ export default function PriceEditorPage() {
             <option key={t.name} value={t.name}>{t.name}({t.n})</option>
           ))}
         </select>
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value as SortKey)}
+          className="px-2 py-2 rounded-md border border-border bg-card text-xs max-w-[150px]"
+          data-testid="price-sort"
+          title="排序"
+        >
+          {SORTS.map((s) => (
+            <option key={s.key} value={s.key}>{s.label}</option>
+          ))}
+        </select>
         <div className="relative flex-1 min-w-[200px] max-w-md">
           <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
           <input
@@ -563,6 +611,13 @@ export default function PriceEditorPage() {
                     <p className="text-[11px] text-muted-foreground truncate">{p.vendor}{p.ptype ? ` · ${p.ptype}` : ''}</p>
                   </div>
                   <span className="text-sm tabular-nums whitespace-nowrap">{fmtRange(p.minP, p.maxP)}</span>
+                  <span
+                    className={`text-xs tabular-nums w-20 text-right shrink-0 ${stockTone(p.stock)}`}
+                    title={p.stock == null ? '未有庫存資料' : `總庫存 ${p.stock} 件(所有 SKU 加埋)`}
+                    data-testid={`price-stock-${p.pid}`}
+                  >
+                    {p.stock == null ? '—' : `${p.stock} 件`}
+                  </span>
                   <span className="text-[11px] text-muted-foreground tabular-nums w-14 text-right shrink-0">{p.variants.length} SKU</span>
                 </button>
               ))}
