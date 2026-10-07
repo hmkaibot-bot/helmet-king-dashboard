@@ -54,14 +54,7 @@ const PAGE = 200; // 母項列表每次 render 幾多行(幾千件貨一次過 r
 // 排序(老闆 2026-10-06:改價要見埋庫存,仲要排得)。
 // 冇庫存資料(null)一律排最後,唔跟方向反轉 — 否則「少→多」會俾一堆
 // 未 sync 嘅貨霸晒頭位。同分再用貨名 tie-break,次序先至穩定唔會跳。
-type SortKey = 'title' | 'stock-desc' | 'stock-asc' | 'price-desc' | 'price-asc';
-const SORTS: Array<{ key: SortKey; label: string }> = [
-  { key: 'title', label: '貨名 A→Z' },
-  { key: 'stock-desc', label: '庫存 多→少' },
-  { key: 'stock-asc', label: '庫存 少→多' },
-  { key: 'price-desc', label: '售價 高→低' },
-  { key: 'price-asc', label: '售價 低→高' },
-];
+type SortKey = 'title' | 'title-desc' | 'sku-desc' | 'sku-asc' | 'stock-desc' | 'stock-asc' | 'price-desc' | 'price-asc';
 const cmpNullable = (a: number | null, b: number | null, dir: 1 | -1) => {
   if (a == null && b == null) return 0;
   if (a == null) return 1;
@@ -99,6 +92,7 @@ interface ProductDetail {
 export default function PriceEditorPage() {
   const [rows, setRows] = useState<InvRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [q, setQ] = useState('');
   const [vendorF, setVendorF] = useState('');
   const [typeF, setTypeF] = useState('');
@@ -133,6 +127,7 @@ export default function PriceEditorPage() {
         if (!cancelled) setRows(data as InvRow[]);
       } catch (e) {
         console.error('shopify_inventory load error:', e);
+        if (!cancelled) setLoadError(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -201,6 +196,9 @@ export default function PriceEditorPage() {
     });
     const byTitle = (a: { title: string }, b: { title: string }) => a.title.localeCompare(b.title);
     switch (sort) {
+      case 'title-desc': return list.sort((a, b) => byTitle(b, a));
+      case 'sku-desc': return list.sort((a, b) => b.variants.length - a.variants.length || byTitle(a, b));
+      case 'sku-asc': return list.sort((a, b) => a.variants.length - b.variants.length || byTitle(a, b));
       case 'stock-desc': return list.sort((a, b) => cmpNullable(a.stock, b.stock, -1) || byTitle(a, b));
       case 'stock-asc': return list.sort((a, b) => cmpNullable(a.stock, b.stock, 1) || byTitle(a, b));
       case 'price-desc': return list.sort((a, b) => cmpNullable(a.minP, b.minP, -1) || byTitle(a, b));
@@ -208,6 +206,22 @@ export default function PriceEditorPage() {
       default: return list.sort(byTitle);
     }
   }, [rows, q, vendorF, typeF, sort]);
+
+  const totalStock = useMemo(() => {
+    const quantities = rows.filter((r) => r.variant_id != null && r.inventory_quantity != null);
+    return quantities.length ? quantities.reduce((sum, r) => sum + r.inventory_quantity!, 0) : null;
+  }, [rows]);
+  const filteredStock = products.reduce((sum, p) => sum + (p.stock ?? 0), 0);
+  const hasFilters = !!(q.trim() || vendorF || typeF);
+  const sortColumn = (column: 'title' | 'price' | 'stock' | 'sku') => {
+    const asc: SortKey = column === 'title' ? 'title' : `${column}-asc`;
+    const desc: SortKey = `${column}-desc`;
+    setSort(sort === asc ? desc : asc);
+  };
+  const sortIndicator = (column: 'title' | 'price' | 'stock' | 'sku') => {
+    if (sort === (column === 'title' ? 'title' : `${column}-asc`)) return ' ↑';
+    return sort === `${column}-desc` ? ' ↓' : ' ↕';
+  };
 
   useEffect(() => { setShown(PAGE); }, [q, vendorF, typeF, sort]);
 
@@ -503,6 +517,17 @@ export default function PriceEditorPage() {
         </span>
       </div>
 
+      <div className="rounded-lg border border-border/40 bg-card px-4 py-3" data-testid="price-total-stock" aria-live="polite">
+        <p className="text-xs text-muted-foreground">總庫存 · 全部商品</p>
+        <p className="text-2xl font-semibold tabular-nums mt-1">
+          {loading ? '載入中…' : loadError || totalStock == null ? '—' : `${totalStock.toLocaleString()} 件`}
+        </p>
+        <p className="text-xs text-muted-foreground mt-1">
+          {loadError ? '庫存載入失敗，請重新載入頁面' : '所有 SKU 已知庫存合計（包括負庫存）'}
+          {!loading && !loadError && hasFilters && ` · 篩選結果：${products.some((p) => p.stock != null) ? `${filteredStock.toLocaleString()} 件` : '未有庫存資料'}`}
+        </p>
+      </div>
+
       {/* filter 列:品牌 / Product Type / 搜尋 */}
       <div className="flex gap-2 flex-wrap items-center">
         <select
@@ -525,17 +550,6 @@ export default function PriceEditorPage() {
           <option value="">全部類別</option>
           {types.map((t) => (
             <option key={t.name} value={t.name}>{t.name}({t.n})</option>
-          ))}
-        </select>
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value as SortKey)}
-          className="px-2 py-2 rounded-md border border-border bg-card text-xs max-w-[150px]"
-          data-testid="price-sort"
-          title="排序"
-        >
-          {SORTS.map((s) => (
-            <option key={s.key} value={s.key}>{s.label}</option>
           ))}
         </select>
         <div className="relative flex-1 min-w-[200px] max-w-md">
@@ -585,52 +599,70 @@ export default function PriceEditorPage() {
       {/* 母項列表 — 極簡:貨名 + 牌子/類別細字 + 價錢範圍 + SKU 數 */}
       {loading ? (
         <p className="text-xs text-muted-foreground py-8 text-center animate-pulse">載入緊 SKU 價目…</p>
+      ) : loadError ? (
+        <p className="text-xs text-rose-400 py-10 text-center">庫存載入失敗，請重新載入頁面</p>
       ) : products.length === 0 ? (
         <p className="text-xs text-muted-foreground py-10 text-center">呢個 filter 組合冇貨 — 試下放寬啲</p>
       ) : (
         <Card className="border-border/40 overflow-hidden">
-          <CardContent className="p-0">
-            <div className="divide-y divide-border/20">
-              {products.slice(0, shown).map((p) => (
-                <button
-                  key={p.pid}
-                  onClick={() => setOpenPid(p.pid)}
-                  className="w-full px-4 py-2 flex items-center gap-3 text-left hover:bg-muted/20 transition-colors"
-                  data-testid={`price-product-${p.pid}`}
-                >
-                  {imgMap[String(p.pid)] ? (
-                    <img src={imgMap[String(p.pid)]!} alt="" loading="lazy" className="w-10 h-10 max-w-none object-cover rounded border border-border/40 shrink-0 bg-white" />
-                  ) : (
-                    <div className="w-10 h-10 rounded bg-muted/40 border border-border/40 shrink-0" />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm truncate">
-                      {dirtyPids.has(p.pid) && <span className="text-amber-300 mr-1" title="有未儲存改動">●</span>}
-                      {p.title}
-                    </p>
-                    <p className="text-[11px] text-muted-foreground truncate">{p.vendor}{p.ptype ? ` · ${p.ptype}` : ''}</p>
-                  </div>
-                  <span className="text-sm tabular-nums whitespace-nowrap">{fmtRange(p.minP, p.maxP)}</span>
-                  <span
-                    className={`text-xs tabular-nums w-20 text-right shrink-0 ${stockTone(p.stock)}`}
-                    title={p.stock == null ? '未有庫存資料' : `總庫存 ${p.stock} 件(所有 SKU 加埋)`}
-                    data-testid={`price-stock-${p.pid}`}
+          <CardContent className="p-0 overflow-x-auto">
+            <div className="min-w-[640px]">
+              <div className="flex items-center gap-3 px-4 py-3 bg-muted/50 border-b border-border/60 text-xs font-semibold text-muted-foreground" data-testid="price-sort-bar">
+                <span className="w-10 shrink-0" aria-hidden="true" />
+                {(['title', 'price', 'stock', 'sku'] as const).map((column) => (
+                  <button
+                    key={column}
+                    onClick={() => sortColumn(column)}
+                    className={`${column === 'title' ? 'min-w-0 flex-1 text-left' : column === 'price' ? 'w-36 text-right shrink-0' : column === 'stock' ? 'w-20 text-right shrink-0' : 'w-14 text-right shrink-0'} ${sort === (column === 'title' ? 'title' : `${column}-asc`) || sort === `${column}-desc` ? 'text-primary' : ''} py-1 hover:text-foreground focus-visible:outline focus-visible:outline-primary rounded`}
+                    aria-label={`${column === 'title' ? '貨名' : column === 'price' ? '售價（最低價）' : column === 'stock' ? '總庫存' : 'SKU 數'}排序${sortIndicator(column)}`}
+                    data-testid={`price-sort-${column}`}
                   >
-                    {p.stock == null ? '—' : `${p.stock} 件`}
-                  </span>
-                  <span className="text-[11px] text-muted-foreground tabular-nums w-14 text-right shrink-0">{p.variants.length} SKU</span>
+                    {column === 'title' ? '貨名' : column === 'price' ? '售價' : column === 'stock' ? '總庫存' : 'SKU 數'}{sortIndicator(column)}
+                  </button>
+                ))}
+              </div>
+              <div className="divide-y divide-border/20">
+                {products.slice(0, shown).map((p) => (
+                  <button
+                    key={p.pid}
+                    onClick={() => setOpenPid(p.pid)}
+                    className="w-full px-4 py-2 flex items-center gap-3 text-left hover:bg-muted/20 transition-colors"
+                    data-testid={`price-product-${p.pid}`}
+                  >
+                    {imgMap[String(p.pid)] ? (
+                      <img src={imgMap[String(p.pid)]!} alt="" loading="lazy" className="w-10 h-10 max-w-none object-cover rounded border border-border/40 shrink-0 bg-white" />
+                    ) : (
+                      <div className="w-10 h-10 rounded bg-muted/40 border border-border/40 shrink-0" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm truncate">
+                        {dirtyPids.has(p.pid) && <span className="text-amber-300 mr-1" title="有未儲存改動">●</span>}
+                        {p.title}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground truncate">{p.vendor}{p.ptype ? ` · ${p.ptype}` : ''}</p>
+                    </div>
+                    <span className="text-sm tabular-nums whitespace-nowrap w-36 text-right shrink-0">{fmtRange(p.minP, p.maxP)}</span>
+                    <span
+                      className={`text-xs tabular-nums w-20 text-right shrink-0 ${stockTone(p.stock)}`}
+                      title={p.stock == null ? '未有庫存資料' : `總庫存 ${p.stock} 件(所有 SKU 加埋)`}
+                      data-testid={`price-stock-${p.pid}`}
+                    >
+                      {p.stock == null ? '—' : `${p.stock} 件`}
+                    </span>
+                    <span className="text-[11px] text-muted-foreground tabular-nums w-14 text-right shrink-0">{p.variants.length} SKU</span>
+                  </button>
+                ))}
+              </div>
+              {products.length > shown && (
+                <button
+                  onClick={() => setShown((n) => n + PAGE)}
+                  className="w-full py-2.5 text-xs text-muted-foreground hover:text-foreground border-t border-border/40"
+                  data-testid="price-editor-more"
+                >
+                  顯示更多(仲有 {products.length - shown} 件)
                 </button>
-              ))}
+              )}
             </div>
-            {products.length > shown && (
-              <button
-                onClick={() => setShown((n) => n + PAGE)}
-                className="w-full py-2.5 text-xs text-muted-foreground hover:text-foreground border-t border-border/40"
-                data-testid="price-editor-more"
-              >
-                顯示更多(仲有 {products.length - shown} 件)
-              </button>
-            )}
           </CardContent>
         </Card>
       )}
