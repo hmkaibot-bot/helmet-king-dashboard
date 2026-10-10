@@ -143,6 +143,7 @@ const NAV_ITEMS: NavItem[] = [
     sublabel: 'Marketing',
     icon: Megaphone,
     children: [
+      { path: '/marketing/os', label: 'AI Marketing OS', sublabel: 'Campaign Studio', icon: Sparkles },
       { path: '/marketing', label: '營銷效果', sublabel: 'Marketing', icon: BarChart3 },
       { path: '/marketing/posts', label: '營銷貼文', sublabel: 'Post Studio', icon: PenLine },
       { path: '/marketing/promo-watch', label: '推廣監察', sublabel: 'Promo Watch', icon: Radar },
@@ -203,6 +204,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
     '/retail/promotions',
     '/retail/promotions/items',
     '/retail/promotions/history',
+    '/marketing/os',
     '/marketing/posts',
     '/marketing/promo-watch',
     '/retail/inventory',
