@@ -22,6 +22,7 @@ const RetailCustomersPage = lazy(() => import("@/pages/retail-customers"));
 const RetailBrandsPage = lazy(() => import("@/pages/retail-brands"));
 const GarageOrdersPage = lazy(() => import("@/pages/garage-orders"));
 const GarageServicesPage = lazy(() => import("@/pages/garage-services"));
+const MarketingOSPage = lazy(() => import("@/pages/marketing-os"));
 const MarketingPage = lazy(() => import("@/pages/marketing"));
 const MarketingPostsPage = lazy(() => import("@/pages/marketing-posts"));
 const MarketingPromoWatchPage = lazy(() => import("@/pages/marketing-promo-watch"));
@@ -74,6 +75,7 @@ function AppRouter() {
         <Route path="/retail/brands" component={RetailBrandsPage} />
         <Route path="/garage/orders" component={GarageOrdersPage} />
         <Route path="/garage/services" component={GarageServicesPage} />
+        <Route path="/marketing/os" component={MarketingOSPage} />
         <Route path="/marketing" component={MarketingPage} />
         <Route path="/marketing/posts" component={MarketingPostsPage} />
         <Route path="/marketing/promo-watch" component={MarketingPromoWatchPage} />
